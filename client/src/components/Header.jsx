@@ -20,9 +20,7 @@ export default function Header() {
   };
 
   const navLinks = [
-    { to: "/", label: "Главная" },
-    { to: "/chat", label: "AI Чат" },
-    { to: "/tools", label: "Инструменты" },
+    { to: "/", label: "Проекты" },
     { to: "/settings", label: "Настройки" },
   ];
 
