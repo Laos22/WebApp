@@ -1,11 +1,9 @@
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
 import authRoutes from "./src/routes/authRoutes.js";
 import configRoutes from "./src/routes/configRoutes.js";
-
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -14,8 +12,8 @@ app.use(cors());
 app.use(express.json());
 
 // Маршруты
-app.use('/auth', authRoutes);
-app.use('/api/settings', configRoutes);
+app.use("/auth", authRoutes);
+app.use("/api/settings", configRoutes);
 
 // Эндпоинт генерации контента
 app.post("/api/generate", async (req, res) => {
@@ -86,4 +84,3 @@ app.get("/api/health", (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);
 });
-
