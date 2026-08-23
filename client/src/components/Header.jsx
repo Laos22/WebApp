@@ -21,6 +21,7 @@ export default function Header() {
 
   const navLinks = [
     { to: "/", label: "Проекты" },
+    { to: "/projects/new", label: "Новый проект" },
     { to: "/settings", label: "Настройки" },
   ];
 
@@ -206,3 +207,4 @@ export default function Header() {
     </header>
   );
 }
+

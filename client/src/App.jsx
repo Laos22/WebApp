@@ -10,6 +10,7 @@ import ProtectedRoute from "./components/ProtectedRoute";
 import Header from "./components/Header";
 import Login from "./pages/Login";
 import Projects from "./pages/Projects";
+import CreateProject from "./pages/CreateProject";
 import ProjectWorkspace from "./pages/ProjectWorkspace";
 import ImageGen from "./pages/ImageGen";
 import AudioGen from "./pages/AudioGen";
@@ -39,6 +40,14 @@ function AppContent() {
             element={
               <ProtectedRoute>
                 <ProjectWorkspace />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/projects/new"
+            element={
+              <ProtectedRoute>
+                <CreateProject />
               </ProtectedRoute>
             }
           />
@@ -84,3 +93,4 @@ export default function App() {
     </AuthProvider>
   );
 }
+

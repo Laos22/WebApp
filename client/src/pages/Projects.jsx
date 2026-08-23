@@ -1,7 +1,8 @@
 import React, { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 export default function Projects() {
+  const navigate = useNavigate();
   const [projects, setProjects] = useState([
     {
       id: "proj-1",
@@ -42,12 +43,12 @@ export default function Projects() {
               пространственный контекст.
             </p>
           </div>
-          <button
-            onClick={() => setIsModalOpen(true)}
+          <Link
+            to="/projects/new"
             className="px-5 py-3 bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-xl shadow-lg shadow-purple-600/25 transition-all"
           >
             + Новый проект
-          </button>
+          </Link>
         </div>
 
         {/* Список проектов */}
