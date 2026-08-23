@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
 
 export default function CreateProject() {
@@ -8,41 +8,71 @@ export default function CreateProject() {
   const [isLoading, setIsLoading] = useState(false);
   const [generatedOptions, setGeneratedOptions] = useState([]);
   const [selectedOption, setSelectedOption] = useState(null);
+  const [systemPrompt, setSystemPrompt] = useState("");
+
+  const SERVER_URL = import.meta.env.VITE_SERVER_URL || "http://localhost:5001";
+
+  // Загрузить системный промпт при монтировании
+  useEffect(() => {
+    fetchSystemPrompt();
+  }, []);
+  const fetchSystemPrompt = async () => {
+    try {
+      const response = await fetch(`${SERVER_URL}/api/settings/prompt`);
+      if (response.ok) {
+        const data = await response.json();
+        setSystemPrompt(data.systemPrompt);
+      }
+    } catch (e) {
+      console.error("Ошибка загрузки системного промпта:", e);
+      // Fallback
+      setSystemPrompt(
+        localStorage.getItem("ai_system_prompt") ||
+          "Ты — профессиональный YouTube-сценарист.",
+      );
+    }
+  };
 
   const handleGenerate = async () => {
+    if (method === "manual" && !prompt.trim()) return;
+
     setIsLoading(true);
 
-    // Имитация вызова API
-    setTimeout(() => {
-      setGeneratedOptions([
-        {
-          id: 1,
-          title: "Тайны квантовой физики в Shorts",
-          description:
-            "Увлекательное объяснение основ квантовой механики за 60 секунд.",
-        },
-        {
-          id: 2,
-          title: "Почему AI изменит ваш рабочий стол",
-          description:
-            "Разбор инструментов, которые ускорят вашу работу в 10 раз.",
-        },
-        {
-          id: 3,
-          title: "История программирования: от перфокарт до GPT",
-          description: "Краткий экскурс в эволюцию IT.",
-        },
-      ]);
+    try {
+      // TODO: Здесь будет реальный запрос к API для генерации вариантов
+      // Пока используем имитацию
+      setTimeout(() => {
+        setGeneratedOptions([
+          {
+            id: 1,
+            title: "Тайны квантовой физики в Shorts",
+            description:
+              "Увлекательное объяснение основ квантовой механики за 60 секунд.",
+          },
+          {
+            id: 2,
+            title: "Почему AI изменит ваш рабочий стол",
+            description:
+              "Разбор инструментов, которые ускорят вашу работу в 10 раз.",
+          },
+          {
+            id: 3,
+            title: "История программирования: от перфокарт до GPT",
+            description: "Краткий экскурс в эволюцию IT.",
+          },
+        ]);
+        setIsLoading(false);
+      }, 1500);
+    } catch (e) {
+      console.error("Ошибка генерации:", e);
       setIsLoading(false);
-    }, 1500);
+    }
   };
 
   return (
     <div className="p-4 lg:p-8 max-w-3xl mx-auto">
       <div className="flex justify-between items-center mb-8">
-        <h1 className="text-2xl font-bold text-white">
-          Создание нового проекта
-        </h1>
+        <h1 className="text-2xl font-bold text-white">Новый проект</h1>
         <Link
           to="/settings"
           className="text-sm text-purple-400 hover:text-purple-300 transition-colors"
@@ -52,6 +82,16 @@ export default function CreateProject() {
       </div>
 
       <div className="bg-slate-900 p-6 rounded-2xl border border-slate-800 shadow-xl space-y-6">
+        {/* Информационный блок */}
+        {systemPrompt && (
+          <div className="p-4 bg-purple-900/20 border border-purple-500/30 rounded-xl text-sm text-slate-300">
+            <p className="font-medium text-purple-300 mb-1">
+              📌 Активный системный промпт:
+            </p>
+            <p className="line-clamp-2">{systemPrompt}</p>
+          </div>
+        )}
+
         {/* Переключатель методов */}
         <div className="flex p-1 bg-slate-950 border border-slate-800 rounded-xl">
           <button
@@ -69,12 +109,21 @@ export default function CreateProject() {
         </div>
 
         {method === "manual" ? (
-          <textarea
-            className="w-full h-32 p-4 bg-slate-950 border border-slate-700 rounded-xl text-white outline-none focus:border-purple-500 transition-all"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder="Опишите вашу идею..."
-          />
+          <>
+            <textarea
+              className="w-full h-32 p-4 bg-slate-950 border border-slate-700 rounded-xl text-white outline-none focus:border-purple-500 transition-all"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder="Опишите вашу идею..."
+            />
+            <button
+              onClick={handleGenerate}
+              disabled={isLoading || !prompt.trim()}
+              className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-slate-700 text-white py-3 rounded-xl font-semibold transition-all"
+            >
+              {isLoading ? "Генерация..." : "Сгенерировать структуру"}
+            </button>
+          </>
         ) : (
           <button
             onClick={handleGenerate}
@@ -85,19 +134,9 @@ export default function CreateProject() {
           </button>
         )}
 
-        {method === "manual" && (
-          <button
-            onClick={handleGenerate}
-            disabled={isLoading || !prompt.trim()}
-            className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-slate-700 text-white py-3 rounded-xl font-semibold transition-all shadow-lg shadow-purple-500/20"
-          >
-            {isLoading ? "Генерация..." : "Сгенерировать структуру"}
-          </button>
-        )}
-
         {/* Список вариантов */}
         {generatedOptions.length > 0 && (
-          <div className="space-y-4 pt-4 border-t border-slate-800">
+          <div className="space-y-4 pt-4 border-t border-slate-800 animate-fadeIn">
             <h2 className="text-lg font-semibold text-white">
               Выберите вариант:
             </h2>
