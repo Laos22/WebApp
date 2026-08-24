@@ -71,6 +71,7 @@ export default function Settings() {
   };
 
   const handleConnectGoogleDrive = () => {
+    console.log("🔵 Кнопка нажата! Пытаемся перейти на:", `${SERVER_URL}/auth/google`);
     setDriveLoading(true);
     window.location.href = `${SERVER_URL}/auth/google`;
   };

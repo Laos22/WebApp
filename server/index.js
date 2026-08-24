@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import morgan from "morgan";
 import session from "express-session";
 import passport from "passport";
 import passportGoogle from "passport-google-oauth20";
@@ -9,6 +10,7 @@ import connectDB from "./src/config/database.js";
 import authRoutes from "./src/routes/authRoutes.js";
 import configRoutes from "./src/routes/configRoutes.js";
 import User from "./src/models/User.js";
+import Settings from "./src/models/Settings.js";
 
 const GoogleStrategy = passportGoogle.Strategy;
 
@@ -17,6 +19,9 @@ const PORT = process.env.PORT || 5001;
 
 // Подключаем базу данных
 connectDB();
+
+// Логируем АБСОЛУТНО все входящие запросы для диагностики
+app.use(morgan("dev"));
 
 // Middleware
 app.use(
@@ -51,25 +56,59 @@ passport.use(
       clientID: process.env.GOOGLE_CLIENT_ID,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET,
       callbackURL: `${process.env.SERVER_URL}/auth/callback`,
+      passReqToCallback: true,
     },
-    async (accessToken, refreshToken, profile, done) => {
+    async (req, accessToken, refreshToken, profile, done) => {
       try {
-        let user = await User.findOne({ googleId: profile.id });
-
-        if (user) {
-          return done(null, user);
-        }
-
-        user = new User({
-          googleId: profile.id,
-          email: profile.emails[0].value,
+        console.log("👤 Google Profile получен:", {
+          id: profile.id,
+          email: profile.emails?.[0]?.value,
           displayName: profile.displayName,
-          picture: profile.photos[0]?.value,
+          photo: profile.photos?.[0]?.value,
+          accessToken: !!accessToken,
+          refreshToken: !!refreshToken,
         });
 
-        await user.save();
+        let user = await User.findOne({ googleId: profile.id });
+        const isNewUser = !user;
+
+        if (isNewUser) {
+          console.log("📝 Создаем нового пользователя...");
+          user = new User({
+            googleId: profile.id,
+            email: profile.emails[0].value,
+            displayName: profile.displayName,
+            picture:
+              profile.photos && profile.photos[0]
+                ? profile.photos[0].value
+                : "",
+          });
+          await user.save();
+          console.log("✓ Новый пользователь создан:", user._id);
+        } else {
+          console.log("✓ Пользователь найден в БД:", user._id);
+        }
+
+        // Сохраняем токены Google Drive в Settings
+        // Делаем это ВСЕГДА, независимо от того, новый это или существующий пользователь
+        if (accessToken || refreshToken) {
+          console.log("💾 Сохраняем токены Drive для пользователя:", user._id);
+          let settings = await Settings.findOne({ userId: user._id });
+          if (!settings) {
+            settings = new Settings({ userId: user._id });
+          }
+          settings.driveTokens = {
+            access_token: accessToken,
+            refresh_token: refreshToken || settings.driveTokens?.refresh_token,
+            expiry_date: new Date().getTime() + 3600 * 1000,
+          };
+          await settings.save();
+          console.log("✓ Токены Drive сохранены (driveTokens заполнен)");
+        }
+
         done(null, user);
       } catch (err) {
+        console.error("❌ Ошибка в Google Strategy:", err);
         done(err, null);
       }
     },
@@ -157,7 +196,11 @@ app.get("/api/health", (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);
   console.log("🔐 Google OAuth Config:");
-  console.log(`   CLIENT_ID: ${process.env.GOOGLE_CLIENT_ID ? "✓ Set" : "✗ Missing"}`);
-  console.log(`   CLIENT_SECRET: ${process.env.GOOGLE_CLIENT_SECRET ? "✓ Set" : "✗ Missing"}`);
+  console.log(
+    `   CLIENT_ID: ${process.env.GOOGLE_CLIENT_ID ? "✓ Set" : "✗ Missing"}`,
+  );
+  console.log(
+    `   CLIENT_SECRET: ${process.env.GOOGLE_CLIENT_SECRET ? "✓ Set" : "✗ Missing"}`,
+  );
   console.log(`   CALLBACK_URL: ${process.env.SERVER_URL}/auth/callback`);
 });

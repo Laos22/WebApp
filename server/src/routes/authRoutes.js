@@ -24,6 +24,12 @@ router.get(
     failureRedirect: `${process.env.CLIENT_URL}/login?error=true`,
   }),
   (req, res) => {
+    console.log("✅ Callback получен, пользователь авторизован:", {
+      userId: req.user?._id,
+      email: req.user?.email,
+      displayName: req.user?.displayName,
+      picture: req.user?.picture,
+    });
     res.redirect(`${process.env.CLIENT_URL}/?auth=success`);
   },
 );
@@ -61,3 +67,4 @@ router.get("/status", (req, res) => {
 });
 
 export default router;
+
