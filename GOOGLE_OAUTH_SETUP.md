@@ -44,8 +44,8 @@
 GOOGLE_CLIENT_ID=ваш_client_id_здесь
 GOOGLE_CLIENT_SECRET=ваш_client_secret_здесь
 GOOGLE_DRIVE_FOLDER_ID=id_папки_здесь
-SERVER_URL=http://localhost:5001
-CLIENT_URL=http://localhost:5173
+VITE_SERVER_URL=http://localhost:5001
+VITE_CLIENT_URL=http://localhost:5173
 ```
 
 ## Шаг 5: Создание папки на Google Drive

@@ -6,6 +6,7 @@ import session from "express-session";
 import passport from "passport";
 import passportGoogle from "passport-google-oauth20";
 import { GoogleGenAI } from "@google/genai";
+import mongoose from "mongoose";
 import connectDB from "./src/config/database.js";
 import authRoutes from "./src/routes/authRoutes.js";
 import configRoutes from "./src/routes/configRoutes.js";
@@ -17,25 +18,32 @@ const GoogleStrategy = passportGoogle.Strategy;
 const app = express();
 const PORT = process.env.PORT || 5001;
 
+// Логируем АБСОЛЮТНО все входящие запросы для диагностики
+app.use(morgan("dev"));
+
+// Добавим дебаг-логгер для отслеживания всех путей
+app.use((req, res, next) => {
+  console.log(`[DEBUG] ${req.method} ${req.url}`);
+  next();
+});
+
 // Подключаем базу данных
 connectDB();
 
-// Логируем АБСОЛУТНО все входящие запросы для диагностики
-app.use(morgan("dev"));
-
 // Middleware
-app.use(
-  cors({
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
-    credentials: true,
-  }),
-);
+(console.log("CORS origin:", process.env.VITE_CLIENT_URL),
+  app.use(
+    cors({
+      origin: process.env.VITE_CLIENT_URL,
+      credentials: true,
+    }),
+  ));
 app.use(express.json());
 
 // Сессии
 app.use(
   session({
-    secret: process.env.SESSION_SECRET || "default_session_secret",
+    secret: process.env.SESSION_SECRET || "default_secret_key",
     resave: false,
     saveUninitialized: false,
     cookie: {
@@ -55,7 +63,7 @@ passport.use(
     {
       clientID: process.env.GOOGLE_CLIENT_ID,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-      callbackURL: `${process.env.SERVER_URL}/auth/callback`,
+      callbackURL: `${process.env.VITE_SERVER_URL}/auth/callback`,
       passReqToCallback: true,
     },
     async (req, accessToken, refreshToken, profile, done) => {
@@ -193,8 +201,8 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok", message: "AI Backend is running" });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server is running on http://localhost:${PORT}`);
+const server = app.listen(PORT, () => {
+  console.log(`Server is running on ${process.env.VITE_SERVER_URL}`);
   console.log("🔐 Google OAuth Config:");
   console.log(
     `   CLIENT_ID: ${process.env.GOOGLE_CLIENT_ID ? "✓ Set" : "✗ Missing"}`,
@@ -202,5 +210,7 @@ app.listen(PORT, () => {
   console.log(
     `   CLIENT_SECRET: ${process.env.GOOGLE_CLIENT_SECRET ? "✓ Set" : "✗ Missing"}`,
   );
-  console.log(`   CALLBACK_URL: ${process.env.SERVER_URL}/auth/callback`);
+  console.log(`   CALLBACK_URL: ${process.env.VITE_SERVER_URL}/auth/callback`);
 });
+
+// Убрали сложный gracefulShutdown, чтобы не конфликтовать с nodemon

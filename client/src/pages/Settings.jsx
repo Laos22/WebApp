@@ -3,7 +3,8 @@ import { Link } from "react-router-dom";
 import axios from "axios";
 import { useAuth } from "../context/AuthContext";
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || "http://localhost:5001";
+const SERVER_URL = import.meta.env.VITE_SERVER_URL;
+console.log("🔗 SERVER_URL:", SERVER_URL);
 
 // Настраиваем axios для передачи куки
 axios.defaults.withCredentials = true;

@@ -21,30 +21,32 @@ router.get(
 router.get(
   "/callback",
   passport.authenticate("google", {
-    failureRedirect: `${process.env.CLIENT_URL}/login?error=true`,
+    failureRedirect: `${process.env.VITE_CLIENT_URL}/login?error=true`,
   }),
   (req, res) => {
-    console.log("✅ Callback получен, пользователь авторизован:", {
-      userId: req.user?._id,
-      email: req.user?.email,
-      displayName: req.user?.displayName,
-      picture: req.user?.picture,
-    });
-    res.redirect(`${process.env.CLIENT_URL}/?auth=success`);
+    res.redirect(`${process.env.VITE_CLIENT_URL}/?auth=success`);
   },
 );
 
 /**
  * Выход из системы
  */
-router.get("/logout", (req, res, next) => {
-  req.logout((err) => {
-    if (err) return next(err);
+router.post("/logout", (req, res, next) => {
+  if (req.session) {
     req.session.destroy((err) => {
+      if (err) {
+        console.error("❌ Ошибка при уничтожении сессии:", err);
+        return res
+          .status(500)
+          .json({ success: false, error: "Ошибка при выходе из системы" });
+      }
       res.clearCookie("connect.sid");
       res.json({ success: true });
     });
-  });
+  } else {
+    res.clearCookie("connect.sid");
+    res.json({ success: true });
+  }
 });
 
 /**
@@ -67,4 +69,3 @@ router.get("/status", (req, res) => {
 });
 
 export default router;
-

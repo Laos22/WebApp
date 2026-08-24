@@ -2,6 +2,7 @@ import express from "express";
 import { ensureAuthenticated } from "../middleware/auth.js";
 import Settings from "../models/Settings.js";
 import { encryptData, decryptData } from "../services/encryptionService.js";
+import { syncToDrive } from "../services/driveSync.js";
 
 const router = express.Router();
 
@@ -57,6 +58,14 @@ router.post("/", ensureAuthenticated, async (req, res) => {
     settings.updatedAt = new Date();
     await settings.save();
 
+    // Синхронизация с Drive
+    syncToDrive(settings).then(result => {
+        if (result.success && result.fileId !== settings.driveFileId) {
+            settings.driveFileId = result.fileId;
+            settings.save(); // Сохраняем ID файла в БД
+        }
+    });
+
     res.json({ success: true, settings });
   } catch (error) {
     console.error("Ошибка обновления настроек:", error);
@@ -80,3 +89,4 @@ router.get("/prompt", ensureAuthenticated, async (req, res) => {
 });
 
 export default router;
+

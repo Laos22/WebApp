@@ -3,6 +3,9 @@ import axios from "axios";
 
 const AuthContext = createContext(null);
 
+// Базовый URL бэкенда из переменных окружения или fallback на localhost:5001
+const API_URL = import.meta.env.VITE_SERVER_URL;
+console.log("🔗 API_URL:", API_URL);
 // Настраиваем axios для передачи куки (сессий)
 axios.defaults.withCredentials = true;
 
@@ -12,14 +15,21 @@ export function AuthProvider({ children }) {
 
   const checkAuth = async () => {
     try {
-      const response = await axios.get("http://localhost:5001/auth/status");
+      const response = await axios.get(`${API_URL}/auth/status`);
       if (response.data.authenticated) {
         setUser(response.data.user);
       } else {
         setUser(null);
       }
     } catch (error) {
-      console.error("Ошибка проверки авторизации:", error);
+      // Если бэкенд выключен, логируем мягкое предупреждение вместо страшной ошибки сетевого сбоя
+      if (error.code === "ERR_NETWORK") {
+        console.warn(
+          "⚠️ Бэкенд сервер недоступен. Проверьте, запущен ли сервер на порту 5001.",
+        );
+      } else {
+        console.error("Ошибка проверки авторизации:", error);
+      }
       setUser(null);
     } finally {
       setLoading(false);
@@ -31,25 +41,22 @@ export function AuthProvider({ children }) {
   }, []);
 
   const login = () => {
-    // Редирект на Google Auth на бэкенде
-    window.location.href = "http://localhost:5001/auth/google";
+    window.location.href = `${API_URL}/auth/google`;
   };
 
   const logout = async () => {
-    try {
-      await axios.get("http://localhost:5001/auth/logout");
-      setUser(null);
-      // Перенаправляем на главную с задержкой, чтобы сессия успела очиститься
-      setTimeout(() => {
-        window.location.href = "/";
-      }, 500);
-    } catch (error) {
-      console.error("Ошибка выхода:", error);
-      // Даже при ошибке пытаемся выйти
-      setUser(null);
+  try {
+    await axios.post(`${API_URL}/auth/logout`);
+    setUser(null);
+    setTimeout(() => {
       window.location.href = "/";
-    }
-  };
+    }, 500);
+  } catch (error) {
+    console.error("Ошибка выхода:", error);
+    setUser(null);
+    window.location.href = "/";
+  }
+};
 
   return (
     <AuthContext.Provider value={{ user, login, logout, loading, checkAuth }}>

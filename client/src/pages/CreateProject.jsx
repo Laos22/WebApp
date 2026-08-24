@@ -10,7 +10,7 @@ export default function CreateProject() {
   const [selectedOption, setSelectedOption] = useState(null);
   const [systemPrompt, setSystemPrompt] = useState("");
 
-  const SERVER_URL = import.meta.env.VITE_SERVER_URL || "http://localhost:5001";
+  const SERVER_URL = import.meta.env.VITE_SERVER_URL;
 
   // Загрузить системный промпт при монтировании
   useEffect(() => {

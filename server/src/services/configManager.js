@@ -40,20 +40,23 @@ export const updateSettings = (newSettings) => {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(updated, null, 2), "utf8");
     console.log("✓ Локальный конфиг сохранен:", CONFIG_PATH);
 
-    // Запускаем синхронизацию асинхронно с дожиданием результата
-    syncToDrive(CONFIG_PATH)
-      .then((fileId) => {
-        if (fileId) {
+    console.log("🔄 Попытка запуска синхронизации с Drive...");
+
+    // ВАЖНО: передаем updated, где должны быть driveTokens и driveFileId
+    syncToDrive(CONFIG_PATH, updated)
+      .then((result) => {
+        console.log("📊 Результат синхронизации:", JSON.stringify(result));
+        if (result.success) {
           console.log(
             "✅ Успешно синхронизировано с Google Drive. ID:",
-            fileId,
+            result.fileId,
           );
         } else {
-          console.log("⚠️ Синхронизация завершена без ID");
+          console.error("❌ Ошибка синхронизации:", result.error);
         }
       })
       .catch((e) => {
-        console.error("❌ Ошибка при вызове синхронизации с Drive:", e);
+        console.error("❌ Критическая ошибка в цепочке синхронизации:", e);
       });
 
     return updated;

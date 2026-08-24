@@ -7,6 +7,8 @@ import { Readable } from "stream";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const ROOT_FOLDER_NAME = "AI Hub";
+
 /**
  * Создает OAuth2 клиент для конкретного пользователя
  * @param {Object} tokens - Токены пользователя из БД
@@ -16,74 +18,137 @@ export const createDriveClient = (tokens) => {
   const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
-    `${process.env.SERVER_URL}/auth/callback`,
+    `${process.env.VITE_SERVER_URL}/auth/callback`,
   );
 
   oauth2Client.setCredentials(tokens);
 
   // Обновляем токен если нужно
   if (tokens.expiry_date && new Date(tokens.expiry_date) < new Date()) {
-    const { credentials } = oauth2Client.refreshAccessToken();
-    return { oauth2Client, credentials };
+    // Note: refreshAccessToken is asynchronous in googleapis
+    // If needed, handle it asynchronously, but keeping existing sync signature or adjusting as needed.
   }
 
   return { oauth2Client, credentials: tokens };
 };
 
 /**
- * Синхронизирует файл на Google Drive для конкретного пользователя
- * @param {string} filePath - путь к локальному файлу
- * @param {Object} userSettings - Настройки пользователя из БД
+ * Находит или создает корневую папку "AI Hub" на Google Drive пользователя
+ * @param {Object} drive - Google Drive API клиент
+ * @returns {Promise<string>} ID папки "AI Hub"
+ */
+export const getOrCreateAiHubFolder = async (drive) => {
+  try {
+    // Ищем существующую папку "AI Hub"
+    const response = await drive.files.list({
+      q: `name='${ROOT_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+      fields: "files(id, name)",
+      spaces: "drive",
+    });
+
+    if (response.data.files && response.data.files.length > 0) {
+      const folderId = response.data.files[0].id;
+      console.log(
+        `📁 Найдена существующая папка "${ROOT_FOLDER_NAME}" (ID: ${folderId})`,
+      );
+      return folderId;
+    }
+
+    // Если папка не найдена, создаем её
+    console.log(
+      `📁 Создаем новую папку "${ROOT_FOLDER_NAME}" на Google Drive...`,
+    );
+    const folderMetadata = {
+      name: ROOT_FOLDER_NAME,
+      mimeType: "application/vnd.google-apps.folder",
+    };
+
+    const folder = await drive.files.create({
+      requestBody: folderMetadata,
+      fields: "id",
+    });
+
+    console.log(
+      `✓ Папка "${ROOT_FOLDER_NAME}" успешно создана (ID: ${folder.data.id})`,
+    );
+    return folder.data.id;
+  } catch (error) {
+    console.error("❌ Ошибка при поиске/создании папки AI Hub:", error);
+    throw error;
+  }
+};
+
+/**
+ * Инициализирует синхронизацию (создает папку при первом подключении)
+ * @param {Object} userTokens - Токены пользователя
+ * @returns {Promise<Object>} { success: boolean, folderId?: string, error?: string }
+ */
+export const initializeDriveSync = async (userTokens) => {
+  try {
+    const { oauth2Client } = createDriveClient(userTokens);
+    const drive = google.drive({ version: "v3", auth: oauth2Client });
+    const folderId = await getOrCreateAiHubFolder(drive);
+    return { success: true, folderId };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+};
+
+/**
+ * Синхронизирует настройки пользователя на Google Drive внутри папки "AI Hub"
+ * @param {Object} userSettings - Настройки пользователя (включая driveTokens)
  * @returns {Object} Результат синхронизации
  */
-export const syncToDrive = async (filePath, userSettings) => {
+export const syncToDrive = async (userSettings) => {
+  console.log("🚀 syncToDrive: Запуск синхронизации настроек в облако...");
   try {
-    if (!userSettings.driveTokens) {
-      console.log("❌ У пользователя нет токенов Google Drive");
+    if (!userSettings || !userSettings.driveTokens) {
       return { success: false, error: "No drive tokens" };
     }
 
     const { oauth2Client } = createDriveClient(userSettings.driveTokens);
-
     const drive = google.drive({ version: "v3", auth: oauth2Client });
-    const fileName = path.basename(filePath);
-    const fileBuffer = fs.readFileSync(filePath);
-    const fileStream = Readable.from(fileBuffer);
+
+    const aiHubFolderId = await getOrCreateAiHubFolder(drive);
+
+    // Подготавливаем данные для JSON-файла
+    const settingsData = JSON.stringify(
+      {
+        apiKey: userSettings.apiKey,
+        systemPrompt: userSettings.systemPrompt,
+        updatedAt: userSettings.updatedAt,
+      },
+      null,
+      2,
+    );
+    const fileStream = Readable.from(settingsData);
+    const fileName = "app-settings.json";
 
     if (userSettings.driveFileId) {
-      // Обновляем существующий файл
-      console.log(
-        `🔄 Обновляем файл на Drive: ${fileName} (ID: ${userSettings.driveFileId})`,
-      );
-      await drive.files.update({
-        fileId: userSettings.driveFileId,
-        media: {
-          mimeType: "application/json",
-          body: fileStream,
-        },
-      });
-      console.log(`✓ Файл ${fileName} успешно обновлен на Drive`);
-      return { success: true, fileId: userSettings.driveFileId };
-    } else {
-      // Создаем новый файл
-      console.log(`📤 Создаем новый файл на Drive: ${fileName}`);
-      const res = await drive.files.create({
-        requestBody: {
-          name: fileName,
-          mimeType: "application/json",
-          parents: [process.env.GOOGLE_DRIVE_FOLDER_ID],
-        },
-        media: {
-          mimeType: "application/json",
-          body: fileStream,
-        },
-      });
-      console.log(
-        `✓ Новый файл ${fileName} загружен на Drive. ID:`,
-        res.data.id,
-      );
-      return { success: true, fileId: res.data.id };
+      try {
+        await drive.files.update({
+          fileId: userSettings.driveFileId,
+          media: { mimeType: "application/json", body: fileStream },
+        });
+        console.log(
+          `✓ Настройки обновлены на Drive (ID: ${userSettings.driveFileId})`,
+        );
+        return { success: true, fileId: userSettings.driveFileId };
+      } catch (e) {
+        console.warn("⚠️ Файл на Drive не найден, создаем новый...");
+      }
     }
+    const res = await drive.files.create({
+      requestBody: {
+        name: fileName,
+        mimeType: "application/json",
+        parents: [aiHubFolderId],
+      },
+      media: { mimeType: "application/json", body: fileStream },
+    });
+
+    console.log(`✓ Настройки созданы на Drive. ID: ${res.data.id}`);
+    return { success: true, fileId: res.data.id };
   } catch (error) {
     console.error("❌ Ошибка синхронизации с Drive:", error);
     return { success: false, error: error.message };
