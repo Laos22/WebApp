@@ -7,127 +7,63 @@ import { Readable } from "stream";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DRIVE_AUTH_PATH = path.join(__dirname, "../../config/drive-auth.json");
-const DRIVE_FILE_ID_PATH = path.join(
-  __dirname,
-  "../../config/drive-file-id.json",
-);
-
 /**
- * Получить сохраненные токены из локального файла
+ * Создает OAuth2 клиент для конкретного пользователя
+ * @param {Object} tokens - Токены пользователя из БД
+ * @returns {Object} oauth2Client и credentials
  */
-export const getStoredTokens = () => {
-  try {
-    if (!fs.existsSync(DRIVE_AUTH_PATH)) {
-      return null;
-    }
-    const data = fs.readFileSync(DRIVE_AUTH_PATH, "utf8");
-    return JSON.parse(data);
-  } catch (e) {
-    console.error("Ошибка чтения токенов:", e);
-    return null;
+export const createDriveClient = (tokens) => {
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    `${process.env.SERVER_URL}/auth/callback`,
+  );
+
+  oauth2Client.setCredentials(tokens);
+
+  // Обновляем токен если нужно
+  if (tokens.expiry_date && new Date(tokens.expiry_date) < new Date()) {
+    const { credentials } = oauth2Client.refreshAccessToken();
+    return { oauth2Client, credentials };
   }
+
+  return { oauth2Client, credentials: tokens };
 };
 
 /**
- * Сохранить токены локально
- */
-export const saveTokens = (tokens) => {
-  try {
-    const dir = path.dirname(DRIVE_AUTH_PATH);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    fs.writeFileSync(DRIVE_AUTH_PATH, JSON.stringify(tokens, null, 2), "utf8");
-  } catch (e) {
-    console.error("Ошибка сохранения токенов:", e);
-    throw e;
-  }
-};
-
-/**
- * Получить сохраненный ID файла на Drive
- */
-export const getDriveFileId = () => {
-  try {
-    if (!fs.existsSync(DRIVE_FILE_ID_PATH)) return null;
-    const data = fs.readFileSync(DRIVE_FILE_ID_PATH, "utf8");
-    return JSON.parse(data).fileId;
-  } catch (e) {
-    return null;
-  }
-};
-
-/**
- * Сохранить ID файла на Drive
- */
-export const saveDriveFileId = (fileId) => {
-  try {
-    const dir = path.dirname(DRIVE_FILE_ID_PATH);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(DRIVE_FILE_ID_PATH, JSON.stringify({ fileId }), "utf8");
-  } catch (e) {
-    console.error("Ошибка сохранения file ID:", e);
-  }
-};
-
-/**
- * Инициализировать Google Drive клиент с refresh token
- */
-export const initDriveClient = (oauth2Client) => {
-  return google.drive({ version: "v3", auth: oauth2Client });
-};
-
-/**
- * Синхронизировать файл на Google Drive
+ * Синхронизирует файл на Google Drive для конкретного пользователя
  * @param {string} filePath - путь к локальному файлу
+ * @param {Object} userSettings - Настройки пользователя из БД
+ * @returns {Object} Результат синхронизации
  */
-export const syncToDrive = async (filePath) => {
+export const syncToDrive = async (filePath, userSettings) => {
   try {
-    const tokens = getStoredTokens();
-
-    if (!tokens) {
-      console.log("❌ Токены не найдены. Синхронизация пропущена.");
-      return null;
+    if (!userSettings.driveTokens) {
+      console.log("❌ У пользователя нет токенов Google Drive");
+      return { success: false, error: "No drive tokens" };
     }
 
-    const oauth2Client = new google.auth.OAuth2(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      `${process.env.SERVER_URL}/auth/callback`,
-    );
+    const { oauth2Client } = createDriveClient(userSettings.driveTokens);
 
-    oauth2Client.setCredentials(tokens);
-
-    // Проверяем, не протух ли access_token
-    if (tokens.expiry_date && new Date(tokens.expiry_date) < new Date()) {
-      console.log("🔄 Обновляем токен...");
-      const { credentials } = await oauth2Client.refreshAccessToken();
-      saveTokens(credentials);
-      oauth2Client.setCredentials(credentials);
-    }
-
-    const drive = initDriveClient(oauth2Client);
+    const drive = google.drive({ version: "v3", auth: oauth2Client });
     const fileName = path.basename(filePath);
     const fileBuffer = fs.readFileSync(filePath);
     const fileStream = Readable.from(fileBuffer);
 
-    const existingFileId = getDriveFileId();
-
-    if (existingFileId) {
+    if (userSettings.driveFileId) {
       // Обновляем существующий файл
       console.log(
-        `🔄 Обновляем файл на Drive: ${fileName} (ID: ${existingFileId})`,
+        `🔄 Обновляем файл на Drive: ${fileName} (ID: ${userSettings.driveFileId})`,
       );
       await drive.files.update({
-        fileId: existingFileId,
+        fileId: userSettings.driveFileId,
         media: {
           mimeType: "application/json",
           body: fileStream,
         },
       });
       console.log(`✓ Файл ${fileName} успешно обновлен на Drive`);
-      return existingFileId;
+      return { success: true, fileId: userSettings.driveFileId };
     } else {
       // Создаем новый файл
       console.log(`📤 Создаем новый файл на Drive: ${fileName}`);
@@ -146,36 +82,30 @@ export const syncToDrive = async (filePath) => {
         `✓ Новый файл ${fileName} загружен на Drive. ID:`,
         res.data.id,
       );
-      saveDriveFileId(res.data.id);
-      return res.data.id;
+      return { success: true, fileId: res.data.id };
     }
-  } catch (e) {
-    console.error("❌ Ошибка синхронизации с Drive:", e);
-    // Не бросаем исключение, чтобы приложение продолжало работать
+  } catch (error) {
+    console.error("❌ Ошибка синхронизации с Drive:", error);
+    return { success: false, error: error.message };
   }
 };
 
 /**
- * Скачать файл с Google Drive
+ * Скачивает файл с Google Drive
+ * @param {string} fileId - ID файла на Drive
+ * @param {Object} userSettings - Настройки пользователя
+ * @param {string} destPath - Путь для сохранения
  */
-export const downloadFromDrive = async (fileId, destPath) => {
+export const downloadFromDrive = async (fileId, userSettings, destPath) => {
   try {
-    const tokens = getStoredTokens();
-
-    if (!tokens) {
-      console.log("Токены не найдены. Загрузка пропущена.");
+    if (!userSettings.driveTokens) {
+      console.log("❌ У пользователя нет токенов Google Drive");
       return false;
     }
 
-    const oauth2Client = new google.auth.OAuth2(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      `${process.env.SERVER_URL}/auth/callback`,
-    );
+    const { oauth2Client } = createDriveClient(userSettings.driveTokens);
+    const drive = google.drive({ version: "v3", auth: oauth2Client });
 
-    oauth2Client.setCredentials(tokens);
-
-    const drive = initDriveClient(oauth2Client);
     const res = await drive.files.get(
       { fileId, alt: "media" },
       { responseType: "stream" },
@@ -190,8 +120,8 @@ export const downloadFromDrive = async (fileId, destPath) => {
         })
         .on("error", reject);
     });
-  } catch (e) {
-    console.error("Ошибка загрузки с Drive:", e);
+  } catch (error) {
+    console.error("Ошибка загрузки с Drive:", error);
     return false;
   }
 };
