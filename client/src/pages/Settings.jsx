@@ -1,7 +1,15 @@
 import React, { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
+import axios from "axios";
+import { useAuth } from "../context/AuthContext";
+
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || "http://localhost:5001";
+
+// Настраиваем axios для передачи куки
+axios.defaults.withCredentials = true;
 
 export default function Settings() {
+  const { user, logout } = useAuth();
   const [apiKey, setApiKey] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -10,48 +18,32 @@ export default function Settings() {
   const [driveStatus, setDriveStatus] = useState(null);
   const [driveLoading, setDriveLoading] = useState(false);
 
-  const SERVER_URL = import.meta.env.VITE_SERVER_URL || "http://localhost:5001";
-
   // Загрузить настройки при монтировании компонента
   useEffect(() => {
-    fetchSettings();
-    checkDriveStatus();
-  }, []);
+    if (user) {
+      fetchSettings();
+    }
+  }, [user]);
 
   const fetchSettings = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch(`${SERVER_URL}/api/settings`);
-      if (response.ok) {
-        const data = await response.json();
-        setApiKey(data.apiKey || "");
-        setSystemPrompt(data.systemPrompt || "");
-      } else {
-        console.error("Ошибка загрузки настроек");
-      }
-    } catch (e) {
-      console.error("Ошибка подключения к серверу:", e);
-      // Fallback на localStorage для локальной разработки
-      setApiKey(localStorage.getItem("google_ai_api_key") || "");
+      const response = await axios.get(`${SERVER_URL}/api/settings`);
+      setApiKey(response.data.apiKey || "");
       setSystemPrompt(
-        localStorage.getItem("ai_system_prompt") ||
-          "Ты — профессиональный YouTube-сценарист. Твоя задача — создавать виральные сценарии, которые удерживают внимание зрителя.",
+        response.data.systemPrompt ||
+          "Ты — профессиональный YouTube-сценарист.",
       );
+      setDriveStatus({
+        connected: response.data.driveConnected || false,
+        hasRefreshToken: !!response.data.driveFileId,
+      });
+    } catch (e) {
+      console.error("Ошибка загрузки настроек:", e);
+      setSavedMessage("✗ Ошибка загрузки настроек");
+      setTimeout(() => setSavedMessage(""), 3000);
     } finally {
       setIsLoading(false);
-    }
-  };
-
-  const checkDriveStatus = async () => {
-    try {
-      const response = await fetch(`${SERVER_URL}/auth/status`);
-      if (response.ok) {
-        const data = await response.json();
-        setDriveStatus(data);
-      }
-    } catch (e) {
-      console.error("Ошибка проверки статуса Drive:", e);
-      setDriveStatus(null);
     }
   };
 
@@ -60,28 +52,18 @@ export default function Settings() {
     setIsSaving(true);
 
     try {
-      const response = await fetch(`${SERVER_URL}/api/settings`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey, systemPrompt }),
+      const response = await axios.post(`${SERVER_URL}/api/settings`, {
+        apiKey,
+        systemPrompt,
       });
 
-      if (response.ok) {
-        setSavedMessage("✓ Настройки успешно сохранены и синхронизированы!");
-        // Также сохраняем в localStorage для резервной копии
-        localStorage.setItem("google_ai_api_key", apiKey);
-        localStorage.setItem("ai_system_prompt", systemPrompt);
-        setTimeout(() => setSavedMessage(""), 3000);
-      } else {
-        setSavedMessage("✗ Ошибка при сохранении");
+      if (response.status === 200) {
+        setSavedMessage("✓ Настройки успешно сохранены!");
         setTimeout(() => setSavedMessage(""), 3000);
       }
     } catch (e) {
       console.error("Ошибка сохранения:", e);
-      setSavedMessage("✗ Ошибка подключения к серверу");
-      // Fallback на localStorage
-      localStorage.setItem("google_ai_api_key", apiKey);
-      localStorage.setItem("ai_system_prompt", systemPrompt);
+      setSavedMessage("✗ Ошибка при сохранении");
       setTimeout(() => setSavedMessage(""), 3000);
     } finally {
       setIsSaving(false);
@@ -92,6 +74,21 @@ export default function Settings() {
     setDriveLoading(true);
     window.location.href = `${SERVER_URL}/auth/google`;
   };
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-white p-6 md:p-12 flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-slate-400 mb-4">
+            Требуется авторизация. Пожалуйста, залогинитесь.
+          </p>
+          <Link to="/" className="text-purple-400 hover:text-purple-300">
+            Вернуться на главную
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   if (isLoading) {
     return (
@@ -120,9 +117,15 @@ export default function Settings() {
               Настройки ⚙️
             </h1>
             <p className="text-slate-400 text-sm mt-1">
-              Управляйте API-ключами, системным промптом и интеграциями.
+              {user?.displayName && `Пользователь: ${user.displayName}`}
             </p>
           </div>
+          <button
+            onClick={logout}
+            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-sm font-medium transition-all"
+          >
+            Выйти
+          </button>
         </div>
 
         {/* Сообщение об успехе */}

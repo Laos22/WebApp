@@ -1,8 +1,5 @@
 import express from "express";
 import passport from "passport";
-import { google } from "googleapis";
-import { saveTokens, getStoredTokens } from "../services/driveSync.js";
-import Settings from "../models/Settings.js";
 
 const router = express.Router();
 
@@ -17,6 +14,7 @@ router.get(
     prompt: "consent",
   }),
 );
+
 /**
  * Callback от Google
  */
@@ -26,10 +24,10 @@ router.get(
     failureRedirect: `${process.env.CLIENT_URL}/login?error=true`,
   }),
   (req, res) => {
-    // Успешная авторизация
     res.redirect(`${process.env.CLIENT_URL}/?auth=success`);
   },
 );
+
 /**
  * Выход из системы
  */

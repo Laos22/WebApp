@@ -3,16 +3,14 @@ import express from "express";
 import cors from "cors";
 import session from "express-session";
 import passport from "passport";
-import { GoogleStrategy } from "passport-google-oauth20";
+import passportGoogle from "passport-google-oauth20";
 import { GoogleGenAI } from "@google/genai";
 import connectDB from "./src/config/database.js";
 import authRoutes from "./src/routes/authRoutes.js";
 import configRoutes from "./src/routes/configRoutes.js";
 import User from "./src/models/User.js";
-import Settings from "./src/models/Settings.js";
-import { encryptData, decryptData } from "./src/services/encryptionService.js";
 
-dotenv.config();
+const GoogleStrategy = passportGoogle.Strategy;
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -54,23 +52,26 @@ passport.use(
       clientSecret: process.env.GOOGLE_CLIENT_SECRET,
       callbackURL: `${process.env.SERVER_URL}/auth/callback`,
     },
-    (accessToken, refreshToken, profile, done) => {
-      User.findOne({ googleId: profile.id })
-        .then((existingUser) => {
-          if (existingUser) {
-            return done(null, existingUser);
-          }
+    async (accessToken, refreshToken, profile, done) => {
+      try {
+        let user = await User.findOne({ googleId: profile.id });
 
-          const newUser = new User({
-            googleId: profile.id,
-            email: profile.emails[0].value,
-            displayName: profile.displayName,
-            picture: profile.photos[0]?.value,
-          });
+        if (user) {
+          return done(null, user);
+        }
 
-          return newUser.save().then((user) => done(null, user));
-        })
-        .catch((err) => done(err, null));
+        user = new User({
+          googleId: profile.id,
+          email: profile.emails[0].value,
+          displayName: profile.displayName,
+          picture: profile.photos[0]?.value,
+        });
+
+        await user.save();
+        done(null, user);
+      } catch (err) {
+        done(err, null);
+      }
     },
   ),
 );
@@ -80,10 +81,13 @@ passport.serializeUser((user, done) => {
   done(null, user.id);
 });
 
-passport.deserializeUser((id, done) => {
-  User.findById(id)
-    .then((user) => done(null, user))
-    .catch((err) => done(err, null));
+passport.deserializeUser(async (id, done) => {
+  try {
+    const user = await User.findById(id);
+    done(null, user);
+  } catch (err) {
+    done(err, null);
+  }
 });
 
 // Маршруты
