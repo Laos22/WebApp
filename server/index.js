@@ -156,4 +156,8 @@ app.get("/api/health", (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);
+  console.log("🔐 Google OAuth Config:");
+  console.log(`   CLIENT_ID: ${process.env.GOOGLE_CLIENT_ID ? "✓ Set" : "✗ Missing"}`);
+  console.log(`   CLIENT_SECRET: ${process.env.GOOGLE_CLIENT_SECRET ? "✓ Set" : "✗ Missing"}`);
+  console.log(`   CALLBACK_URL: ${process.env.SERVER_URL}/auth/callback`);
 });

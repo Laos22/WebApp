@@ -9,7 +9,7 @@ const router = express.Router();
 router.get(
   "/google",
   passport.authenticate("google", {
-    scope: ["https://www.googleapis.com/auth/drive.file"],
+    scope: ["profile", "email", "https://www.googleapis.com/auth/drive.file"],
     access_type: "offline",
     prompt: "consent",
   }),
@@ -31,9 +31,13 @@ router.get(
 /**
  * Выход из системы
  */
-router.get("/logout", (req, res) => {
-  req.logout(() => {
-    res.redirect(process.env.CLIENT_URL || "http://localhost:5173");
+router.get("/logout", (req, res, next) => {
+  req.logout((err) => {
+    if (err) return next(err);
+    req.session.destroy((err) => {
+      res.clearCookie("connect.sid");
+      res.json({ success: true });
+    });
   });
 });
 

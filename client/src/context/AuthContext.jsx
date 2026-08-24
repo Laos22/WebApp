@@ -39,9 +39,15 @@ export function AuthProvider({ children }) {
     try {
       await axios.get("http://localhost:5001/auth/logout");
       setUser(null);
-      window.location.href = "/";
+      // Перенаправляем на главную с задержкой, чтобы сессия успела очиститься
+      setTimeout(() => {
+        window.location.href = "/";
+      }, 500);
     } catch (error) {
       console.error("Ошибка выхода:", error);
+      // Даже при ошибке пытаемся выйти
+      setUser(null);
+      window.location.href = "/";
     }
   };
 
