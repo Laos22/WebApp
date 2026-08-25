@@ -1,5 +1,4 @@
 // client/src/pages/CreateProject.jsx
-// ... existing imports ...
 import React, { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useGenerateTopic } from "../hooks/useGenerateTopic";
@@ -8,9 +7,13 @@ const SERVER_URL = import.meta.env.VITE_SERVER_URL;
 
 export default function CreateProject() {
   const navigate = useNavigate();
-  const { generateTopic, isLoading, error, topic, setTopic } = useGenerateTopic();
+  const { generateTopic, isLoading, error, topics, setTopics } = useGenerateTopic();
   const [systemPrompt, setSystemPrompt] = useState("");
-  const [keywords, setKeywords] = useState(""); // 👈 Стейт для ключевых слов
+  const [keywords, setKeywords] = useState("");
+  const [creatingProject, setCreatingProject] = useState(false);
+
+  // 👈 Храним редактируемые названия для каждой темы
+  const [editedTitles, setEditedTitles] = useState({});
 
   useEffect(() => {
     fetchSystemPrompt();
@@ -32,7 +35,63 @@ export default function CreateProject() {
   };
 
   const handleGenerateTopic = async () => {
-    await generateTopic(keywords); // 👈 Передаем ключевые слова в хук
+    await generateTopic(keywords);
+    // Инициализируем редактируемые названия после генерации
+    setEditedTitles({});
+  };
+
+  // 👈 Обработчик изменения названия темы
+  const handleTitleChange = (index, newTitle) => {
+    setEditedTitles(prev => ({
+      ...prev,
+      [index]: newTitle
+    }));
+  };
+
+  // 👈 Обработчик создания проекта из темы
+  const handleCreateProject = async (topicItem, index) => {
+    setCreatingProject(true);
+    
+    // Используем отредактированное название или исходное
+    const finalShortTitle = editedTitles[index] || topicItem.short_title;
+    
+    try {
+      const response = await fetch(`${SERVER_URL}/api/projects/create-from-topic`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          topic: topicItem.full_topic,
+          description: topicItem.full_description,
+          short_title: finalShortTitle,
+          keywords: keywords,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Ошибка при создании проекта");
+      }
+
+      alert(
+        `✅ Проект успешно создан!\n\n` +
+        `📁 Название: ${data.shortTitle}\n` +
+        `📁 Папка: ${data.folderName}\n\n` +
+        `💡 Теперь вы можете писать сценарий для этой темы.`
+      );
+      
+      // Временная заглушка - позже будет переход на /editor/:projectId
+      // navigate(`/editor/${data.projectId}`);
+    } catch (err) {
+      const errorMessage = err.message || "Неизвестная ошибка";
+      alert(`❌ Ошибка: ${errorMessage}`);
+      console.error("Ошибка:", err);
+    } finally {
+      setCreatingProject(false);
+    }
   };
 
   return (
@@ -57,13 +116,11 @@ export default function CreateProject() {
           </div>
         )}
 
-        {/* 👈 Блок ввода ключевых слов */}
         <div className="space-y-2">
           <div className="flex justify-between items-center">
             <label className="text-sm font-medium text-slate-300">
               🔑 Ключевые слова или контекст:
             </label>
-            {/* Заглушка под будущую интеграцию с YouTube API */}
             <button
               type="button"
               disabled
@@ -96,10 +153,70 @@ export default function CreateProject() {
           </div>
         )}
 
-        {topic && (
-          <div className="p-4 bg-emerald-900/20 border border-emerald-500/30 rounded-xl text-sm text-slate-200 whitespace-pre-wrap">
-            <p className="font-medium text-emerald-300 mb-2">✅ Сгенерированная тема:</p>
-            <p>{topic}</p>
+        {topics.length > 0 && (
+          <div className="space-y-4">
+            <h3 className="text-sm font-medium text-slate-300 mb-2">
+              ✅ Сгенерированные темы (выберите подходящую):
+            </h3>
+            
+            <div className="grid gap-4">
+              {topics.map((topicItem, index) => (
+                <div
+                  key={index}
+                  className="flex flex-col bg-slate-950 rounded-xl border border-slate-800 overflow-hidden hover:border-purple-500 transition-colors"
+                >
+                  <div className="p-4 border-b border-slate-800">
+                    <div className="flex items-start gap-3">
+                      <span className="flex-shrink-0 flex items-center justify-center w-8 h-8 rounded-full bg-emerald-500/20 text-emerald-400 font-bold text-sm">
+                        {index + 1}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-semibold text-white text-base leading-tight">
+                          {topicItem.full_topic}
+                        </h4>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex-1 p-4 max-h-96 overflow-y-auto">
+                    <p className="text-sm text-slate-300 whitespace-pre-wrap break-words">
+                      {topicItem.full_description}
+                    </p>
+                  </div>
+
+                  {/* 👈 Поле для редактирования короткого названия */}
+                  <div className="p-4 bg-slate-900/50 border-t border-slate-800 space-y-3">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-400 mb-1">
+                        📝 Короткая назва проекту (для папки та сайту):
+                      </label>
+                      <input
+                        type="text"
+                        value={editedTitles[index] ?? topicItem.short_title}
+                        onChange={(e) => handleTitleChange(index, e.target.value)}
+                        placeholder="Введіть коротку назву..."
+                        maxLength={50}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white text-sm focus:outline-none focus:border-emerald-500 transition-colors"
+                      />
+                      <p className="text-xs text-slate-500 mt-1">
+                        Максимум 4 слова, українською. Поточна: {editedTitles[index] ?? topicItem.short_title}
+                      </p>
+                    </div>
+
+                    <button
+                      onClick={() => handleCreateProject(topicItem, index)}
+                      disabled={creatingProject}
+                      className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-700 disabled:cursor-not-allowed text-white py-3 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2 touch-manipulation"
+                    >
+                      <span>📁</span>
+                      <span>
+                        {creatingProject ? "Створення..." : "Створити проект"}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>

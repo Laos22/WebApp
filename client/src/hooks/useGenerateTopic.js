@@ -6,7 +6,7 @@ const API_URL = import.meta.env.VITE_SERVER_URL;
 export function useGenerateTopic() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [topic, setTopic] = useState(null);
+  const [topics, setTopics] = useState([]); // 👈 Массив тем вместо одной
 
   const generateTopic = async (keywords = "") => {
     setIsLoading(true);
@@ -19,7 +19,7 @@ export function useGenerateTopic() {
           "Content-Type": "application/json",
         },
         credentials: "include",
-        body: JSON.stringify({ keywords }), // Передаем ключевые слова
+        body: JSON.stringify({ keywords }),
       });
 
       const data = await response.json();
@@ -28,7 +28,8 @@ export function useGenerateTopic() {
         throw new Error(data.error || "Ошибка при генерации темы");
       }
 
-      setTopic(data.topic);
+      // data.topic теперь является массивом объектов
+      setTopics(data.topic);
       return data.topic;
     } catch (err) {
       const errorMessage = err.message || "Неизвестная ошибка";
@@ -39,5 +40,5 @@ export function useGenerateTopic() {
     }
   };
 
-  return { generateTopic, isLoading, error, topic, setTopic };
+  return { generateTopic, isLoading, error, topics, setTopics };
 }

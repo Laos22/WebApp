@@ -1,3 +1,4 @@
+// server/src/models/Project.js
 import mongoose from 'mongoose';
 
 const projectSchema = new mongoose.Schema({
@@ -10,7 +11,20 @@ const projectSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  // 👈 ДОДАНО: Коротка назва проекту
+  shortTitle: {
+    type: String,
+    default: ""
+  },
   description: {
+    type: String,
+    default: ""
+  },
+  videoTopic: {
+    type: String,
+    default: ""
+  },
+  videoTopicDescription: {
     type: String,
     default: ""
   },
