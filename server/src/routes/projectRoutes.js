@@ -8,10 +8,9 @@ const router = express.Router();
 
 router.post("/generate-topic", ensureAuthenticated, async (req, res) => {
   try {
-    console.log("🔍 [DEBUG] Запрос получен, пользователь:", req.user?._id);
-    
+    const { keywords } = req.body; // 👈 Принимаем ключевые слова
+
     const settings = await Settings.findOne({ userId: req.user._id });
-    console.log("🔍 [DEBUG] Settings:", settings);
 
     if (!settings?.systemPrompt) {
       return res.status(400).json({
@@ -19,8 +18,8 @@ router.post("/generate-topic", ensureAuthenticated, async (req, res) => {
       });
     }
 
-    console.log("🔍 [DEBUG] Отправляем systemPrompt в Gemini...");
-    const generatedTopic = await generateVideoTopic(settings.systemPrompt);
+    // Передаем и системный промпт, и ключевые слова
+    const generatedTopic = await generateVideoTopic(settings.systemPrompt, keywords);
 
     res.json({
       success: true,

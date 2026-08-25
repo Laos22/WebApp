@@ -8,7 +8,7 @@ export function useGenerateTopic() {
   const [error, setError] = useState(null);
   const [topic, setTopic] = useState(null);
 
-  const generateTopic = async () => {
+  const generateTopic = async (keywords = "") => {
     setIsLoading(true);
     setError(null);
 
@@ -18,7 +18,8 @@ export function useGenerateTopic() {
         headers: {
           "Content-Type": "application/json",
         },
-        credentials: "include", // Отправляем куки с sessionId
+        credentials: "include",
+        body: JSON.stringify({ keywords }), // Передаем ключевые слова
       });
 
       const data = await response.json();
