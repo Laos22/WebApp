@@ -5,15 +5,12 @@ const API_BASE_URL = "http://localhost:5001/api";
  * @param {Object} payload - Данные запроса (prompt, type, style и т.д.)
  */
 export async function generateContent(payload) {
-  // Получаем личный API-ключ пользователя из localStorage (если он есть)
-  const userApiKey = localStorage.getItem("google_ai_api_key") || "";
 
   try {
     const response = await fetch(`${API_BASE_URL}/generate`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(userApiKey ? { "x-goog-api-key": userApiKey } : {}),
       },
       body: JSON.stringify(payload),
     });
