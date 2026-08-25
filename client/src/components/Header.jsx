@@ -8,6 +8,12 @@ export default function Header() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const navigate = useNavigate();
 
+  const navLinks = [
+    { to: "/", label: "Проекты" },
+    { to: "/projects/new", label: "Новый проект" },
+    { to: "/settings", label: "Настройки" },
+  ];
+
   const handleGoogleLoginMock = () => {
     const mockGoogleUser = {
       name: "Google User",
@@ -18,12 +24,6 @@ export default function Header() {
     login(mockGoogleUser);
     setIsLoginModalOpen(false);
   };
-
-  const navLinks = [
-    { to: "/", label: "Проекты" },
-    { to: "/projects/new", label: "Новый проект" },
-    { to: "/settings", label: "Настройки" },
-  ];
 
   return (
     <header className="h-16 border-b border-slate-800 bg-slate-950/80 backdrop-blur-md sticky top-0 z-40 px-4 lg:px-8 flex items-center justify-between">
@@ -207,4 +207,3 @@ export default function Header() {
     </header>
   );
 }
-
