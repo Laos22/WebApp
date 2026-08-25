@@ -48,28 +48,7 @@ router.post("/create-from-topic", ensureAuthenticated, async (req, res) => {
       });
     }
 
-    // 👈 Используем short_title из темы (или topic, если short_title пустой)
-    const projectShortTitle = short_title || topic.split(' ').slice(0, 4).join(' ');
 
-    // Генерируем уникальное имя папки на основе short_title
-    const generateUniqueFolderName = (title) => {
-      // Очищаем название: оставляем только буквы, цифры, пробелы и дефисы
-      let cleanTitle = title
-        .toLowerCase()
-        .replace(/[!?@#$%^&*()+=,.;:"'""']/g, '') // Удаляем пунктуацию
-        .replace(/[^\w\sа-яєїії'-]+/gi, '') // Оставляем только буквы, цифры, пробелы, дефисы
-        .trim()
-        .replace(/\s+/g, '_') // Заменяем пробелы на подчеркивания
-        .substring(0, 30); // Ограничеваем длину
-
-      // Добавляем timestamp и случайный суффикс для уникальности
-      const timestamp = Date.now();
-      const randomSuffix = Math.random().toString(36).substring(2, 5);
-      
-      return `${cleanTitle}_${timestamp.toString().slice(-6)}_${randomSuffix}`;
-    };
-
-    const folderName = generateUniqueFolderName(projectShortTitle);
 
     // Создаем проект в БД
     const project = await Project.create({
@@ -77,14 +56,14 @@ router.post("/create-from-topic", ensureAuthenticated, async (req, res) => {
       title: topic, // Название проекта = полное название темы
       videoTopic: topic,
       videoTopicDescription: description,
-      shortTitle: projectShortTitle, // 👈 Сохраняем короткое название
-      folderName: folderName,
+      shortTitle: short_title,
       keywords: keywords || "",
       description: "",
     });
 
-    // Создаем папку на диске
-    const uploadsDir = path.join(process.cwd(), "uploads", folderName);
+    // Создаем папку на диске в папке server/uploads в режиме разработки
+    // для продакшена нужно использовать синхронизацию с гугл драйв через сервис driveSync.js
+    const uploadsDir = path.join(process.cwd(), "uploads", short_title);
     if (!fs.existsSync(uploadsDir)) {
       fs.mkdirSync(uploadsDir, { recursive: true });
     }
@@ -92,8 +71,7 @@ router.post("/create-from-topic", ensureAuthenticated, async (req, res) => {
     res.json({
       success: true,
       projectId: project._id,
-      folderName: folderName,
-      shortTitle: projectShortTitle,
+      shortTitle: short_title,
       message: "Проект успешно создан",
     });
   } catch (error) {

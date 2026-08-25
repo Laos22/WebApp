@@ -11,11 +11,6 @@ const projectSchema = new mongoose.Schema({
     type: String,
     required: true
   },
-  // 👈 ДОДАНО: Коротка назва проекту
-  shortTitle: {
-    type: String,
-    default: ""
-  },
   description: {
     type: String,
     default: ""
@@ -28,7 +23,7 @@ const projectSchema = new mongoose.Schema({
     type: String,
     default: ""
   },
-  folderName: {
+  shortTitle: {
     type: String,
     default: ""
   },
