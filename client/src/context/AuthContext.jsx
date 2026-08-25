@@ -14,6 +14,16 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   const checkAuth = async () => {
+    // Режим разработки: обходим проверку на сервере
+    if (import.meta.env.VITE_BYPASS_AUTH === "true") {
+      setUser({
+        _id: "dev-user-id",
+        email: "dev@local.host",
+        name: "Developer",
+      });
+      setLoading(false);
+      return;
+    }
     try {
       const response = await axios.get(`${API_URL}/auth/status`);
       if (response.data.authenticated) {
@@ -45,19 +55,18 @@ export function AuthProvider({ children }) {
   };
 
   const logout = async () => {
-  try {
-    await axios.post(`${API_URL}/auth/logout`);
-    setUser(null);
-    setTimeout(() => {
+    try {
+      await axios.post(`${API_URL}/auth/logout`);
+      setUser(null);
+      setTimeout(() => {
+        window.location.href = "/";
+      }, 500);
+    } catch (error) {
+      console.error("Ошибка выхода:", error);
+      setUser(null);
       window.location.href = "/";
-    }, 500);
-  } catch (error) {
-    console.error("Ошибка выхода:", error);
-    setUser(null);
-    window.location.href = "/";
-  }
-};
-
+    }
+  };
   return (
     <AuthContext.Provider value={{ user, login, logout, loading, checkAuth }}>
       {!loading && children}

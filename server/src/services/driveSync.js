@@ -100,12 +100,17 @@ export const initializeDriveSync = async (userTokens) => {
  * @returns {Object} Результат синхронизации
  */
 export const syncToDrive = async (userSettings) => {
+  // Добавляем проверку режима разработки
+  if (process.env.BYPASS_AUTH === "true") {
+    console.log("🛠 [Dev Mode] Пропускаем реальную синхронизацию с Drive");
+    return { success: true, bypassed: true };
+  }
+
   console.log("🚀 syncToDrive: Запуск синхронизации настроек в облако...");
   try {
     if (!userSettings || !userSettings.driveTokens) {
       return { success: false, error: "No drive tokens" };
     }
-
     const { oauth2Client } = createDriveClient(userSettings.driveTokens);
     const drive = google.drive({ version: "v3", auth: oauth2Client });
 
@@ -162,6 +167,12 @@ export const syncToDrive = async (userSettings) => {
  * @param {string} destPath - Путь для сохранения
  */
 export const downloadFromDrive = async (fileId, userSettings, destPath) => {
+  // Добавляем проверку режима разработки
+  if (process.env.BYPASS_AUTH === "true") {
+    console.log("🛠 [Dev Mode] Пропускаем скачивание с Drive");
+    return true;
+  }
+
   try {
     if (!userSettings.driveTokens) {
       console.log("❌ У пользователя нет токенов Google Drive");
