@@ -71,11 +71,7 @@ export default function Settings() {
     }
   };
 
-  const handleConnectGoogleDrive = () => {
-    console.log("🔵 Кнопка нажата! Пытаемся перейти на:", `${SERVER_URL}/auth/google`);
-    setDriveLoading(true);
-    window.location.href = `${SERVER_URL}/auth/google`;
-  };
+ 
 
   if (!user) {
     return (
@@ -118,16 +114,7 @@ export default function Settings() {
             <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight bg-gradient-to-r from-white to-purple-300 bg-clip-text text-transparent">
               Настройки ⚙️
             </h1>
-            <p className="text-slate-400 text-sm mt-1">
-              {user?.displayName && `Пользователь: ${user.displayName}`}
-            </p>
           </div>
-          <button
-            onClick={logout}
-            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-sm font-medium transition-all"
-          >
-            Выйти
-          </button>
         </div>
 
         {/* Сообщение об успехе */}
@@ -147,26 +134,7 @@ export default function Settings() {
           onSubmit={handleSaveSettings}
           className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 md:p-8 shadow-2xl space-y-8"
         >
-          {/* Блок: AI Engine */}
-          <section className="space-y-4 pb-6 border-b border-slate-800">
-            <h2 className="text-xl font-bold text-white">🤖 AI Engine</h2>
-            <div>
-              <label className="block text-sm font-medium text-slate-300 mb-2">
-                API Key для генерации (Gemini / OpenAI)
-              </label>
-              <p className="text-xs text-slate-500 mb-3">
-                Ключ отправляется на сервер и сохраняется безопасно. Оставьте
-                пустым, чтобы использовать серверный ключ.
-              </p>
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="sk-... или AIza..."
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white placeholder-slate-600 focus:outline-none focus:border-purple-500 transition-all font-mono text-sm"
-              />
-            </div>
-          </section>
+          
 
           {/* Блок: Системный промпт */}
           <section className="space-y-4 pb-6 border-b border-slate-800">
@@ -189,50 +157,7 @@ export default function Settings() {
             </p>
           </section>
 
-          {/* Блок: Google Drive синхронизация */}
-          <section className="space-y-4 pb-6 border-b border-slate-800">
-            <h2 className="text-xl font-bold text-white">
-              ☁️ Google Drive синхронизация
-            </h2>
-            <p className="text-xs text-slate-400 mb-4">
-              Подключите Google Drive для автоматической синхронизации вашей
-              конфигурации.
-            </p>
-
-            {driveStatus?.connected ? (
-              <div className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-xl flex items-center justify-between">
-                <div className="flex items-center space-x-3">
-                  <span className="text-2xl">✓</span>
-                  <div>
-                    <p className="text-emerald-400 font-medium">
-                      Google Drive подключен
-                    </p>
-                    <p className="text-xs text-emerald-300/70">
-                      Конфигурация автоматически синхронизируется
-                    </p>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={handleConnectGoogleDrive}
-                disabled={driveLoading}
-                className="w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-500 hover:to-blue-600 disabled:from-slate-700 disabled:to-slate-700 text-white font-semibold rounded-xl transition-all flex items-center justify-center space-x-2"
-              >
-                <svg
-                  className="w-5 h-5"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                >
-                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2m0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8m3.5-9c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5m-7 0c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11m3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z" />
-                </svg>
-                <span>
-                  {driveLoading ? "Подключение..." : "Подключить Google Drive"}
-                </span>
-              </button>
-            )}
-          </section>
+          
 
           {/* Кнопка сохранения */}
           <button
