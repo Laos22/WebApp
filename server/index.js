@@ -10,6 +10,7 @@ import mongoose from "mongoose";
 import connectDB from "./src/config/database.js";
 import authRoutes from "./src/routes/authRoutes.js";
 import configRoutes from "./src/routes/configRoutes.js";
+import projectRoutes from "./src/routes/projectRoutes.js";
 import User from "./src/models/User.js";
 import Settings from "./src/models/Settings.js";
 
@@ -140,6 +141,7 @@ passport.deserializeUser(async (id, done) => {
 // Маршруты
 app.use("/auth", authRoutes);
 app.use("/api/settings", configRoutes);
+app.use("/api/projects", projectRoutes);
 
 // Эндпоинт генерации контента
 app.post("/api/generate", async (req, res) => {

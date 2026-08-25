@@ -1,72 +1,37 @@
+// client/src/pages/CreateProject.jsx
 import React, { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
+import { useGenerateTopic } from "../hooks/useGenerateTopic";
+
+const SERVER_URL = import.meta.env.VITE_SERVER_URL;
 
 export default function CreateProject() {
   const navigate = useNavigate();
-  const [method, setMethod] = useState("manual");
-  const [prompt, setPrompt] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [generatedOptions, setGeneratedOptions] = useState([]);
-  const [selectedOption, setSelectedOption] = useState(null);
+  const { generateTopic, isLoading, error, topic, setTopic } = useGenerateTopic();
   const [systemPrompt, setSystemPrompt] = useState("");
 
-  const SERVER_URL = import.meta.env.VITE_SERVER_URL;
-
-  // Загрузить системный промпт при монтировании
+  // Загружаем системный промпт при монтировании
   useEffect(() => {
     fetchSystemPrompt();
   }, []);
+
   const fetchSystemPrompt = async () => {
     try {
-      const response = await fetch(`${SERVER_URL}/api/settings/prompt`);
+      const response = await fetch(`${SERVER_URL}/api/settings/prompt`, {
+        credentials: "include",
+      });
+
       if (response.ok) {
         const data = await response.json();
         setSystemPrompt(data.systemPrompt);
       }
-    } catch (e) {
-      console.error("Ошибка загрузки системного промпта:", e);
-      // Fallback
-      setSystemPrompt(
-        localStorage.getItem("ai_system_prompt") ||
-          "Ты — профессиональный YouTube-сценарист.",
-      );
+    } catch (err) {
+      console.error("Ошибка загрузки системного промпта:", err);
     }
   };
 
-  const handleGenerate = async () => {
-    if (method === "manual" && !prompt.trim()) return;
-
-    setIsLoading(true);
-
-    try {
-      // TODO: Здесь будет реальный запрос к API для генерации вариантов
-      // Пока используем имитацию
-      setTimeout(() => {
-        setGeneratedOptions([
-          {
-            id: 1,
-            title: "Тайны квантовой физики в Shorts",
-            description:
-              "Увлекательное объяснение основ квантовой механики за 60 секунд.",
-          },
-          {
-            id: 2,
-            title: "Почему AI изменит ваш рабочий стол",
-            description:
-              "Разбор инструментов, которые ускорят вашу работу в 10 раз.",
-          },
-          {
-            id: 3,
-            title: "История программирования: от перфокарт до GPT",
-            description: "Краткий экскурс в эволюцию IT.",
-          },
-        ]);
-        setIsLoading(false);
-      }, 1500);
-    } catch (e) {
-      console.error("Ошибка генерации:", e);
-      setIsLoading(false);
-    }
+  const handleGenerateTopic = async () => {
+    await generateTopic();
   };
 
   return (
@@ -82,7 +47,7 @@ export default function CreateProject() {
       </div>
 
       <div className="bg-slate-900 p-6 rounded-2xl border border-slate-800 shadow-xl space-y-6">
-        {/* Информационный блок */}
+        {/* Информационный блок с системным промптом */}
         {systemPrompt && (
           <div className="p-4 bg-purple-900/20 border border-purple-500/30 rounded-xl text-sm text-slate-300">
             <p className="font-medium text-purple-300 mb-1">
@@ -92,73 +57,27 @@ export default function CreateProject() {
           </div>
         )}
 
-        {/* Переключатель методов */}
-        <div className="flex p-1 bg-slate-950 border border-slate-800 rounded-xl">
-          <button
-            onClick={() => setMethod("manual")}
-            className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${method === "manual" ? "bg-purple-600 text-white" : "text-slate-400 hover:text-white"}`}
-          >
-            Своя идея
-          </button>
-          <button
-            onClick={() => setMethod("trends")}
-            className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${method === "trends" ? "bg-purple-600 text-white" : "text-slate-400 hover:text-white"}`}
-          >
-            Анализ трендов
-          </button>
-        </div>
+        {/* Кнопка генерации */}
+        <button
+          onClick={handleGenerateTopic}
+          disabled={isLoading}
+          className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-slate-700 text-white py-3 rounded-xl font-semibold transition-all"
+        >
+          {isLoading ? "Генерируем тему... ⏳" : "🎬 Генерировать тему видео"}
+        </button>
 
-        {method === "manual" ? (
-          <>
-            <textarea
-              className="w-full h-32 p-4 bg-slate-950 border border-slate-700 rounded-xl text-white outline-none focus:border-purple-500 transition-all"
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              placeholder="Опишите вашу идею..."
-            />
-            <button
-              onClick={handleGenerate}
-              disabled={isLoading || !prompt.trim()}
-              className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-slate-700 text-white py-3 rounded-xl font-semibold transition-all"
-            >
-              {isLoading ? "Генерация..." : "Сгенерировать структуру"}
-            </button>
-          </>
-        ) : (
-          <button
-            onClick={handleGenerate}
-            disabled={isLoading}
-            className="w-full py-4 border-2 border-dashed border-slate-700 rounded-xl text-slate-400 hover:border-purple-500 hover:text-purple-400 transition-all"
-          >
-            {isLoading ? "Анализируем YouTube..." : "Начать анализ трендов"}
-          </button>
+        {/* Вывод ошибки */}
+        {error && (
+          <div className="p-4 bg-red-900/20 border border-red-500/30 rounded-xl text-red-300 text-sm">
+            ❌ {error}
+          </div>
         )}
 
-        {/* Список вариантов */}
-        {generatedOptions.length > 0 && (
-          <div className="space-y-4 pt-4 border-t border-slate-800 animate-fadeIn">
-            <h2 className="text-lg font-semibold text-white">
-              Выберите вариант:
-            </h2>
-            {generatedOptions.map((opt) => (
-              <div
-                key={opt.id}
-                onClick={() => setSelectedOption(opt)}
-                className={`p-4 bg-slate-950 border rounded-xl cursor-pointer transition-all ${selectedOption?.id === opt.id ? "border-purple-500 bg-purple-900/20" : "border-slate-800 hover:border-slate-600"}`}
-              >
-                <h3 className="text-white font-medium">{opt.title}</h3>
-                <p className="text-slate-400 text-sm mt-1">{opt.description}</p>
-              </div>
-            ))}
-
-            {selectedOption && (
-              <button
-                onClick={() => navigate("/")}
-                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-xl font-semibold transition-all"
-              >
-                Создать проект на основе выбранного
-              </button>
-            )}
+        {/* Результат */}
+        {topic && (
+          <div className="p-4 bg-emerald-900/20 border border-emerald-500/30 rounded-xl text-sm text-slate-200 whitespace-pre-wrap">
+            <p className="font-medium text-emerald-300 mb-2">✅ Сгенерированная тема:</p>
+            <p>{topic}</p>
           </div>
         )}
       </div>
