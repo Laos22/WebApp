@@ -2,7 +2,14 @@
 import express from "express";
 import { ensureAuthenticated } from "../middleware/auth.js";
 import Settings from "../models/Settings.js";
-import { generateVideoTopic } from "../services/geminiService.js";
+import {
+  generateVideoTopic,
+  generateCoverData,
+} from "../services/geminiService.js";
+import {
+  resolveProfile,
+  logProfileUsage,
+} from "../services/aiProfileResolver.js";
 import Project from "../models/Project.js";
 import path from "path";
 import fs from "fs";
@@ -22,9 +29,14 @@ router.post("/generate-topic", ensureAuthenticated, async (req, res) => {
       });
     }
 
+    // Выбираем дефолтный текстовый профиль и логируем, что именно применяется
+    const textProfile = resolveProfile(settings, "text");
+    logProfileUsage("generate-topic", textProfile, "text");
+
     const generatedTopic = await generateVideoTopic(
       settings.systemPrompt,
       keywords,
+      textProfile,
     );
 
     res.json({
@@ -145,6 +157,66 @@ router.post("/create-from-topic", ensureAuthenticated, async (req, res) => {
     console.error("❌ Ошибка создания проекта:", error);
     res.status(500).json({
       error: error.message || "Ошибка при создании проекта",
+    });
+  }
+});
+
+// 👈 НОВЫЙ Route: Генерация данных обложки
+router.post("/:id/generate-cover", ensureAuthenticated, async (req, res) => {
+  try {
+    const { id: projectId } = req.params;
+    const project = await Project.findOne({
+      _id: projectId,
+      userId: req.user._id,
+    });
+
+    if (!project) {
+      return res.status(404).json({ error: "Проект не найден" });
+    }
+
+    const settings = await Settings.findOne({ userId: req.user._id });
+
+    if (!settings?.systemPrompt) {
+      return res.status(400).json({
+        error: "Системный промпт не найден. Установите его в настройках.",
+      });
+    }
+
+    // Выбираем дефолтный текстовый профиль и логируем, что именно применяется
+    const textProfile = resolveProfile(settings, "text");
+    logProfileUsage("generate-cover", textProfile, "text");
+
+    // Генерируем данные обложки
+    const coverData = await generateCoverData(
+      settings.systemPrompt,
+      project.title,
+      project.description,
+      textProfile,
+    );
+
+    // Сохраняем данные в project_state.json
+    const projectStateFile = path.join(
+      project.projectPath,
+      "project_state.json",
+    );
+    let projectState = {};
+
+    if (fs.existsSync(projectStateFile)) {
+      projectState = JSON.parse(fs.readFileSync(projectStateFile, "utf-8"));
+    }
+
+    projectState.coverData = coverData;
+    fs.writeFileSync(projectStateFile, JSON.stringify(projectState, null, 2));
+
+    res.json({
+      success: true,
+      coverData,
+      message: "Данные обложки успешно сгенерированы",
+    });
+  } catch (error) {
+    console.error("❌ Ошибка генерации обложки:", error);
+    res.status(500).json({
+      error: error.message || "Ошибка при генерации данных обложки",
     });
   }
 });

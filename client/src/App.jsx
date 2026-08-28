@@ -14,6 +14,8 @@ import CreateProject from "./pages/CreateProject";
 import ProjectWorkspace from "./pages/ProjectWorkspace";
 import ImageGen from "./pages/ImageGen";
 import AudioGen from "./pages/AudioGen";
+import ScriptGen from "./pages/ScriptGen";
+import CoverGen from "./pages/CoverGen";
 import Settings from "./pages/Settings";
 
 function AppContent() {
@@ -52,6 +54,22 @@ function AppContent() {
             }
           />
           <Route
+            path="/projects/:projectId/script"
+            element={
+              <ProtectedRoute>
+                <ScriptGen />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/projects/:projectId/cover"
+            element={
+              <ProtectedRoute>
+                <CoverGen />
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/projects/:projectId/image"
             element={
               <ProtectedRoute>
@@ -86,11 +104,11 @@ function AppContent() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <Router>
+    <Router>
+      <AuthProvider>
         <AppContent />
-      </Router>
-    </AuthProvider>
+      </AuthProvider>
+    </Router>
   );
 }
 

@@ -81,36 +81,55 @@ export default function ProjectWorkspace() {
           {showDetails && (
             <div className="mt-4 p-4 bg-slate-900 rounded-lg border border-slate-800">
               <p>
-                <strong>{project.title}</strong> 
+                <strong>{project.title}</strong>
               </p>
               <br />
-              <p>
-                {project.description || "Нет описания"}
-              </p>
+              <p>{project.description || "Нет описания"}</p>
             </div>
           )}
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <Link
-            to={`/projects/${projectId}/image`}
-            className="group p-8 bg-slate-900/80 hover:bg-slate-900 border border-purple-500/20 hover:border-purple-500/60 rounded-2xl transition-all shadow-xl flex flex-col justify-between"
+            to={`/projects/${projectId}/script`}
+            className="group p-8 bg-slate-900/80 hover:bg-slate-900 border border-emerald-500/20 hover:border-emerald-500/60 rounded-2xl transition-all shadow-xl flex flex-col justify-between"
           >
             <div>
-              <div className="w-12 h-12 rounded-xl bg-purple-600/20 border border-purple-500/30 flex items-center justify-center text-2xl mb-4 group-hover:scale-110 transition-transform">
-                🎨
+              <div className="w-12 h-12 rounded-xl bg-emerald-600/20 border border-emerald-500/30 flex items-center justify-center text-2xl mb-4 group-hover:scale-110 transition-transform">
+                📝
               </div>
-              <h2 className="text-2xl font-bold mb-2 group-hover:text-purple-300 transition-colors">
-                Генерация Image
+              <h2 className="text-2xl font-bold mb-2 group-hover:text-emerald-300 transition-colors">
+                Генерация сценария
               </h2>
               <p className="text-slate-400 text-sm">
-                Создавайте изображения для вашего проекта.
+                Интеллектуальная генерация сценария для вашего видео.
               </p>
             </div>
-            <div className="mt-6 flex items-center text-purple-400 font-semibold text-sm group-hover:translate-x-1 transition-transform">
+            <div className="mt-6 flex items-center text-emerald-400 font-semibold text-sm group-hover:translate-x-1 transition-transform">
               Перейти &rarr;
             </div>
           </Link>
+
+          <Link
+            to={`/projects/${projectId}/cover`}
+            className="group p-8 bg-slate-900/80 hover:bg-slate-900 border border-yellow-500/20 hover:border-yellow-500/60 rounded-2xl transition-all shadow-xl flex flex-col justify-between"
+          >
+            <div>
+              <div className="w-12 h-12 rounded-xl bg-yellow-600/20 border border-yellow-500/30 flex items-center justify-center text-2xl mb-4 group-hover:scale-110 transition-transform">
+                🖼️
+              </div>
+              <h2 className="text-2xl font-bold mb-2 group-hover:text-yellow-300 transition-colors">
+                Генерация обложки
+              </h2>
+              <p className="text-slate-400 text-sm">
+                Генерация названия и изображения для обложки видео.
+              </p>
+            </div>
+            <div className="mt-6 flex items-center text-yellow-400 font-semibold text-sm group-hover:translate-x-1 transition-transform">
+              Перейти &rarr;
+            </div>
+          </Link>
+
           <Link
             to={`/projects/${projectId}/audio`}
             className="group p-8 bg-slate-900/80 hover:bg-slate-900 border border-indigo-500/20 hover:border-indigo-500/60 rounded-2xl transition-all shadow-xl flex flex-col justify-between"
@@ -120,13 +139,33 @@ export default function ProjectWorkspace() {
                 🎙️
               </div>
               <h2 className="text-2xl font-bold mb-2 group-hover:text-indigo-300 transition-colors">
-                Генерация Audio / AI
+                Генерация озвучки
               </h2>
               <p className="text-slate-400 text-sm">
-                Интеллектуальная генерация текста и аудиосценариев.
+                Интеллектуальная генерация аудиосценариев.
               </p>
             </div>
             <div className="mt-6 flex items-center text-indigo-400 font-semibold text-sm group-hover:translate-x-1 transition-transform">
+              Перейти &rarr;
+            </div>
+          </Link>
+
+          <Link
+            to={`/projects/${projectId}/image`}
+            className="group p-8 bg-slate-900/80 hover:bg-slate-900 border border-purple-500/20 hover:border-purple-500/60 rounded-2xl transition-all shadow-xl flex flex-col justify-between"
+          >
+            <div>
+              <div className="w-12 h-12 rounded-xl bg-purple-600/20 border border-purple-500/30 flex items-center justify-center text-2xl mb-4 group-hover:scale-110 transition-transform">
+                🎨
+              </div>
+              <h2 className="text-2xl font-bold mb-2 group-hover:text-purple-300 transition-colors">
+                Генерация раскадровки
+              </h2>
+              <p className="text-slate-400 text-sm">
+                Генерация раскадровки для вашего проекта.
+              </p>
+            </div>
+            <div className="mt-6 flex items-center text-purple-400 font-semibold text-sm group-hover:translate-x-1 transition-transform">
               Перейти &rarr;
             </div>
           </Link>
