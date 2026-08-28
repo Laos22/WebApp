@@ -77,14 +77,17 @@ export default function CreateProject() {
       }
 
       alert(
-        // нужно реализовать создание проекта и возвращать его ID, чтобы потом перейти на страницу редактора
         `✅ Проект успешно создан!\n\n` +
         `📁 Название: ${data.shortTitle}\n` +
+        `📁 Путь к проекту: ${data.projectPath}\n` +
+        `🆔 ID: ${data.projectId}\n` +
         `💡 Теперь вы можете писать сценарий для этой темы.`
       );
       
+      // нужно реализовать создание проекта и возвращать его ID, чтобы потом перейти на страницу редактора
       // Временная заглушка - позже будет переход на /editor/:projectId
       // navigate(`/editor/${data.projectId}`);
+
     } catch (err) {
       const errorMessage = err.message || "Неизвестная ошибка";
       alert(`❌ Ошибка: ${errorMessage}`);

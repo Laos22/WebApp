@@ -1,33 +1,45 @@
-import React, { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import React, { useState, useEffect } from "react";
+import { Link } from "react-router-dom";
+import axios from "axios";
+
+const API_URL = import.meta.env.VITE_SERVER_URL;
 
 export default function Projects() {
-  const navigate = useNavigate();
-  const [projects, setProjects] = useState([
-    {
-      id: "proj-1",
-      name: "Мой первый AI Проект",
-      description: "Генерация концептов и подкастов",
-      updatedAt: "Сегодня",
-    },
-  ]);
-  const [newProjectName, setNewProjectName] = useState("");
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [viewMode, setViewMode] = useState("grid"); // 'grid' или 'list'
 
-  const handleCreateProject = (e) => {
-    e.preventDefault();
-    if (!newProjectName.trim()) return;
+  useEffect(() => {
+    fetchProjects();
+  }, []);
 
-    const newProj = {
-      id: `proj-${Date.now()}`,
-      name: newProjectName,
-      description: "Новый проект генерации",
-      updatedAt: "Только что",
-    };
+  const fetchProjects = async () => {
+    try {
+      setLoading(true);
+      const response = await axios.get(`${API_URL}/api/projects`, {
+        withCredentials: true,
+      });
+      if (response.data.success) {
+        setProjects(response.data.projects);
+      }
+    } catch (err) {
+      console.error("Ошибка при загрузке проектов:", err);
+      setError("Не удалось загрузить проекты. Попробуйте обновить страницу.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    setProjects([...projects, newProj]);
-    setNewProjectName("");
-    setIsModalOpen(false);
+  const formatDate = (dateString) => {
+    const date = new Date(dateString);
+    return date.toLocaleDateString("ru-RU", {
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   };
 
   return (
@@ -43,94 +55,172 @@ export default function Projects() {
               пространственный контекст.
             </p>
           </div>
-          <Link
-            to="/projects/new"
-            className="px-5 py-3 bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-xl shadow-lg shadow-purple-600/25 transition-all"
-          >
-            + Новый проект
-          </Link>
-        </div>
-
-        {/* Список проектов */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {projects.map((proj) => (
+          <div className="flex items-center gap-4">
+            {/* Переключатель вида */}
+            {!loading && !error && projects.length > 0 && (
+              <div className="flex items-center bg-slate-900 border border-slate-800 rounded-xl p-1 shadow-inner">
+                <button
+                  onClick={() => setViewMode("grid")}
+                  title="Карточки"
+                  className={`p-2 rounded-lg transition-all ${
+                    viewMode === "grid"
+                      ? "bg-purple-600 text-white shadow-md shadow-purple-600/30"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  <svg
+                    className="w-5 h-5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"
+                    />
+                  </svg>
+                </button>
+                <button
+                  onClick={() => setViewMode("list")}
+                  title="Компактный список"
+                  className={`p-2 rounded-lg transition-all ${
+                    viewMode === "list"
+                      ? "bg-purple-600 text-white shadow-md shadow-purple-600/30"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  <svg
+                    className="w-5 h-5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M4 6h16M4 12h16M4 18h16"
+                    />
+                  </svg>
+                </button>
+              </div>
+            )}
             <Link
-              key={proj.id}
-              to={`/projects/${proj.id}`}
-              className="group p-6 bg-slate-900/80 hover:bg-slate-900 border border-slate-800 hover:border-purple-500/50 rounded-2xl transition-all duration-300 shadow-xl flex flex-col justify-between space-y-4"
+              to="/projects/new"
+              className="px-5 py-3 bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-xl shadow-lg shadow-purple-600/25 transition-all"
             >
-              <div>
-                <div className="w-10 h-10 rounded-xl bg-purple-600/20 border border-purple-500/30 flex items-center justify-center text-xl mb-3 group-hover:scale-110 transition-transform">
-                  📁
-                </div>
-                <h3 className="text-xl font-bold text-white group-hover:text-purple-300 transition-colors">
-                  {proj.name}
-                </h3>
-                <p className="text-slate-400 text-sm mt-1">
-                  {proj.description}
-                </p>
-              </div>
-              <div className="flex items-center justify-between pt-4 border-t border-slate-800/80 text-xs text-slate-500">
-                <span>Обновлено: {proj.updatedAt}</span>
-                <span className="text-purple-400 font-semibold group-hover:translate-x-1 transition-transform">
-                  Открыть &rarr;
-                </span>
-              </div>
+              + Новый проект
             </Link>
-          ))}
-        </div>
-      </div>
-
-      {/* Модалка создания проекта */}
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-slate-900 border border-purple-500/30 rounded-2xl max-w-md w-full p-6 space-y-6 shadow-2xl">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xl font-bold text-white">
-                Создать новый проект
-              </h3>
-              <button
-                onClick={() => setIsModalOpen(false)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors"
-              >
-                ✕
-              </button>
-            </div>
-
-            <form onSubmit={handleCreateProject} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">
-                  Название проекта
-                </label>
-                <input
-                  type="text"
-                  value={newProjectName}
-                  onChange={(e) => setNewProjectName(e.target.value)}
-                  placeholder="Например: Маркетинговая кампания Q3"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white placeholder-slate-600 focus:outline-none focus:border-purple-500 transition-all text-sm"
-                  required
-                />
-              </div>
-
-              <div className="flex justify-end space-x-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-white text-sm font-medium rounded-xl transition-colors"
-                >
-                  Отмена
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2.5 bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium rounded-xl transition-colors shadow-lg shadow-purple-600/20"
-                >
-                  Создать
-                </button>
-              </div>
-            </form>
           </div>
         </div>
-      )}
+
+        {/* Индикатор загрузки */}
+        {loading && (
+          <div className="flex flex-col items-center justify-center py-20 space-y-4">
+            <div className="w-12 h-12 border-4 border-purple-500/20 border-t-purple-500 rounded-full animate-spin"></div>
+            <p className="text-slate-400 animate-pulse">
+              Загрузка ваших проектов...
+            </p>
+          </div>
+        )}
+
+        {/* Ошибка */}
+        {error && (
+          <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-center">
+            {error}
+          </div>
+        )}
+
+        {/* Пустое состояние */}
+        {!loading && !error && projects.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-20 bg-slate-900/40 border border-dashed border-slate-800 rounded-3xl space-y-4">
+            <div className="text-5xl opacity-50">🌑</div>
+            <h3 className="text-xl font-medium text-slate-300">
+              У вас пока нет проектов
+            </h3>
+            <p className="text-slate-500 max-w-sm text-center">
+              Создайте свой первый проект, чтобы начать генерировать контент и
+              управлять AI-процессами.
+            </p>
+            <Link
+              to="/projects/new"
+              className="mt-2 text-purple-400 hover:text-purple-300 font-semibold"
+            >
+              Создать проект &rarr;
+            </Link>
+          </div>
+        )}
+
+        {/* Список проектов */}
+        {!loading && projects.length > 0 && viewMode === "grid" && (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {projects.map((proj) => (
+              <Link
+                key={proj._id}
+                to={`/projects/${proj._id}`}
+                className="group p-6 bg-slate-900/80 hover:bg-slate-900 border border-slate-800 hover:border-purple-500/50 rounded-2xl transition-all duration-300 shadow-xl flex flex-col justify-between space-y-4"
+              >
+                <div>
+                  <div className="w-10 h-10 rounded-xl bg-purple-600/20 border border-purple-500/30 flex items-center justify-center text-xl mb-3 group-hover:scale-110 transition-transform">
+                    📁
+                  </div>
+                  <h3 className="text-xl font-bold text-white group-hover:text-purple-300 transition-colors line-clamp-2">
+                    {proj.shortTitle}
+                  </h3>
+                  <p className="text-slate-400 text-sm mt-1 line-clamp-3">
+                    {proj.videoTopicDescription ||
+                      proj.description ||
+                      "Без описания"}
+                  </p>
+                </div>
+                <div className="flex items-center justify-between pt-4 border-t border-slate-800/80 text-xs text-slate-500">
+                  <span>Обновлено: {formatDate(proj.updatedAt)}</span>
+                  <span className="text-purple-400 font-semibold group-hover:translate-x-1 transition-transform">
+                    Открыть &rarr;
+                  </span>
+                </div>
+              </Link>
+            ))}
+          </div>
+        )}
+
+        {/* Компактный список проектов */}
+        {!loading && projects.length > 0 && viewMode === "list" && (
+          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl shadow-xl overflow-hidden divide-y divide-slate-800/80">
+            {projects.map((proj) => (
+              <Link
+                key={proj._id}
+                to={`/projects/${proj._id}`}
+                className="group flex flex-col sm:flex-row sm:items-center justify-between p-4 sm:px-6 hover:bg-slate-900 transition-colors gap-4"
+              >
+                <div className="flex items-center space-x-4 min-w-0">
+                  <div className="w-10 h-10 rounded-xl bg-purple-600/20 border border-purple-500/30 flex-shrink-0 flex items-center justify-center text-lg group-hover:scale-105 transition-transform">
+                    📁
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="text-base font-bold text-white group-hover:text-purple-300 transition-colors truncate">
+                      {proj.shortTitle}
+                    </h3>
+                    {/* <p className="text-slate-400 text-xs truncate mt-0.5 max-w-xl">
+                      {proj.videoTopicDescription ||
+                        proj.description ||
+                        "Без описания"}
+                    </p> */}
+                  </div>
+                </div>
+                <div className="flex items-center justify-between sm:justify-end sm:space-x-6 text-xs text-slate-500 flex-shrink-0 pt-2 sm:pt-0 border-t sm:border-0 border-slate-800/60">
+                  <span>Обновлено: {formatDate(proj.updatedAt)}</span>
+                  <span className="text-purple-400 font-semibold group-hover:translate-x-1 transition-transform inline-flex items-center gap-1">
+                    Открыть &rarr;
+                  </span>
+                </div>
+              </Link>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
