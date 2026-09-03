@@ -16,7 +16,13 @@ axios.defaults.withCredentials = true;
 
 export default function Settings() {
   const { user } = useAuth();
-  const [systemPrompt, setSystemPrompt] = useState("");
+  const [prompts, setPrompts] = useState({
+    theme: "1",
+    script: "1",
+    cover: "1",
+    audio: "1",
+    timelineDavinci: "1",
+  });
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [savedMessage, setSavedMessage] = useState("");
@@ -41,10 +47,14 @@ export default function Settings() {
     setIsLoading(true);
     try {
       const response = await axios.get(`${SERVER_URL}/api/settings`);
-      setSystemPrompt(
-        response.data.systemPrompt ||
-          "Ты — профессиональный YouTube-сценарист.",
-      );
+      console.log("🔧 Loaded settings:", response.data);
+      setPrompts(() => ({
+        theme: response.data.prompts.theme || "",
+        script: response.data.prompts.script || "",
+        cover: response.data.prompts.cover || "",
+        audio: response.data.prompts.audio || "",
+        timelineDavinci: response.data.prompts.timelineDavinci || "",
+      }));
     } catch (e) {
       console.error("Ошибка загрузки настроек:", e);
       setSavedMessage("✗ Ошибка загрузки настроек");
@@ -67,8 +77,16 @@ export default function Settings() {
     setIsSaving(true);
 
     try {
+      console.log("💾 Saving settings:", prompts);
       const response = await axios.post(`${SERVER_URL}/api/settings`, {
-        systemPrompt,
+        
+        prompts: {
+          theme: prompts.theme,
+          script: prompts.script,
+          cover: prompts.cover,
+          audio: prompts.audio,
+          timelineDavinci: prompts.timelineDavinci,
+        },
       });
 
       if (response.status === 200) {
@@ -170,18 +188,38 @@ export default function Settings() {
           onSubmit={handleSaveSettings}
           className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 md:p-8 shadow-2xl space-y-8"
         >
-          {/* Блок: Системный промпт */}
+          {/* Блок: Системный промпт для темы*/}
           <section className="space-y-4 pb-6 border-b border-slate-800">
             <h2 className="text-xl font-bold text-white">
-              📝 Системный промпт
+              📝 Системный промпт для темы
             </h2>
             <p className="text-xs text-slate-400">
               Глобальная "личность" для ИИ. Она будет использоваться при всех
               генерациях тем и контента.
             </p>
             <textarea
-              value={systemPrompt}
-              onChange={(e) => setSystemPrompt(e.target.value)}
+              value={prompts.theme}
+              onChange={(e) => setPrompts((prev) => ({ ...prev, theme: e.target.value }))}
+              className="w-full h-40 bg-slate-950 border border-slate-800 rounded-xl p-4 text-sm text-white focus:border-purple-500 transition-all outline-none resize-none"
+              placeholder="Например: Ты — опытный сценарист YouTube Shorts в нише технологий..."
+            />
+            <p className="text-xs text-slate-500">
+              💡 Совет: Опишите роль, стиль, целевую аудиторию и любые
+              ограничения, которые должен учитывать ИИ.
+            </p>
+          </section>
+          {/* Блок: Системный промпт для сценария */}
+          <section className="space-y-4 pb-6 border-b border-slate-800">
+            <h2 className="text-xl font-bold text-white">
+              📝 Системный промпт для сценария
+            </h2>
+            <p className="text-xs text-slate-400">
+              Глобальная "личность" для ИИ. Она будет использоваться при всех
+              генерациях тем и контента.
+            </p>
+            <textarea
+              value={prompts.script}
+              onChange={(e) => setPrompts((prev) => ({ ...prev, script: e.target.value }))}
               className="w-full h-40 bg-slate-950 border border-slate-800 rounded-xl p-4 text-sm text-white focus:border-purple-500 transition-all outline-none resize-none"
               placeholder="Например: Ты — опытный сценарист YouTube Shorts в нише технологий..."
             />

@@ -29,7 +29,7 @@ app.use((req, res, next) => {
 });
 
 // Подключаем базу данных
-connectDB();
+await connectDB();
 
 // Middleware
 (console.log("CORS origin:", process.env.VITE_CLIENT_URL),

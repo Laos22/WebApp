@@ -32,7 +32,7 @@ const profileSchema = new mongoose.Schema({
 
   imageSettings: {
     model: { type: String },
-    format: { type: String, default: "png" }, // png, webp
+    format: { type: String, default: "jpeg" }, // png, webp
     quality: { type: String, default: "standard" }, // standard, hd
     aspectRatio: { type: String, default: "16:9" },
   },
@@ -58,8 +58,8 @@ const settingsSchema = new mongoose.Schema(
     // Массив профилей
     profiles: [profileSchema],
 
-    // Ключ внешнего AI-провайдера (используется как fallback вне системы профилей)
-    apiKey: { type: String, default: "" },
+    // // Ключ внешнего AI-провайдера (используется как fallback вне системы профилей)
+    // apiKey: { type: String, default: "" },
 
     // Активный системный промпт: применяется при генерации темы и обложки
     systemPrompt: { type: String, default: DEFAULT_SYSTEM_PROMPT },
@@ -68,6 +68,9 @@ const settingsSchema = new mongoose.Schema(
     prompts: {
       theme: { type: String, default: "" },
       script: { type: String, default: "" },
+      cover: { type: String, default: "" },
+      audio: { type: String, default: "" },
+      timelineDavinci: { type: String, default: "" },
     },
 
     driveTokens: { type: Object, default: null },

@@ -5,6 +5,7 @@ import Settings from "../models/Settings.js";
 import {
   generateVideoTopic,
   generateCoverData,
+  generateScript,
 } from "../services/geminiService.js";
 import {
   resolveProfile,
@@ -217,6 +218,73 @@ router.post("/:id/generate-cover", ensureAuthenticated, async (req, res) => {
     console.error("❌ Ошибка генерации обложки:", error);
     res.status(500).json({
       error: error.message || "Ошибка при генерации данных обложки",
+    });
+  }
+});
+
+// 👈 НОВЫЙ Route: Генерация сценария
+router.post("/:id/generate-script", ensureAuthenticated, async (req, res) => {
+  try {
+    const { id: projectId } = req.params;
+    const { prompt, projectDescription } = req.body;
+
+    if (!prompt || !projectDescription) {
+      return res.status(400).json({
+        error: "Промпт и описание проекта обязательны для генерации сценария",
+      });
+    }
+
+    const settings = await Settings.findOne({ userId: req.user._id });
+
+    if (!settings?.prompts?.script) {
+      return res.status(400).json({
+        error: "Системный промпт для сценария не найден. Установите его в настройках.",
+      });
+    }
+
+    // Генерация сценария
+    const script = await generateScript(
+      settings.prompts.script,
+      projectDescription,
+      resolveProfile(settings, "text"),
+    );
+    console.log("✅ Сценарий успешно сгенерирован:", script);
+
+    // Сохраняем сгенерированный сценарий в project_state.json
+    const project = await Project.findOne({
+      _id: projectId,
+      userId: req.user._id,
+    });
+
+    if (!project) {
+      return res.status(404).json({ error: "Проект не найден" });
+    }
+
+    const projectStateFile = path.join(
+      project.projectPath,
+      "project_state.json",
+    );
+    let projectState = {};
+
+    if (fs.existsSync(projectStateFile)) {
+      projectState = JSON.parse(fs.readFileSync(projectStateFile, "utf-8"));
+    }
+
+    projectState.generatedScript = script;
+    fs.writeFileSync(projectStateFile, JSON.stringify(projectState, null, 2));
+
+    res.json({
+      success: true,
+      script,
+      message: "Сценарий успешно сгенерирован и сохранен",
+    });
+    
+
+   
+  } catch (error) {
+    console.error("❌ Ошибка генерации сценария:", error);
+    res.status(500).json({
+      error: error.message || "Ошибка при генерации сценария",
     });
   }
 });

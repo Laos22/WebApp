@@ -18,11 +18,14 @@ export const PROVIDERS_BY_TYPE = {
     { value: "openrouter", label: "OpenRouter" },
     { value: "google_studio", label: "Google Studio" },
   ],
-  image: [{ value: "google_studio", label: "Google Studio" }],
+  image: [
+    { value: "google_studio", label: "Google Studio" },
+    { value: "openrouter", label: "OpenRouter" },
+  ],
   audio: [{ value: "elevenlabs", label: "ElevenLabs" }],
 };
 
-export const IMAGE_FORMATS = ["png", "webp"];
+export const IMAGE_FORMATS = ["png", "webp", "jpeg"];
 export const IMAGE_QUALITIES = ["standard", "hd"];
 export const IMAGE_ASPECT_RATIOS = ["16:9", "1:1", "9:16"];
 
@@ -57,7 +60,7 @@ export const getEmptyProfile = () => ({
   },
   imageSettings: {
     model: "",
-    format: "png",
+    format: "jpeg",
     quality: "standard",
     aspectRatio: "16:9",
   },

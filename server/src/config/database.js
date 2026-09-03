@@ -22,7 +22,9 @@ const connectDB = async () => {
     console.log('✅ MongoDB успешно подключена');
   } catch (error) {
     console.error('❌ Ошибка подключения к MongoDB:', error.message);
-    process.exit(1);
+    // НеExiting, чтобы сервер мог запуститься без БД (если нужно)
+    // Или выбросить ошибку, чтобы она была поймана выше
+    throw error;
   }
 };
 

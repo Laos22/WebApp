@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useGenerateTopic } from "../hooks/useGenerateTopic";
+import axios from "axios";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL;
 
@@ -21,13 +22,10 @@ export default function CreateProject() {
 
   const fetchSystemPrompt = async () => {
     try {
-      const response = await fetch(`${SERVER_URL}/api/settings/prompt`, {
-        credentials: "include",
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        setSystemPrompt(data.systemPrompt);
+      const response = await axios.get(`${SERVER_URL}/api/settings`);
+      console.log("🔧 Loaded settings:", response.data);
+      if (response.status === 200) {
+        setSystemPrompt(response.data.prompts?.theme || "");
       }
     } catch (err) {
       console.error("Ошибка загрузки системного промпта:", err);

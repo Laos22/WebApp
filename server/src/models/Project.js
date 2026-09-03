@@ -27,6 +27,19 @@ const projectSchema = new mongoose.Schema({
     type: String,
     default: ""
   },
+  // 👈 НОВЫЕ ПОЛЯ
+  keywords: {
+    type: String,
+    default: ""
+  },
+  projectPath: {
+    type: String,
+    default: ""
+  },
+  scriptPath: {
+    type: String,
+    default: ""
+  },
   updatedAt: {
     type: Date,
     default: Date.now

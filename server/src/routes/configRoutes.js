@@ -21,15 +21,25 @@ router.get("/", ensureAuthenticated, async (req, res) => {
       // Создаем дефолтные настройки для нового пользователя
       settings = new Settings({
         userId: req.user._id,
-        apiKey: "",
-        systemPrompt: DEFAULT_SYSTEM_PROMPT,
+        prompts: {
+          theme: "",
+          script: "",
+          cover: "",
+          audio: "",
+          timelineDavinci: "",
+        },
       });
       await settings.save();
     }
 
     res.json({
-      apiKey: settings.apiKey || "",
-      systemPrompt: settings.systemPrompt || "",
+      prompts: settings.prompts || {
+        theme: "",
+        script: "",
+        cover: "",
+        audio: "",
+        timelineDavinci: "",
+      },
       driveConnected: !!settings.driveTokens,
       driveFileId: settings.driveFileId || null,
     });
@@ -44,7 +54,7 @@ router.get("/", ensureAuthenticated, async (req, res) => {
  */
 router.post("/", ensureAuthenticated, async (req, res) => {
   try {
-    const { apiKey, systemPrompt, driveTokens, driveFileId } = req.body;
+    const { prompts, driveTokens, driveFileId } = req.body;
 
     let settings = await Settings.findOne({ userId: req.user._id });
 
@@ -53,8 +63,7 @@ router.post("/", ensureAuthenticated, async (req, res) => {
     }
 
     // Обновляем поля
-    if (apiKey !== undefined) settings.apiKey = apiKey;
-    if (systemPrompt !== undefined) settings.systemPrompt = systemPrompt;
+    if (prompts !== undefined) settings.prompts = prompts;
     if (driveTokens !== undefined) settings.driveTokens = driveTokens;
     if (driveFileId !== undefined) settings.driveFileId = driveFileId;
 
@@ -245,20 +254,6 @@ router.delete("/profiles/:id", ensureAuthenticated, async (req, res) => {
   } catch (error) {
     console.error("Ошибка удаления профиля:", error);
     res.status(500).json({ error: "Failed to delete profile" });
-  }
-});
-
-/**
- * Получить только системный промпт
- */
-router.get("/prompt", ensureAuthenticated, async (req, res) => {
-  try {
-    const settings = await Settings.findOne({ userId: req.user._id });
-    res.json({
-      systemPrompt: settings?.systemPrompt || DEFAULT_SYSTEM_PROMPT,
-    });
-  } catch (error) {
-    res.status(500).json({ error: "Failed to fetch prompt" });
   }
 });
 

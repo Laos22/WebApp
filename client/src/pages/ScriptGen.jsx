@@ -6,13 +6,31 @@ const API_URL = import.meta.env.VITE_SERVER_URL;
 
 export default function ScriptGen() {
   const { projectId } = useParams();
+  const [systemPrompt, setSystemPrompt] = useState("");
+
   const [project, setProject] = useState(null);
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [error, setError] = useState(null);
+  
+  useEffect(() => {
+    fetchSystemPrompt();
+  }, []);
 
+  const fetchSystemPrompt = async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/settings`, {
+        withCredentials: true,
+      });
+      if (response.status === 200) {
+        setSystemPrompt(response.data.prompts?.script || "");
+      }
+    } catch (err) {
+      console.error("Ошибка при загрузке системного промпта:", err);
+    }
+  };
   useEffect(() => {
     fetchProject();
   }, [projectId]);
@@ -37,6 +55,7 @@ export default function ScriptGen() {
 
     try {
       // 🚀 Отправляем запрос на генерацию сценария
+      console.log("Отправка запроса на генерацию сценария с промптом:", prompt);
       const response = await axios.post(
         `${API_URL}/api/projects/${projectId}/generate-script`,
         {
@@ -51,11 +70,12 @@ export default function ScriptGen() {
         content: response.data.script,
         timestamp: new Date().toISOString(),
       };
-
+      console.log("✅ Сценарий успешно сгенерирован:", scriptResult);
       setResult(scriptResult);
       setIsModalOpen(true);
       setPrompt("");
     } catch (err) {
+      console.error("Ошибка при генерации сценария:");
       setError(
         err.response?.data?.error ||
           err.message ||
@@ -96,6 +116,14 @@ export default function ScriptGen() {
           onSubmit={handleSubmit}
           className="bg-slate-900/80 border border-emerald-500/20 rounded-2xl p-6 md:p-8 shadow-2xl backdrop-blur-md space-y-6"
         >
+          {systemPrompt && (
+          <div className="p-4 bg-purple-900/20 border border-purple-500/30 rounded-xl text-sm text-slate-300">
+            <p className="font-medium text-purple-300 mb-1">
+              📌 Активный системный промпт:
+            </p>
+            <p className="line-clamp-2">{systemPrompt}</p>
+          </div>
+          )}
           <div>
             <label className="block text-sm font-medium text-slate-300 mb-2">
               Описание или тема для сценария
@@ -197,15 +225,7 @@ export default function ScriptGen() {
               >
                 Закрыть
               </button>
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText(result.content);
-                  alert("Сценарий скопирован в буфер обмена!");
-                }}
-                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded-xl transition-colors shadow-lg shadow-emerald-600/20"
-              >
-                Копировать
-              </button>
+              
             </div>
           </div>
         </div>

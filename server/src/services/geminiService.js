@@ -2,8 +2,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { getDecryptedApiKey } from "./aiProfileResolver.js";
 
-// Дефолтная модель, если профиль пользователя её не задаёт.
-const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite";
 
 /**
  * Возвращает конфигурацию генерации на основе профиля (если он передан).
@@ -13,11 +11,16 @@ const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite";
  * @param {string} operation - Название операции для логов
  */
 function resolveTextConfig(profile, operation) {
+  console.log(`Профиль для операции "${operation}":`, profile);
   // Ключ в профиле хранится в зашифрованном виде — расшифровываем его
   // только здесь, непосредственно перед вызовом Gemini API.
   const profileKey = getDecryptedApiKey(profile);
+  
   const apiKey = profileKey || process.env.GEMINI_API_KEY;
-  const model = profile?.textSettings?.primaryModel || DEFAULT_GEMINI_MODEL;
+  const model = profile?.textSettings?.primaryModel;
+
+  // console.log(`🔑 [${operation}] Используем ключ из: ${profileKey ? "профиля" : ".env"}`);
+  // console.log(`🧠 [${operation}] Используем модель: ${model || "дефолтная"}`);
 
   if (!apiKey) {
     throw new Error(
@@ -215,6 +218,71 @@ export async function generateCoverData(
     return parsed;
   } catch (error) {
     console.error("❌ Ошибка Gemini API при генерации обложки:", error);
+    throw error;
+  }
+}
+
+
+
+export async function generateScript(systemPrompt, projectDescription, profile) {
+  try {
+    const { apiKey, model } = resolveTextConfig(profile, "generate-script");
+
+    const ai = new GoogleGenAI({ apiKey });
+
+    const userPrompt = `${systemPrompt}\n\n
+Описание проекта: "${projectDescription}"
+
+Никакого лишнего текста.`;
+    // console.log("🚀 Отправка запроса на генерацию сценария с промптом:", userPrompt);
+    const response = await ai.models.generateContent({
+      model,
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: userPrompt }],
+        },
+      ],
+    });
+
+    let generatedText = "";
+    if (typeof response.text === "function") {
+      generatedText = response.text();
+    } else if (typeof response.text === "string") {
+      generatedText = response.text;
+    } else if (response.candidates?.[0]?.content?.parts?.[0]?.text) {
+      generatedText = response.candidates[0].content.parts[0].text;
+    } else {
+      throw new Error("Не удалось получить текстовый ответ от Gemini API");
+    }
+
+    let parsed;
+    try {
+      const cleanedText = generatedText
+        .replace(/```json/g, "")
+        .replace(/```/g, "")
+        .trim();
+
+      parsed = cleanedText;
+
+      // Валидация: проверяем необходимые поля
+      // if (
+      //   !parsed.script ||
+      //   !parsed.scene_breakdown ||
+      //   !parsed.estimated_duration
+      // ) {
+      //   throw new Error("Отсутствуют необходимые поля в ответе");
+      // }
+    } catch (parseError) {
+      console.error("❌ Ошибка парсинга JSON от Gemini:", generatedText);
+      throw new Error(
+        "Не удалось распарсить ответ от Gemini API как JSON объект",
+      );
+    }
+
+    return parsed;
+  } catch (error) {
+    console.error("❌ Ошибка Gemini API при генерации сценария:", error);
     throw error;
   }
 }
