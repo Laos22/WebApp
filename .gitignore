@@ -3,3 +3,6 @@ node_modules/
 .DS_Store
 server/config/drive-auth.json
 server/config/*.json
+server/server.log
+server/project_state.json
+server/uploads/
