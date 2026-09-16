@@ -3,6 +3,7 @@ import express from "express";
 import cors from "cors";
 import morgan from "morgan";
 import session from "express-session";
+import MongoStore from "connect-mongo";
 import passport from "passport";
 import passportGoogle from "passport-google-oauth20";
 import { GoogleGenAI } from "@google/genai";
@@ -19,6 +20,19 @@ const GoogleStrategy = passportGoogle.Strategy;
 
 const app = express();
 const PORT = process.env.PORT || 5001;
+const isProduction = process.env.NODE_ENV === "production";
+const sessionSecret = process.env.SESSION_SECRET;
+const sessionMaxAge = 1000 * 60 * 60 * 24 * 7;
+
+if (!sessionSecret || sessionSecret.trim().length < 32) {
+  console.error("Ошибка конфигурации: SESSION_SECRET должен содержать минимум 32 символа. Запуск остановлен.");
+  process.exit(1);
+}
+
+if (isProduction) {
+  // Deployment must route requests through one trusted reverse proxy.
+  app.set("trust proxy", 1);
+}
 
 // Логируем АБСОЛЮТНО все входящие запросы для диагностики
 app.use(morgan("dev"));
@@ -45,12 +59,18 @@ app.use(express.json());
 // Сессии
 app.use(
   session({
-    secret: process.env.SESSION_SECRET || "default_secret_key",
+    secret: sessionSecret,
+    store: MongoStore.create({
+      mongoUrl: process.env.MONGODB_URI,
+      ttl: sessionMaxAge / 1000,
+    }),
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: false,
-      maxAge: 1000 * 60 * 60 * 24 * 7, // 7 дней
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? "none" : "lax",
+      maxAge: sessionMaxAge, // 7 дней
     },
   }),
 );
