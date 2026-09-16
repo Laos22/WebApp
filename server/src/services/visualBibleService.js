@@ -51,6 +51,84 @@ function defaultFields(fields) {
     [key, kind === 'list' ? [] : kind === 'boolean' ? false : '']));
 }
 
+function invalidGeneratedResponse(fields) {
+  const error = new Error('Некорректный ответ Visual Bible');
+  error.status = 502;
+  error.code = 'INVALID_VISUAL_BIBLE_RESPONSE';
+  error.fields = fields;
+  throw error;
+}
+
+function isGeneratedObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) &&
+    [Object.prototype, null].includes(Object.getPrototypeOf(value));
+}
+
+function generatedText(value) {
+  return ['string', 'number', 'boolean'].includes(typeof value) ? String(value).trim() : '';
+}
+
+function generatedList(value) {
+  const items = Array.isArray(value) ? value : typeof value === 'string' ? [value] : [];
+  return items.map(generatedText).filter(Boolean);
+}
+
+function generatedFields(input, fields) {
+  return Object.fromEntries(Object.entries(fields).map(([key, kind]) => {
+    const value = Object.hasOwn(input, key) ? input[key] : undefined;
+    return [key, kind === 'list' ? generatedList(value)
+      : kind === 'boolean' ? (typeof value === 'boolean' ? value : false)
+        : generatedText(value)];
+  }));
+}
+
+// Generated content only: metadata and provider IDs never cross this boundary.
+export function normalizeGeneratedVisualBible(rawResponse) {
+  let input = rawResponse;
+  if (typeof input === 'string') {
+    const trimmed = input.trim();
+    const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    try {
+      input = JSON.parse((fenced ? fenced[1] : trimmed).trim());
+    } catch {
+      invalidGeneratedResponse(['$']);
+    }
+  }
+  if (!isGeneratedObject(input)) invalidGeneratedResponse(['$']);
+  if (!contentFields.some(key => Object.hasOwn(input, key))) {
+    for (const wrapper of ['content', 'visualBible', 'visual_bible']) {
+      if (Object.hasOwn(input, wrapper)) {
+        if (!isGeneratedObject(input[wrapper])) invalidGeneratedResponse([wrapper]);
+        input = input[wrapper];
+        break;
+      }
+    }
+  }
+
+  const fields = [];
+  const style = input.visualStyle;
+  if (style != null && !isGeneratedObject(style)) fields.push('visualStyle');
+  const result = {
+    visualStyle: generatedFields(isGeneratedObject(style) ? style : {}, styleFields),
+    visualModes: [],
+    continuityRules: generatedList(input.continuityRules),
+    characters: [],
+    locations: [],
+    objects: [],
+  };
+  for (const [key, spec] of Object.entries(collections)) {
+    const values = input[key];
+    if (values == null) continue;
+    if (!Array.isArray(values)) {
+      fields.push(key);
+      continue;
+    }
+    result[key] = values.filter(isGeneratedObject).map(item => generatedFields(item, spec.fields));
+  }
+  if (fields.length) invalidGeneratedResponse(fields);
+  return result;
+}
+
 export function normalizeVisualBible(project) {
   const bible = project?.visualBible;
   if (bible != null) return typeof bible.toObject === 'function' ? bible.toObject() : structuredClone(bible);
