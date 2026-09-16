@@ -72,10 +72,9 @@ export const encryptData = (text) => {
 /**
  * Расшифровывает строку, полученную из encryptData.
  *
- * Устойчива к «мусору»: если значение битое, не в том формате или
- * зашифровано другим ключом — возвращает null вместо выброса исключения.
- * Это защищает эндпоинты (например, GET /profiles) от падения в 500
- * из-за одного повреждённого/legacy-значения.
+ * При повреждённом значении или неверном ключе выбрасывает безопасную
+ * ошибку без исходных данных. Отсутствующее значение возвращает null.
+ * Вызывающий код выбирает политику обработки ошибки.
  *
  * @param {string|null|undefined} encryptedText
  * @returns {string|null}
@@ -88,7 +87,7 @@ export const decryptData = (encryptedText) => {
 
     // Минимальная длина: соль + iv + tag (+ хотя бы 1 байт данных)
     if (data.length <= SALT_LENGTH + IV_LENGTH + TAG_LENGTH) {
-      return null;
+      throw new Error("Unable to decrypt value");
     }
 
     const salt = data.subarray(0, SALT_LENGTH);
@@ -109,9 +108,8 @@ export const decryptData = (encryptedText) => {
     ]);
 
     return decrypted.toString("utf8");
-  } catch (error) {
-    console.error("⚠️  Не удалось расшифровать значение:", error.message);
-    return null;
+  } catch {
+    throw new Error("Unable to decrypt value");
   }
 };
 

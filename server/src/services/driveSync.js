@@ -3,33 +3,29 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { Readable } from "stream";
+import { loadDriveTokens, saveDriveTokens } from "./driveTokenService.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const ROOT_FOLDER_NAME = "AI Hub";
 
-/**
- * Создает OAuth2 клиент для конкретного пользователя
- * @param {Object} tokens - Токены пользователя из БД
- * @returns {Object} oauth2Client и credentials
- */
-export const createDriveClient = (tokens) => {
+/** Load the owner's credentials into memory only; callers must await this factory. */
+export const createDriveClient = async (userId) => {
+  const { tokens } = await loadDriveTokens(userId);
+  if (!tokens) throw new Error("DRIVE_CREDENTIALS_UNAVAILABLE");
   const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
     `${process.env.VITE_SERVER_URL}/auth/callback`,
   );
-
+  oauth2Client.on("tokens", (incomingTokens) => {
+    void saveDriveTokens({ userId, incomingTokens }).catch(() => {
+      console.error("DRIVE_REFRESH_SAVE_FAILED");
+    });
+  });
   oauth2Client.setCredentials(tokens);
-
-  // Обновляем токен если нужно
-  if (tokens.expiry_date && new Date(tokens.expiry_date) < new Date()) {
-    // Note: refreshAccessToken is asynchronous in googleapis
-    // If needed, handle it asynchronously, but keeping existing sync signature or adjusting as needed.
-  }
-
-  return { oauth2Client, credentials: tokens };
+  return { oauth2Client };
 };
 
 /**
@@ -72,31 +68,31 @@ export const getOrCreateAiHubFolder = async (drive) => {
       `✓ Папка "${ROOT_FOLDER_NAME}" успешно создана (ID: ${folder.data.id})`,
     );
     return folder.data.id;
-  } catch (error) {
-    console.error("❌ Ошибка при поиске/создании папки AI Hub:", error);
-    throw error;
+  } catch {
+    console.error("DRIVE_FOLDER_FAILED");
+    throw new Error("DRIVE_FOLDER_FAILED");
   }
 };
 
 /**
  * Инициализирует синхронизацию (создает папку при первом подключении)
- * @param {Object} userTokens - Токены пользователя
+ * @param {string|Object} userId - ID владельца Settings
  * @returns {Promise<Object>} { success: boolean, folderId?: string, error?: string }
  */
-export const initializeDriveSync = async (userTokens) => {
+export const initializeDriveSync = async (userId) => {
   try {
-    const { oauth2Client } = createDriveClient(userTokens);
+    const { oauth2Client } = await createDriveClient(userId);
     const drive = google.drive({ version: "v3", auth: oauth2Client });
     const folderId = await getOrCreateAiHubFolder(drive);
     return { success: true, folderId };
-  } catch (error) {
-    return { success: false, error: error.message };
+  } catch {
+    return { success: false, error: "DRIVE_INITIALIZE_FAILED" };
   }
 };
 
 /**
  * Синхронизирует настройки пользователя на Google Drive внутри папки "AI Hub"
- * @param {Object} userSettings - Настройки пользователя (включая driveTokens)
+ * @param {Object} userSettings - Настройки пользователя с userId
  * @returns {Object} Результат синхронизации
  */
 export const syncToDrive = async (userSettings) => {
@@ -108,10 +104,7 @@ export const syncToDrive = async (userSettings) => {
 
   console.log("🚀 syncToDrive: Запуск синхронизации настроек в облако...");
   try {
-    if (!userSettings || !userSettings.driveTokens) {
-      return { success: false, error: "No drive tokens" };
-    }
-    const { oauth2Client } = createDriveClient(userSettings.driveTokens);
+    const { oauth2Client } = await createDriveClient(userSettings?.userId);
     const drive = google.drive({ version: "v3", auth: oauth2Client });
 
     const aiHubFolderId = await getOrCreateAiHubFolder(drive);
@@ -154,9 +147,9 @@ export const syncToDrive = async (userSettings) => {
 
     console.log(`✓ Настройки созданы на Drive. ID: ${res.data.id}`);
     return { success: true, fileId: res.data.id };
-  } catch (error) {
-    console.error("❌ Ошибка синхронизации с Drive:", error);
-    return { success: false, error: error.message };
+  } catch {
+    console.error("DRIVE_SYNC_FAILED");
+    return { success: false, error: "DRIVE_SYNC_FAILED" };
   }
 };
 
@@ -174,12 +167,7 @@ export const downloadFromDrive = async (fileId, userSettings, destPath) => {
   }
 
   try {
-    if (!userSettings.driveTokens) {
-      console.log("❌ У пользователя нет токенов Google Drive");
-      return false;
-    }
-
-    const { oauth2Client } = createDriveClient(userSettings.driveTokens);
+    const { oauth2Client } = await createDriveClient(userSettings?.userId);
     const drive = google.drive({ version: "v3", auth: oauth2Client });
 
     const res = await drive.files.get(
@@ -187,8 +175,9 @@ export const downloadFromDrive = async (fileId, userSettings, destPath) => {
       { responseType: "stream" },
     );
 
-    return new Promise((resolve, reject) => {
+    return await new Promise((resolve, reject) => {
       res.data
+        .on("error", reject)
         .pipe(fs.createWriteStream(destPath))
         .on("finish", () => {
           console.log(`✓ Файл загружен с Drive: ${destPath}`);
@@ -196,8 +185,8 @@ export const downloadFromDrive = async (fileId, userSettings, destPath) => {
         })
         .on("error", reject);
     });
-  } catch (error) {
-    console.error("Ошибка загрузки с Drive:", error);
+  } catch {
+    console.error("DRIVE_DOWNLOAD_FAILED");
     return false;
   }
 };

@@ -6,6 +6,7 @@ import {
   decryptData,
   maskSecret,
 } from "../services/encryptionService.js";
+import { getDriveConnectionStatus } from "../services/driveTokenService.js";
 import { syncToDrive } from "../services/driveSync.js";
 
 const router = express.Router();
@@ -40,7 +41,7 @@ router.get("/", ensureAuthenticated, async (req, res) => {
         audio: "",
         timelineDavinci: "",
       },
-      driveConnected: !!settings.driveTokens,
+      driveConnected: await getDriveConnectionStatus(req.user._id),
       driveFileId: settings.driveFileId || null,
     });
   } catch (error) {
@@ -88,17 +89,17 @@ router.post("/", ensureAuthenticated, async (req, res) => {
     await settings.save();
 
     // Синхронизация с Drive
-    syncToDrive(settings).then((result) => {
-      if (result.success && result.fileId !== settings.driveFileId) {
+    syncToDrive(settings).then(async (result) => {
+      if (result.success && result.fileId && result.fileId !== settings.driveFileId) {
         settings.driveFileId = result.fileId;
-        settings.save(); // Сохраняем ID файла в БД
+        await settings.save(); // Сохраняем ID файла в БД
       }
-    });
+    }).catch(() => console.error("DRIVE_SYNC_PERSIST_FAILED"));
 
     res.json({
       success: true,
       prompts: Object.fromEntries(promptFields.map((key) => [key, settings.prompts[key]])),
-      driveConnected: !!settings.driveTokens,
+      driveConnected: await getDriveConnectionStatus(req.user._id),
     });
   } catch (error) {
     console.error("Ошибка обновления настроек:", error);
@@ -123,9 +124,13 @@ const serializeProfile = (profile) => {
   const obj = profile.toObject ? profile.toObject() : profile;
   const { apiKey, ...safe } = obj;
 
-  // Для маски нужен расшифрованный хвост ключа. Если значение битое,
-  // decryptData вернёт null → hasApiKey=false, но эндпоинт не упадёт.
-  const decrypted = apiKey ? decryptData(apiKey) : null;
+  // Preserve hasApiKey=false for damaged keys without exposing decryption errors.
+  let decrypted = null;
+  try {
+    decrypted = apiKey ? decryptData(apiKey) : null;
+  } catch {
+    // A damaged profile must not break the profiles endpoint.
+  }
 
   return {
     ...safe,
@@ -140,12 +145,12 @@ const serializeProfile = (profile) => {
  * Повторяет логику сохранения driveFileId из POST "/".
  */
 const persistAndSyncDrive = (settings) => {
-  syncToDrive(settings).then((result) => {
-    if (result?.success && result.fileId !== settings.driveFileId) {
+  syncToDrive(settings).then(async (result) => {
+    if (result?.success && result.fileId && result.fileId !== settings.driveFileId) {
       settings.driveFileId = result.fileId;
-      settings.save();
+      await settings.save();
     }
-  });
+  }).catch(() => console.error("DRIVE_SYNC_PERSIST_FAILED"));
 };
 
 /**

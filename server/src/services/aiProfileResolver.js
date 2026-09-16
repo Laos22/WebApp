@@ -44,7 +44,11 @@ export function resolveProfile(settings, type) {
  */
 export function getDecryptedApiKey(profile) {
   if (!profile?.apiKey) return null;
-  return decryptData(profile.apiKey);
+  try {
+    return decryptData(profile.apiKey);
+  } catch {
+    return null;
+  }
 }
 
 /**

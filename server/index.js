@@ -15,6 +15,7 @@ import projectRoutes from "./src/routes/projectRoutes.js";
 import { ensureAuthenticated } from "./src/middleware/auth.js";
 import User from "./src/models/User.js";
 import Settings from "./src/models/Settings.js";
+import { saveDriveTokens } from "./src/services/driveTokenService.js";
 
 const GoogleStrategy = passportGoogle.Strategy;
 
@@ -35,11 +36,12 @@ if (isProduction) {
 }
 
 // Логируем АБСОЛЮТНО все входящие запросы для диагностики
+morgan.token("url", (req) => req.path);
 app.use(morgan("dev"));
 
 // Добавим дебаг-логгер для отслеживания всех путей
 app.use((req, res, next) => {
-  console.log(`[DEBUG] ${req.method} ${req.url}`);
+  console.log(`[DEBUG] ${req.method} ${req.path}`);
   next();
 });
 
@@ -123,23 +125,28 @@ passport.use(
         // Делаем это ВСЕГДА, независимо от того, новый это или существующий пользователь
         if (accessToken || refreshToken) {
           console.log("💾 Сохраняем токены Drive для пользователя:", user._id);
-          let settings = await Settings.findOne({ userId: user._id });
-          if (!settings) {
-            settings = new Settings({ userId: user._id });
-          }
-          settings.driveTokens = {
-            access_token: accessToken,
-            refresh_token: refreshToken || settings.driveTokens?.refresh_token,
-            expiry_date: new Date().getTime() + 3600 * 1000,
-          };
-          await settings.save();
-          console.log("✓ Токены Drive сохранены (driveTokens заполнен)");
+          // Ensure the owner's Settings exists; credentials are written only by the service.
+          await Settings.updateOne(
+            { userId: user._id },
+            { $setOnInsert: { userId: user._id } },
+            { upsert: true, setDefaultsOnInsert: true },
+          );
+          await saveDriveTokens({
+            userId: user._id,
+            incomingTokens: {
+              access_token: accessToken,
+              refresh_token: refreshToken,
+              // This Passport callback has no exact expiry; retain the existing one-hour estimate.
+              expiry_date: Date.now() + 60 * 60 * 1000,
+            },
+          });
+          console.log("DRIVE_CREDENTIALS_SAVED");
         }
 
         done(null, user);
-      } catch (err) {
-        console.error("❌ Ошибка в Google Strategy:", err);
-        done(err, null);
+      } catch {
+        console.error("OAUTH_CREDENTIALS_FAILED");
+        done(new Error("Unable to complete Google authentication"), null);
       }
     },
   ),

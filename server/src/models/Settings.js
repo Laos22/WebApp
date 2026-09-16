@@ -85,8 +85,8 @@ const settingsSchema = new mongoose.Schema(
     },
 
     driveCredentials: { type: driveCredentialsSchema, default: null, select: false },
-    // Legacy plaintext field. Keep selectable until all readers are migrated.
-    driveTokens: { type: Object, default: null },
+    // Legacy plaintext is read only through driveTokenService.
+    driveTokens: { type: Object, default: null, select: false },
     driveFileId: { type: String, default: null },
   },
   {
