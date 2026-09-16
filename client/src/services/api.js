@@ -37,11 +37,22 @@ async function projectRequest(projectId, suffix = "", method = "GET", body) {
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const data = await response.json();
-  if (!response.ok || !data.success) throw new Error(data.error || "Ошибка запроса проекта");
+  if (!response.ok || !data.success) {
+    const error = new Error(data.error || "Ошибка запроса проекта");
+    error.status = response.status;
+    error.code = data.code;
+    error.fields = data.fields;
+    throw error;
+  }
   return data;
 }
 
 export const getProject = (id) => projectRequest(id);
+export const getVisualBible = (projectId) => projectRequest(projectId, "/visual-bible");
+export const generateVisualBibleDraft = (projectId, sourceScriptRevision, expectedEditVersion) =>
+  projectRequest(projectId, "/visual-bible/draft", "POST", { sourceScriptRevision, expectedEditVersion });
+export const confirmVisualBible = (projectId, sourceScriptRevision, expectedEditVersion) =>
+  projectRequest(projectId, "/visual-bible/confirm", "POST", { sourceScriptRevision, expectedEditVersion });
 export const generateProjectScript = (id, payload) => projectRequest(id, "/generate-script", "POST", payload);
 export const saveProjectScript = (id, content, revision) => projectRequest(id, "/script", "PUT", { content, revision });
 export const confirmProjectScript = (id, revision) => projectRequest(id, "/script/confirm", "POST", { revision });

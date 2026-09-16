@@ -15,6 +15,7 @@ import ProjectWorkspace from "./pages/ProjectWorkspace";
 import ImageGen from "./pages/ImageGen";
 import AudioGen from "./pages/AudioGen";
 import ScriptGen from "./pages/ScriptGen";
+import VisualBible from "./pages/VisualBible";
 import CoverGen from "./pages/CoverGen";
 import Settings from "./pages/Settings";
 
@@ -60,6 +61,10 @@ function AppContent() {
                 <ScriptGen />
               </ProtectedRoute>
             }
+          />
+          <Route
+            path="/projects/:projectId/visual-bible"
+            element={<ProtectedRoute><VisualBible /></ProtectedRoute>}
           />
           <Route
             path="/projects/:projectId/cover"
@@ -111,4 +116,3 @@ export default function App() {
     </Router>
   );
 }
-

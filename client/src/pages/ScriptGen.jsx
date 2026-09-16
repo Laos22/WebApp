@@ -279,6 +279,12 @@ function ScriptEditor({ projectId }) {
               <button onClick={() => { setAiOpen(true); setAiError(""); }} disabled={busy || !content.trim()}
                 className="px-4 py-2 bg-slate-700 rounded-xl disabled:opacity-50">Изменить с помощью ИИ</button>
             </div>
+            {result.status === "confirmed" && !dirty && !busy && (
+              <Link to={`/projects/${projectId}/visual-bible`}
+                className="inline-block px-4 py-2 bg-purple-700 hover:bg-purple-600 rounded-xl">
+                Перейти к Visual Bible
+              </Link>
+            )}
             {aiOpen && (
               <div className="border border-slate-700 rounded-xl p-4 space-y-3">
                 <label htmlFor="script-edit-instruction" className="block text-sm">Что изменить в сценарии?</label>
