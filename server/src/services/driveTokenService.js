@@ -1,4 +1,5 @@
 import { encryptData, decryptData } from "./encryptionService.js";
+import Settings from "../models/Settings.js";
 
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const nonEmpty = (value) => typeof value === "string" && value.trim().length > 0;
@@ -27,11 +28,12 @@ export function validateDriveTokens(tokens) {
 }
 
 /** Creates an envelope only; does not persist or increment stored revisions. */
-export function encryptDriveTokens({ userId, tokens }) {
+export function encryptDriveTokens({ userId, tokens, revision = 1 }) {
+  if (!Number.isSafeInteger(revision) || revision < 1) throw new Error("Invalid Drive credentials revision");
   const payload = { userId: normalizeUserId(userId), tokens: validateDriveTokens(tokens) };
   const ciphertext = encryptData(JSON.stringify(payload));
   if (!nonEmpty(ciphertext)) throw new Error("Unable to encrypt Drive credentials");
-  return { version: 1, revision: 1, ciphertext };
+  return { version: 1, revision, ciphertext };
 }
 
 export function decryptDriveTokens(input) {
@@ -88,6 +90,76 @@ export function hasUsableDriveTokens(tokens, now = Date.now()) {
     const normalized = validateDriveTokens(tokens);
     return nonEmpty(normalized.refresh_token) ||
       (nonEmpty(normalized.access_token) && normalized.expiry_date !== null && normalized.expiry_date > now);
+  } catch {
+    return false;
+  }
+}
+
+export async function loadDriveTokens(userId) {
+  try {
+    const owner = normalizeUserId(userId);
+    const settings = await Settings.findOne({ userId: owner })
+      .select("+driveCredentials +driveTokens");
+    if (!settings) return { source: "none", tokens: null };
+    return selectStoredDriveTokens(settings);
+  } catch {
+    throw new Error("Unable to load Drive credentials");
+  }
+}
+
+/** maxRetries is the total number of CAS attempts, including the first write. */
+export async function saveDriveTokens({ userId, incomingTokens, maxRetries = 3 } = {}) {
+  try {
+    const owner = normalizeUserId(userId);
+    const incoming = validateDriveTokens(incomingTokens);
+    if (!Number.isSafeInteger(maxRetries) || maxRetries < 1 ||
+        (!nonEmpty(incoming.access_token) && !nonEmpty(incoming.refresh_token))) {
+      throw new Error();
+    }
+
+    for (let attempt = 0; attempt < maxRetries; attempt += 1) {
+      const settings = await Settings.findOne({ userId: owner })
+        .select("+driveCredentials +driveTokens");
+      if (!settings) throw new Error();
+
+      const stored = selectStoredDriveTokens(settings);
+      const tokens = mergeDriveTokens(stored.tokens ?? {}, incoming);
+      const revision = stored.source === "encrypted" ? settings.driveCredentials.revision + 1 : 1;
+      const driveCredentials = encryptDriveTokens({ userId: settings.userId, tokens, revision });
+      const filter = stored.source === "encrypted"
+        ? {
+          _id: settings._id,
+          "driveCredentials.version": settings.driveCredentials.version,
+          "driveCredentials.revision": settings.driveCredentials.revision,
+        }
+        // MongoDB equality to null matches both null and an absent field.
+        : { _id: settings._id, driveCredentials: null };
+
+      const result = await Settings.updateOne(filter, {
+        $set: { driveCredentials },
+        $unset: { driveTokens: "" },
+      }, { runValidators: true, upsert: false });
+
+      if (result.modifiedCount === 1) {
+        return {
+          source: "encrypted",
+          revision,
+          hasAccessToken: nonEmpty(tokens.access_token),
+          hasRefreshToken: nonEmpty(tokens.refresh_token),
+        };
+      }
+    }
+  } catch {
+    // Never expose driver errors, query filters, or credential values.
+    throw new Error("Unable to save Drive credentials");
+  }
+  throw new Error("Drive credentials update conflict");
+}
+
+export async function getDriveConnectionStatus(userId, now = Date.now()) {
+  try {
+    const { tokens } = await loadDriveTokens(userId);
+    return hasUsableDriveTokens(tokens, now);
   } catch {
     return false;
   }
