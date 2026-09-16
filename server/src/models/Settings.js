@@ -5,6 +5,24 @@ import mongoose from "mongoose";
 export const DEFAULT_SYSTEM_PROMPT =
   "Ты — профессиональный YouTube-сценарист. Твоя задача — создавать виральные сценарии.";
 
+export const DEFAULT_VISUAL_BIBLE_PROMPT = `Создай Visual Bible проекта «{{PROJECT_TITLE}}» на основе подтверждённого сценария:
+{{SCRIPT}}
+
+Используй подтверждённый сценарий как источник фактов. Явно отделяй факты сценария от художественных решений и не выдавай придуманные детали за факты.
+Сохраняй единый визуальный стиль и визуальную целостность персонажей, локаций и объектов во всех сценах.
+Создавай отдельные визуальные режимы для разных времён или типов сцен, сохраняя общий стиль проекта.
+Пиши названия и пояснения на русском языке. Добавляй visual anchors на английском языке для будущих генераторов изображений.
+Верни только валидный JSON с разделами следующей структуры, заполнив их по сценарию:
+{
+  "visualStyle": {},
+  "visualModes": [],
+  "continuityRules": [],
+  "characters": [],
+  "locations": [],
+  "objects": []
+}
+Не добавляй Markdown, ограждения кода и пояснения вне JSON.`;
+
 // Схема для отдельного профиля провайдера
 const profileSchema = new mongoose.Schema({
   name: { type: String, required: true }, // Например: "OpenRouter Main"
@@ -82,6 +100,7 @@ const settingsSchema = new mongoose.Schema(
       cover: { type: String, default: "" },
       audio: { type: String, default: "" },
       timelineDavinci: { type: String, default: "" },
+      visualBiblePrompt: { type: String, default: DEFAULT_VISUAL_BIBLE_PROMPT },
     },
 
     driveCredentials: { type: driveCredentialsSchema, default: null, select: false },

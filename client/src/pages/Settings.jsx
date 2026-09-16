@@ -22,6 +22,7 @@ export default function Settings() {
     cover: "1",
     audio: "1",
     timelineDavinci: "1",
+    visualBiblePrompt: "",
   });
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -54,6 +55,7 @@ export default function Settings() {
         cover: response.data.prompts.cover || "",
         audio: response.data.prompts.audio || "",
         timelineDavinci: response.data.prompts.timelineDavinci || "",
+        visualBiblePrompt: response.data.prompts.visualBiblePrompt ?? "",
       }));
     } catch (e) {
       console.error("Ошибка загрузки настроек:", e);
@@ -86,6 +88,7 @@ export default function Settings() {
           cover: prompts.cover,
           audio: prompts.audio,
           timelineDavinci: prompts.timelineDavinci,
+          visualBiblePrompt: prompts.visualBiblePrompt,
         },
       });
 
@@ -227,6 +230,25 @@ export default function Settings() {
               💡 Совет: Опишите роль, стиль, целевую аудиторию и любые
               ограничения, которые должен учитывать ИИ.
             </p>
+          </section>
+
+          <section className="space-y-4 pb-6 border-b border-slate-800">
+            <h2 className="text-xl font-bold text-white">
+              <label htmlFor="visualBiblePrompt">Системный промпт Visual Bible</label>
+            </h2>
+            <p id="visualBiblePromptHelp" className="text-xs text-slate-400">
+              Редактируемый шаблон для будущей генерации Visual Bible.
+              Генерация пока не подключена. Placeholders: {"{{PROJECT_TITLE}}"} —
+              название проекта, {"{{SCRIPT}}"} — подтверждённый сценарий.
+            </p>
+            <textarea
+              id="visualBiblePrompt"
+              aria-describedby="visualBiblePromptHelp"
+              value={prompts.visualBiblePrompt}
+              onChange={(e) => setPrompts((prev) => ({ ...prev, visualBiblePrompt: e.target.value }))}
+              className="w-full h-80 bg-slate-950 border border-slate-800 rounded-xl p-4 text-sm text-white focus:border-purple-500 transition-all outline-none resize-y"
+              placeholder="Опишите требования к Visual Bible..."
+            />
           </section>
 
           {/* Кнопка сохранения */}

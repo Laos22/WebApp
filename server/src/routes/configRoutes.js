@@ -1,6 +1,6 @@
 import express from "express";
 import { ensureAuthenticated } from "../middleware/auth.js";
-import Settings, { DEFAULT_SYSTEM_PROMPT } from "../models/Settings.js";
+import Settings, { DEFAULT_SYSTEM_PROMPT, DEFAULT_VISUAL_BIBLE_PROMPT } from "../models/Settings.js";
 import {
   encryptData,
   decryptData,
@@ -34,12 +34,15 @@ router.get("/", ensureAuthenticated, async (req, res) => {
     }
 
     res.json({
-      prompts: settings.prompts || {
-        theme: "",
-        script: "",
-        cover: "",
-        audio: "",
-        timelineDavinci: "",
+      prompts: {
+        ...(settings.prompts || {
+          theme: "",
+          script: "",
+          cover: "",
+          audio: "",
+          timelineDavinci: "",
+        }),
+        visualBiblePrompt: settings.prompts?.visualBiblePrompt ?? DEFAULT_VISUAL_BIBLE_PROMPT,
       },
       driveConnected: await getDriveConnectionStatus(req.user._id),
       driveFileId: settings.driveFileId || null,
@@ -56,7 +59,7 @@ router.get("/", ensureAuthenticated, async (req, res) => {
 router.post("/", ensureAuthenticated, async (req, res) => {
   try {
     const body = req.body;
-    const promptFields = ["theme", "script", "cover", "audio", "timelineDavinci"];
+    const promptFields = ["theme", "script", "cover", "audio", "timelineDavinci", "visualBiblePrompt"];
 
     if (
       !body || typeof body !== "object" || Array.isArray(body) ||
@@ -69,10 +72,14 @@ router.post("/", ensureAuthenticated, async (req, res) => {
     if (
       !prompts || typeof prompts !== "object" || Array.isArray(prompts) ||
       Object.keys(prompts).some((key) => !promptFields.includes(key)) ||
-      promptFields.some((key) => !Object.hasOwn(prompts, key) || typeof prompts[key] !== "string")
+      promptFields.some((key) =>
+        key === "visualBiblePrompt" && !Object.hasOwn(prompts, key)
+          ? false
+          : !Object.hasOwn(prompts, key) || typeof prompts[key] !== "string"
+      )
     ) {
       return res.status(400).json({
-        error: "prompts должен содержать только строковые поля theme, script, cover, audio, timelineDavinci",
+        error: "prompts должен содержать обязательные строковые поля theme, script, cover, audio, timelineDavinci и только необязательное строковое поле visualBiblePrompt",
       });
     }
 
@@ -83,7 +90,12 @@ router.post("/", ensureAuthenticated, async (req, res) => {
     }
 
     // Копируем только разрешённые поля текущего frontend.
-    settings.prompts = Object.fromEntries(promptFields.map((key) => [key, prompts[key]]));
+    settings.prompts = Object.fromEntries(promptFields.map((key) => [
+      key,
+      key === "visualBiblePrompt" && !Object.hasOwn(prompts, key)
+        ? settings.prompts?.visualBiblePrompt ?? DEFAULT_VISUAL_BIBLE_PROMPT
+        : prompts[key],
+    ]));
 
     settings.updatedAt = new Date();
     await settings.save();
