@@ -11,6 +11,7 @@ import connectDB from "./src/config/database.js";
 import authRoutes from "./src/routes/authRoutes.js";
 import configRoutes from "./src/routes/configRoutes.js";
 import projectRoutes from "./src/routes/projectRoutes.js";
+import { ensureAuthenticated } from "./src/middleware/auth.js";
 import User from "./src/models/User.js";
 import Settings from "./src/models/Settings.js";
 
@@ -144,7 +145,7 @@ app.use("/api/settings", configRoutes);
 app.use("/api/projects", projectRoutes);
 
 // Эндпоинт генерации контента
-app.post("/api/generate", async (req, res) => {
+app.post("/api/generate", ensureAuthenticated, async (req, res) => {
   try {
     const { prompt, type, style } = req.body;
 
