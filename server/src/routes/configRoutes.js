@@ -54,7 +54,26 @@ router.get("/", ensureAuthenticated, async (req, res) => {
  */
 router.post("/", ensureAuthenticated, async (req, res) => {
   try {
-    const { prompts, driveTokens, driveFileId } = req.body;
+    const body = req.body;
+    const promptFields = ["theme", "script", "cover", "audio", "timelineDavinci"];
+
+    if (
+      !body || typeof body !== "object" || Array.isArray(body) ||
+      Object.keys(body).some((key) => key !== "prompts")
+    ) {
+      return res.status(400).json({ error: "Разрешено только поле prompts" });
+    }
+
+    const { prompts } = body;
+    if (
+      !prompts || typeof prompts !== "object" || Array.isArray(prompts) ||
+      Object.keys(prompts).some((key) => !promptFields.includes(key)) ||
+      promptFields.some((key) => !Object.hasOwn(prompts, key) || typeof prompts[key] !== "string")
+    ) {
+      return res.status(400).json({
+        error: "prompts должен содержать только строковые поля theme, script, cover, audio, timelineDavinci",
+      });
+    }
 
     let settings = await Settings.findOne({ userId: req.user._id });
 
@@ -62,10 +81,8 @@ router.post("/", ensureAuthenticated, async (req, res) => {
       settings = new Settings({ userId: req.user._id });
     }
 
-    // Обновляем поля
-    if (prompts !== undefined) settings.prompts = prompts;
-    if (driveTokens !== undefined) settings.driveTokens = driveTokens;
-    if (driveFileId !== undefined) settings.driveFileId = driveFileId;
+    // Копируем только разрешённые поля текущего frontend.
+    settings.prompts = Object.fromEntries(promptFields.map((key) => [key, prompts[key]]));
 
     settings.updatedAt = new Date();
     await settings.save();
@@ -78,7 +95,11 @@ router.post("/", ensureAuthenticated, async (req, res) => {
       }
     });
 
-    res.json({ success: true, settings });
+    res.json({
+      success: true,
+      prompts: Object.fromEntries(promptFields.map((key) => [key, settings.prompts[key]])),
+      driveConnected: !!settings.driveTokens,
+    });
   } catch (error) {
     console.error("Ошибка обновления настроек:", error);
     res.status(500).json({ error: "Failed to update settings" });
