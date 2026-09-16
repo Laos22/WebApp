@@ -45,6 +45,17 @@ const profileSchema = new mongoose.Schema({
   },
 });
 
+const driveCredentialsSchema = new mongoose.Schema({
+  version: { type: Number, required: true, enum: [1] },
+  revision: {
+    type: Number,
+    required: true,
+    min: 1,
+    validate: Number.isInteger,
+  },
+  ciphertext: { type: String, required: true },
+}, { _id: false });
+
 // Основная схема настроек
 const settingsSchema = new mongoose.Schema(
   {
@@ -73,6 +84,8 @@ const settingsSchema = new mongoose.Schema(
       timelineDavinci: { type: String, default: "" },
     },
 
+    driveCredentials: { type: driveCredentialsSchema, default: null, select: false },
+    // Legacy plaintext field. Keep selectable until all readers are migrated.
     driveTokens: { type: Object, default: null },
     driveFileId: { type: String, default: null },
   },
