@@ -1,25 +1,31 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import axios from "axios";
+
+import { getProject, generateProjectScript, saveProjectScript, confirmProjectScript } from "../services/api";
 
 const API_URL = import.meta.env.VITE_SERVER_URL;
 
 export default function ScriptGen() {
   const { projectId } = useParams();
+  return <ScriptEditor key={projectId} projectId={projectId} />;
+}
+
+function ScriptEditor({ projectId }) {
   const [systemPrompt, setSystemPrompt] = useState("");
 
   const [project, setProject] = useState(null);
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
+  const [content, setContent] = useState("");
+  const [message, setMessage] = useState("");
+  const [saving, setSaving] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [error, setError] = useState(null);
   
   useEffect(() => {
-    fetchSystemPrompt();
-  }, []);
-
-  const fetchSystemPrompt = async () => {
+    const fetchSystemPrompt = async () => {
     try {
       const response = await axios.get(`${API_URL}/api/settings`, {
         withCredentials: true,
@@ -30,19 +36,41 @@ export default function ScriptGen() {
     } catch (err) {
       console.error("Ошибка при загрузке системного промпта:", err);
     }
-  };
+    };
+    fetchSystemPrompt();
+  }, []);
   useEffect(() => {
+    let active = true;
+    const fetchProject = async () => {
+    try {
+      const data = await getProject(projectId);
+      if (!active) return;
+      setProject(data.project);
+      setResult(data.project.script || null);
+      setContent(data.project.script?.content || "");
+    } catch (err) {
+      if (active) setError(err.message);
+    }
+    };
     fetchProject();
+    return () => { active = false; };
   }, [projectId]);
 
-  const fetchProject = async () => {
+  const handleSave = async (confirm = false) => {
+    setSaving(true);
+    setError(null);
+    setMessage("");
     try {
-      const response = await axios.get(`${API_URL}/api/projects/${projectId}`, {
-        withCredentials: true,
-      });
-      setProject(response.data.project);
+      const data = confirm
+        ? await confirmProjectScript(projectId, result.revision)
+        : await saveProjectScript(projectId, content, result.revision);
+      setResult(data.script);
+      setContent(data.script.content);
+      setMessage(data.warning || (confirm ? "Сценарий подтверждён" : "Изменения сохранены"));
     } catch (err) {
-      console.error("Ошибка при загрузке проекта:", err);
+      setError(err.message);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -51,27 +79,17 @@ export default function ScriptGen() {
     if (!prompt.trim()) return;
 
     setLoading(true);
+    setMessage("");
     setError(null);
 
     try {
-      // 🚀 Отправляем запрос на генерацию сценария
-      console.log("Отправка запроса на генерацию сценария с промптом:", prompt);
-      const response = await axios.post(
-        `${API_URL}/api/projects/${projectId}/generate-script`,
-        {
-          prompt,
-          projectDescription: project?.description,
-        },
-        { withCredentials: true }
-      );
-
-      const scriptResult = {
-        title: "Сгенерированный сценарий",
-        content: response.data.script,
-        timestamp: new Date().toISOString(),
-      };
-      console.log("✅ Сценарий успешно сгенерирован:", scriptResult);
-      setResult(scriptResult);
+      const data = await generateProjectScript(projectId, {
+        prompt,
+        projectDescription: project?.description,
+      });
+      setResult(data.savedScript);
+      setContent(data.savedScript.content);
+      setMessage(data.warning || "Сценарий сгенерирован и сохранён");
       setIsModalOpen(true);
       setPrompt("");
     } catch (err) {
@@ -87,7 +105,7 @@ export default function ScriptGen() {
   };
 
   if (!project) {
-    return <div className="text-white p-12">Загрузка проекта...</div>;
+    return <div className="text-white p-12">{error || "Загрузка проекта..."}</div>;
   }
 
   return (
@@ -146,7 +164,7 @@ export default function ScriptGen() {
 
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || saving}
             className="w-full py-4 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-semibold rounded-xl shadow-lg shadow-emerald-600/25 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
           >
             {loading ? (
@@ -178,6 +196,27 @@ export default function ScriptGen() {
             )}
           </button>
         </form>
+
+        {result && (
+          <section className="bg-slate-900 border border-emerald-500/20 rounded-2xl p-6 space-y-4">
+            <h2 className="text-xl font-bold">Сохранённый сценарий</h2>
+            <p className="text-sm text-slate-400">
+              {result.status === "confirmed" ? "Подтверждён" : "Черновик"} · Редакция {result.revision}
+            </p>
+            <textarea aria-label="Текст сценария" rows={16} value={content}
+              disabled={loading || saving}
+              onChange={(event) => { setContent(event.target.value); setMessage(""); }}
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl p-4" />
+            {content !== result.content && <p className="text-sm text-amber-300">Есть несохранённые изменения. Сохраните их перед подтверждением.</p>}
+            <div className="flex flex-wrap gap-3">
+              <button onClick={() => handleSave()} disabled={loading || saving || !content.trim() || content === result.content}
+                className="px-4 py-2 bg-emerald-700 rounded-xl disabled:opacity-50">Сохранить изменения</button>
+              <button onClick={() => handleSave(true)} disabled={loading || saving || content !== result.content || result.status === "confirmed"}
+                className="px-4 py-2 bg-teal-700 rounded-xl disabled:opacity-50">Подтвердить сценарий</button>
+            </div>
+          </section>
+        )}
+        {message && <p role="status" className="text-emerald-300">{message}</p>}
 
         {/* Инфо блок */}
         <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-4 text-slate-300 text-sm space-y-2">
@@ -214,7 +253,7 @@ export default function ScriptGen() {
               </div>
 
               <div className="text-xs text-slate-400 bg-slate-950/50 p-3 rounded-xl border border-slate-800">
-                <span>Создано: {new Date(result.timestamp).toLocaleString("ru-RU")}</span>
+                <span>Создано: {new Date(result.generatedAt).toLocaleString("ru-RU")}</span>
               </div>
             </div>
 

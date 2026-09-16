@@ -1,6 +1,14 @@
 // server/src/models/Project.js
 import mongoose from 'mongoose';
 
+const scriptSchema = new mongoose.Schema({
+  content: { type: String, required: true },
+  status: { type: String, enum: ['draft', 'confirmed'], default: 'draft' },
+  revision: { type: Number, min: 1, required: true },
+  generatedAt: { type: Date, required: true },
+  confirmedAt: { type: Date, default: null }
+}, { _id: false });
+
 const projectSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -36,6 +44,7 @@ const projectSchema = new mongoose.Schema({
     type: String,
     default: ""
   },
+  script: { type: scriptSchema, default: undefined },
   scriptPath: {
     type: String,
     default: ""

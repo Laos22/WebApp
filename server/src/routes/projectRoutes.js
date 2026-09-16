@@ -234,6 +234,9 @@ router.post("/:id/generate-script", ensureAuthenticated, async (req, res) => {
       });
     }
 
+    const project = await Project.findOne({ _id: projectId, userId: req.user._id });
+    if (!project) return res.status(404).json({ error: "Проект не найден" });
+
     const settings = await Settings.findOne({ userId: req.user._id });
 
     if (!settings?.prompts?.script) {
@@ -248,44 +251,92 @@ router.post("/:id/generate-script", ensureAuthenticated, async (req, res) => {
       projectDescription,
       resolveProfile(settings, "text"),
     );
-    console.log("✅ Сценарий успешно сгенерирован:", script);
-
-    // Сохраняем сгенерированный сценарий в project_state.json
-    const project = await Project.findOne({
-      _id: projectId,
-      userId: req.user._id,
-    });
-
-    if (!project) {
-      return res.status(404).json({ error: "Проект не найден" });
+    if (typeof script !== "string" || !script.trim()) {
+      return res.status(502).json({ error: "Получен пустой сценарий" });
     }
-
-    const projectStateFile = path.join(
-      project.projectPath,
-      "project_state.json",
+    const saved = await Project.findOneAndUpdate(
+      { _id: projectId, userId: req.user._id },
+      {
+        $set: {
+          "script.content": script,
+          "script.status": "draft",
+          "script.generatedAt": new Date(),
+          "script.confirmedAt": null,
+          updatedAt: new Date(),
+        },
+        $inc: { "script.revision": 1 },
+      },
+      { new: true, runValidators: true },
     );
-    let projectState = {};
+    if (!saved) return res.status(404).json({ error: "Проект не найден" });
+    const warning = mirrorScript(saved);
+    res.json({ success: true, script: saved.script.content, savedScript: saved.script, warning });
 
-    if (fs.existsSync(projectStateFile)) {
-      projectState = JSON.parse(fs.readFileSync(projectStateFile, "utf-8"));
-    }
-
-    projectState.generatedScript = script;
-    fs.writeFileSync(projectStateFile, JSON.stringify(projectState, null, 2));
-
-    res.json({
-      success: true,
-      script,
-      message: "Сценарий успешно сгенерирован и сохранен",
-    });
-    
-
-   
   } catch (error) {
     console.error("❌ Ошибка генерации сценария:", error);
     res.status(500).json({
       error: error.message || "Ошибка при генерации сценария",
     });
+  }
+});
+
+// MongoDB is authoritative; the legacy file is a best-effort compatibility copy.
+function mirrorScript(project) {
+  try {
+    if (!project.projectPath) throw new Error("Missing project path");
+    const file = path.join(project.projectPath, "project_state.json");
+    const state = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf-8")) : {};
+    state.generatedScript = project.script.content;
+    fs.mkdirSync(project.projectPath, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(state, null, 2));
+    return undefined;
+  } catch {
+    return "Сценарий сохранён в MongoDB, но локальную копию обновить не удалось.";
+  }
+}
+
+router.put("/:id/script", ensureAuthenticated, async (req, res) => {
+  try {
+    const { content, revision } = req.body;
+    if (typeof content !== "string" || !content.trim() || !Number.isInteger(revision) || revision < 1) {
+      return res.status(400).json({ error: "Нужны непустой сценарий и его revision" });
+    }
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!project) return res.status(404).json({ error: "Проект не найден" });
+    const saved = await Project.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user._id, "script.revision": revision },
+      {
+        $set: { "script.content": content, "script.status": "draft", "script.confirmedAt": null, updatedAt: new Date() },
+        $inc: { "script.revision": 1 },
+      },
+      { new: true, runValidators: true },
+    );
+    if (!saved) return res.status(409).json({ error: "Сценарий изменился. Перезагрузите страницу перед сохранением." });
+    const warning = mirrorScript(saved);
+    res.json({ success: true, script: saved.script, warning });
+  } catch {
+    res.status(500).json({ error: "Не удалось сохранить сценарий в MongoDB" });
+  }
+});
+
+router.post("/:id/script/confirm", ensureAuthenticated, async (req, res) => {
+  try {
+    const { revision } = req.body;
+    if (!Number.isInteger(revision) || revision < 1) {
+      return res.status(400).json({ error: "Нужна revision сценария" });
+    }
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!project) return res.status(404).json({ error: "Проект не найден" });
+    const saved = await Project.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user._id, "script.revision": revision, "script.status": "draft" },
+      { $set: { "script.status": "confirmed", "script.confirmedAt": new Date(), updatedAt: new Date() } },
+      { new: true, runValidators: true },
+    );
+    if (!saved) return res.status(409).json({ error: "Сценарий изменился или уже подтверждён. Перезагрузите страницу." });
+    const warning = mirrorScript(saved);
+    res.json({ success: true, script: saved.script, warning });
+  } catch {
+    res.status(500).json({ error: "Не удалось подтвердить сценарий в MongoDB" });
   }
 });
 
