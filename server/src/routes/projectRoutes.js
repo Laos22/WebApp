@@ -13,6 +13,9 @@ import {
   logProfileUsage,
 } from "../services/aiProfileResolver.js";
 import Project from "../models/Project.js";
+import {
+  normalizeVisualBible, validateVisualBibleContent, markVisualBibleStaleUpdate,
+} from "../services/visualBibleService.js";
 import path from "path";
 import fs from "fs";
 
@@ -257,17 +260,22 @@ router.post("/:id/generate-script", ensureAuthenticated, async (req, res) => {
     }
     const saved = await Project.findOneAndUpdate(
       { _id: projectId, userId: req.user._id },
-      {
-        $set: {
-          "script.content": script,
-          "script.status": "draft",
-          "script.generatedAt": new Date(),
-          "script.confirmedAt": null,
-          updatedAt: new Date(),
+      [
+        // Pipeline updates are not cast by Mongoose; text is checked above and
+        // wrapped in $literal so leading '$' never becomes an expression.
+        {
+          $set: {
+            "script.content": { $literal: script },
+            "script.status": "draft",
+            "script.generatedAt": new Date(),
+            "script.confirmedAt": null,
+            updatedAt: new Date(),
+            "script.revision": { $add: [{ $ifNull: ["$script.revision", 0] }, 1] },
+          },
         },
-        $inc: { "script.revision": 1 },
-      },
-      { new: true, runValidators: true },
+        markVisualBibleStaleUpdate(),
+      ],
+      { new: true, updatePipeline: true },
     );
     if (!saved) return res.status(404).json({ error: "Проект не найден" });
     const warning = mirrorScript(saved);
@@ -326,11 +334,15 @@ router.put("/:id/script", ensureAuthenticated, async (req, res) => {
     if (!project) return res.status(404).json({ error: "Проект не найден" });
     const saved = await Project.findOneAndUpdate(
       { _id: req.params.id, userId: req.user._id, "script.revision": revision },
-      {
-        $set: { "script.content": content, "script.status": "draft", "script.confirmedAt": null, updatedAt: new Date() },
-        $inc: { "script.revision": 1 },
-      },
-      { new: true, runValidators: true },
+      [
+        { $set: {
+          "script.content": { $literal: content }, "script.status": "draft",
+          "script.confirmedAt": null, updatedAt: new Date(),
+          "script.revision": { $add: ["$script.revision", 1] },
+        } },
+        markVisualBibleStaleUpdate(),
+      ],
+      { new: true, updatePipeline: true },
     );
     if (!saved) return res.status(409).json({ error: "Сценарий изменился. Перезагрузите страницу перед сохранением." });
     const warning = mirrorScript(saved);
@@ -360,5 +372,88 @@ router.post("/:id/script/confirm", ensureAuthenticated, async (req, res) => {
     res.status(500).json({ error: "Не удалось подтвердить сценарий в MongoDB" });
   }
 });
+
+const bibleContentFields = ['visualStyle', 'visualModes', 'continuityRules', 'characters', 'locations', 'objects'];
+
+function validBibleBody(body, action) {
+  const allowed = action === 'save'
+    ? ['expectedEditVersion', ...bibleContentFields]
+    : ['expectedEditVersion', 'sourceScriptRevision'];
+  return body && typeof body === 'object' && !Array.isArray(body) &&
+    Object.keys(body).every(key => allowed.includes(key)) &&
+    Number.isSafeInteger(body.expectedEditVersion) && body.expectedEditVersion >= 0 &&
+    (action === 'save' || (Number.isSafeInteger(body.sourceScriptRevision) && body.sourceScriptRevision >= 1));
+}
+
+function bibleResponse(project) {
+  return {
+    success: true, visualBible: normalizeVisualBible(project),
+    scriptStatus: project.script?.status ?? null,
+    scriptRevision: project.script?.revision ?? null,
+  };
+}
+
+router.get('/:id/visual-bible', ensureAuthenticated, async (req, res) => {
+  try {
+    if (!/^[a-f\d]{24}$/i.test(req.params.id)) return res.status(400).json({ error: 'Неверный ID проекта' });
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    return res.json(bibleResponse(project));
+  } catch {
+    return res.status(500).json({ error: 'Не удалось загрузить Visual Bible' });
+  }
+});
+
+function changeBible(action) {
+  return async (req, res) => {
+    try {
+      if (!/^[a-f\d]{24}$/i.test(req.params.id) || !validBibleBody(req.body, action)) {
+        return res.status(400).json({ error: 'Неверные параметры Visual Bible' });
+      }
+      const owner = { _id: req.params.id, userId: req.user._id };
+      const project = await Project.findOne(owner);
+      if (!project) return res.status(404).json({ error: 'Проект не найден' });
+      const bible = normalizeVisualBible(project);
+      const status = action === 'reopen' ? 'confirmed' : 'draft';
+      const sourceRevision = bible.sourceScriptRevision;
+      if (bible.status !== status || bible.editVersion !== req.body.expectedEditVersion ||
+          project.script?.status !== 'confirmed' || sourceRevision !== project.script.revision ||
+          (action !== 'save' && req.body.sourceScriptRevision !== sourceRevision)) {
+        return res.status(409).json({ error: 'Bible или сценарий изменились. Перезагрузите данные.' });
+      }
+      const now = new Date();
+      const set = { 'visualBible.updatedAt': now, updatedAt: now };
+      const inc = { 'visualBible.editVersion': 1 };
+      if (action === 'save') {
+        const { expectedEditVersion, ...input } = req.body;
+        const content = validateVisualBibleContent(input, bible);
+        for (const [key, value] of Object.entries(content)) set[`visualBible.${key}`] = value;
+        set['visualBible.confirmedAt'] = null;
+      } else {
+        set['visualBible.status'] = action === 'confirm' ? 'confirmed' : 'draft';
+        set['visualBible.confirmedAt'] = action === 'confirm' ? now : null;
+        if (action === 'confirm') inc['visualBible.revision'] = 1;
+      }
+      // Compare all lifecycle bindings in the write, including the source script.
+      const saved = await Project.findOneAndUpdate({
+        ...owner, 'visualBible.status': status,
+        'visualBible.editVersion': req.body.expectedEditVersion,
+        'visualBible.sourceScriptRevision': sourceRevision,
+        'script.status': 'confirmed', 'script.revision': sourceRevision,
+      }, { $set: set, $inc: inc }, { new: true, runValidators: true });
+      if (!saved) return res.status(409).json({ error: 'Bible или сценарий изменились. Перезагрузите данные.' });
+      return res.json(bibleResponse(saved));
+    } catch (error) {
+      if (error.status === 400 || ['ValidationError', 'CastError', 'StrictModeError'].includes(error.name)) {
+        return res.status(400).json({ error: 'Неверное содержимое Visual Bible' });
+      }
+      return res.status(500).json({ error: 'Не удалось сохранить Visual Bible' });
+    }
+  };
+}
+
+router.put('/:id/visual-bible', ensureAuthenticated, changeBible('save'));
+router.post('/:id/visual-bible/confirm', ensureAuthenticated, changeBible('confirm'));
+router.post('/:id/visual-bible/reopen', ensureAuthenticated, changeBible('reopen'));
 
 export default router;
