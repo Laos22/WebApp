@@ -1,12 +1,13 @@
 // server/src/routes/projectRoutes.js
 import express from "express";
 import { ensureAuthenticated } from "../middleware/auth.js";
-import Settings from "../models/Settings.js";
+import Settings, { DEFAULT_VISUAL_BIBLE_PROMPT } from "../models/Settings.js";
 import {
   generateVideoTopic,
   generateCoverData,
   generateScript,
   editScript,
+  generateVisualBibleDraft,
 } from "../services/geminiService.js";
 import {
   resolveProfile,
@@ -15,6 +16,7 @@ import {
 import Project from "../models/Project.js";
 import {
   normalizeVisualBible, validateVisualBibleContent, markVisualBibleStaleUpdate,
+  normalizeGeneratedVisualBible,
 } from "../services/visualBibleService.js";
 import path from "path";
 import fs from "fs";
@@ -401,6 +403,67 @@ router.get('/:id/visual-bible', ensureAuthenticated, async (req, res) => {
     return res.json(bibleResponse(project));
   } catch {
     return res.status(500).json({ error: 'Не удалось загрузить Visual Bible' });
+  }
+});
+
+router.post('/:id/visual-bible/draft', ensureAuthenticated, async (req, res) => {
+  try {
+    if (!validBibleBody(req.body, 'draft') || req.body.expectedEditVersion === Number.MAX_SAFE_INTEGER) {
+      return res.status(400).json({ error: 'Неверные параметры Visual Bible' });
+    }
+    if (!/^[a-f\d]{24}$/i.test(req.params.id)) return res.status(404).json({ error: 'Проект не найден' });
+    const { sourceScriptRevision, expectedEditVersion } = req.body;
+    const owner = { _id: req.params.id, userId: req.user._id };
+    const project = await Project.findOne(owner);
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const bible = normalizeVisualBible(project);
+    if (project.script?.status !== 'confirmed' || project.script.revision !== sourceScriptRevision ||
+        bible.editVersion !== expectedEditVersion) {
+      return res.status(409).json({ error: 'Bible или сценарий изменились. Перезагрузите данные.' });
+    }
+    const settings = await Settings.findOne({ userId: req.user._id });
+    const rawText = await generateVisualBibleDraft(
+      project.title, project.script.content,
+      settings?.prompts?.visualBiblePrompt ?? DEFAULT_VISUAL_BIBLE_PROMPT,
+      resolveProfile(settings, 'text'),
+    );
+    const normalized = normalizeGeneratedVisualBible(rawText);
+    let content;
+    try {
+      // Reuse the existing ceilings and server ID assignment, without accepting AI IDs.
+      content = validateVisualBibleContent(normalized);
+    } catch {
+      return res.status(502).json({ code: 'INVALID_VISUAL_BIBLE_RESPONSE', fields: ['$'] });
+    }
+    const now = new Date();
+    const saved = await Project.findOneAndUpdate({
+      ...owner,
+      'script.status': 'confirmed',
+      'script.revision': sourceScriptRevision,
+      ...(expectedEditVersion === 0 ? {
+        $or: [
+          { 'visualBible.editVersion': 0 },
+          { 'visualBible.editVersion': { $exists: false } },
+        ],
+      } : { 'visualBible.editVersion': expectedEditVersion }),
+    }, { $set: {
+      visualBible: {
+        ...content, status: 'draft', schemaVersion: 1,
+        sourceScriptRevision, editVersion: expectedEditVersion + 1,
+        revision: bible.revision ?? 0, updatedAt: now, confirmedAt: null,
+      },
+      updatedAt: now,
+    } }, { new: true, runValidators: true });
+    if (!saved) return res.status(409).json({ error: 'Bible или сценарий изменились. Перезагрузите данные.' });
+    return res.json(bibleResponse(saved));
+  } catch (error) {
+    if (error.code === 'INVALID_VISUAL_BIBLE_RESPONSE') {
+      return res.status(502).json({ code: error.code, fields: error.fields });
+    }
+    if (error.code === 'VISUAL_BIBLE_GENERATION_FAILED') {
+      return res.status(502).json({ code: error.code });
+    }
+    return res.status(500).json({ error: 'Не удалось сохранить Visual Bible' });
   }
 });
 
