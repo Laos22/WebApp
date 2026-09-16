@@ -73,9 +73,36 @@ function generatedList(value) {
   return items.map(generatedText).filter(Boolean);
 }
 
+// Compatibility aliases apply only to generated content, never manual PUT validation.
+const generatedAliases = {
+  visualStyle: ['visual_style', 'global_style'],
+  visualModes: ['visual_modes'],
+  continuityRules: ['continuity_rules', 'continuity_rules_ru'],
+  concept: ['concept_ru'], colorPalette: ['color_palette'],
+  lightingRules: ['lighting_rules'], cameraRules: ['camera_rules'],
+  textureRules: ['texture_rules'], promptAnchorEn: ['prompt_anchor_en'], avoid: ['avoid_en'],
+  name: ['name_ru'], sourceFacts: ['source_facts', 'source_facts_ru'],
+  designDecisions: ['design_decisions', 'design_decisions_ru'], role: ['role_ru'],
+  identityAnchorEn: ['identity_anchor_en'], defaultWardrobeEn: ['default_wardrobe_en'],
+  optionalPropsEn: ['optional_props_en'], variableConditionsEn: ['variable_conditions_en'],
+  visualAnchorEn: ['visual_anchor_en'], purpose: ['purpose_ru'], styleEn: ['style_en'],
+  paletteEn: ['palette_en'], lightingOptionsEn: ['lighting_options_en'],
+  cameraOptionsEn: ['camera_options_en'], atmosphereOptionsEn: ['atmosphere_options_en'],
+  avoidEn: ['avoid_en'],
+};
+
+function generatedKey(input, key) {
+  return [key, ...(generatedAliases[key] || [])].find(candidate => Object.hasOwn(input, candidate));
+}
+
+function generatedValue(input, key) {
+  const selected = generatedKey(input, key);
+  return selected === undefined ? undefined : input[selected];
+}
+
 function generatedFields(input, fields) {
   return Object.fromEntries(Object.entries(fields).map(([key, kind]) => {
-    const value = Object.hasOwn(input, key) ? input[key] : undefined;
+    const value = generatedValue(input, key);
     return [key, kind === 'list' ? generatedList(value)
       : kind === 'boolean' ? (typeof value === 'boolean' ? value : false)
         : generatedText(value)];
@@ -95,7 +122,7 @@ export function normalizeGeneratedVisualBible(rawResponse) {
     }
   }
   if (!isGeneratedObject(input)) invalidGeneratedResponse(['$']);
-  if (!contentFields.some(key => Object.hasOwn(input, key))) {
+  if (!contentFields.some(key => generatedKey(input, key) !== undefined)) {
     for (const wrapper of ['content', 'visualBible', 'visual_bible']) {
       if (Object.hasOwn(input, wrapper)) {
         if (!isGeneratedObject(input[wrapper])) invalidGeneratedResponse([wrapper]);
@@ -106,18 +133,18 @@ export function normalizeGeneratedVisualBible(rawResponse) {
   }
 
   const fields = [];
-  const style = input.visualStyle;
+  const style = generatedValue(input, 'visualStyle');
   if (style != null && !isGeneratedObject(style)) fields.push('visualStyle');
   const result = {
     visualStyle: generatedFields(isGeneratedObject(style) ? style : {}, styleFields),
     visualModes: [],
-    continuityRules: generatedList(input.continuityRules),
+    continuityRules: generatedList(generatedValue(input, 'continuityRules')),
     characters: [],
     locations: [],
     objects: [],
   };
   for (const [key, spec] of Object.entries(collections)) {
-    const values = input[key];
+    const values = generatedValue(input, key);
     if (values == null) continue;
     if (!Array.isArray(values)) {
       fields.push(key);

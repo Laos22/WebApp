@@ -12,14 +12,61 @@ export const DEFAULT_VISUAL_BIBLE_PROMPT = `Создай Visual Bible проек
 Сохраняй единый визуальный стиль и визуальную целостность персонажей, локаций и объектов во всех сценах.
 Создавай отдельные визуальные режимы для разных времён или типов сцен, сохраняя общий стиль проекта.
 Пиши названия и пояснения на русском языке. Добавляй visual anchors на английском языке для будущих генераторов изображений.
-Верни только валидный JSON с разделами следующей структуры, заполнив их по сценарию:
+Верни только валидный JSON с точной полной структурой ниже, заполнив значения по сценарию. Используй только указанные ключи в camelCase, без snake_case и суффиксов _ru/_en. Поля с окончанием En заполняй на английском языке.
+Объекты в массивах показывают структуру одного элемента. Если соответствующих сущностей нет в сценарии, верни пустой массив; не создавай элементы только ради заполнения структуры. Не добавляй ID и служебные метаданные.
 {
-  "visualStyle": {},
-  "visualModes": [],
+  "visualStyle": {
+    "concept": "",
+    "realism": "",
+    "colorPalette": [],
+    "lightingRules": [],
+    "cameraRules": [],
+    "textureRules": [],
+    "promptAnchorEn": "",
+    "avoid": []
+  },
+  "visualModes": [
+    {
+      "name": "",
+      "purpose": "",
+      "styleEn": "",
+      "paletteEn": "",
+      "lightingOptionsEn": [],
+      "cameraOptionsEn": [],
+      "atmosphereOptionsEn": [],
+      "avoidEn": []
+    }
+  ],
   "continuityRules": [],
-  "characters": [],
-  "locations": [],
-  "objects": []
+  "characters": [
+    {
+      "name": "",
+      "sourceFacts": [],
+      "designDecisions": [],
+      "role": "",
+      "recurring": false,
+      "identityAnchorEn": "",
+      "defaultWardrobeEn": "",
+      "optionalPropsEn": []
+    }
+  ],
+  "locations": [
+    {
+      "name": "",
+      "sourceFacts": [],
+      "designDecisions": [],
+      "identityAnchorEn": "",
+      "variableConditionsEn": []
+    }
+  ],
+  "objects": [
+    {
+      "name": "",
+      "sourceFacts": [],
+      "designDecisions": [],
+      "visualAnchorEn": ""
+    }
+  ]
 }
 Не добавляй Markdown, ограждения кода и пояснения вне JSON.`;
 
