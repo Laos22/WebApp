@@ -36,8 +36,8 @@ if (isProduction) {
 }
 
 // Логируем АБСОЛЮТНО все входящие запросы для диагностики
-morgan.token("url", (req) => req.path);
-app.use(morgan("dev"));
+morgan.token("safe-url", (req) => req.path);
+app.use(morgan(":method :safe-url :status :response-time :res[content-length] - :remote-addr :remote-user :date[iso8601]"));
 
 // Добавим дебаг-логгер для отслеживания всех путей
 app.use((req, res, next) => {
