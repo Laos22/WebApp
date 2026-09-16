@@ -1,8 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useParams, Link } from "react-router-dom";
 import axios from "axios";
 
-import { getProject, generateProjectScript, saveProjectScript, confirmProjectScript } from "../services/api";
+import { getProject, generateProjectScript, saveProjectScript, confirmProjectScript, editProjectScript } from "../services/api";
 
 const API_URL = import.meta.env.VITE_SERVER_URL;
 
@@ -21,7 +21,66 @@ function ScriptEditor({ projectId }) {
   const [content, setContent] = useState("");
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [instruction, setInstruction] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [aiError, setAiError] = useState("");
+  const editRequest = useRef(null);
+  const editorRef = useRef(null);
+  const dirty = Boolean(result && content !== result.content);
+  const busy = loading || saving || editing;
+
+  useEffect(() => () => editRequest.current?.abort(), []);
+  useEffect(() => {
+    if (!dirty) return;
+    const unload = (event) => { event.preventDefault(); event.returnValue = ""; };
+    const leave = (event) => {
+      const link = event.target.closest?.("a[href]");
+      if (link && link.href !== window.location.href &&
+          !window.confirm("Есть несохранённые изменения сценария. Покинуть страницу?")) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    window.addEventListener("beforeunload", unload);
+    document.addEventListener("click", leave, true);
+    return () => {
+      window.removeEventListener("beforeunload", unload);
+      document.removeEventListener("click", leave, true);
+    };
+  }, [dirty]);
+
+  const cancelEdit = () => {
+    editRequest.current?.abort();
+    editRequest.current = null;
+    setEditing(false);
+    setAiOpen(false);
+    setAiError("");
+  };
+
+  const handleAiEdit = async () => {
+    if (busy || !instruction.trim() || !content.trim()) return;
+    const controller = new AbortController();
+    editRequest.current = controller;
+    setEditing(true);
+    setAiError("");
+    setMessage("");
+    try {
+      const updated = await editProjectScript(projectId, content, instruction, controller.signal);
+      if (editRequest.current !== controller || controller.signal.aborted) return;
+      setContent(updated);
+      setAiOpen(false);
+      setInstruction("");
+      setMessage(updated === result.content ? "ИИ не изменил сохранённый текст" : "Изменения ИИ применены локально. Сохраните сценарий.");
+    } catch (err) {
+      if (!controller.signal.aborted) setAiError(err.message);
+    } finally {
+      if (editRequest.current === controller) {
+        editRequest.current = null;
+        setEditing(false);
+      }
+    }
+  };
   const [error, setError] = useState(null);
   
   useEffect(() => {
@@ -57,6 +116,7 @@ function ScriptEditor({ projectId }) {
   }, [projectId]);
 
   const handleSave = async (confirm = false) => {
+    if (busy || (confirm && dirty)) return;
     setSaving(true);
     setError(null);
     setMessage("");
@@ -76,7 +136,8 @@ function ScriptEditor({ projectId }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!prompt.trim()) return;
+    if (busy || !prompt.trim()) return;
+    if (dirty && !window.confirm("Повторная генерация заменит несохранённые правки. Продолжить?")) return;
 
     setLoading(true);
     setMessage("");
@@ -90,7 +151,9 @@ function ScriptEditor({ projectId }) {
       setResult(data.savedScript);
       setContent(data.savedScript.content);
       setMessage(data.warning || "Сценарий сгенерирован и сохранён");
-      setIsModalOpen(true);
+      setAiOpen(false);
+      setAiError("");
+      requestAnimationFrame(() => editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
       setPrompt("");
     } catch (err) {
       console.error("Ошибка при генерации сценария:");
@@ -164,7 +227,7 @@ function ScriptEditor({ projectId }) {
 
           <button
             type="submit"
-            disabled={loading || saving}
+            disabled={busy}
             className="w-full py-4 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-semibold rounded-xl shadow-lg shadow-emerald-600/25 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
           >
             {loading ? (
@@ -198,22 +261,40 @@ function ScriptEditor({ projectId }) {
         </form>
 
         {result && (
-          <section className="bg-slate-900 border border-emerald-500/20 rounded-2xl p-6 space-y-4">
-            <h2 className="text-xl font-bold">Сохранённый сценарий</h2>
+          <section ref={editorRef} className="bg-slate-900 border border-emerald-500/20 rounded-2xl p-6 space-y-4">
+            <h2 className="text-xl font-bold">Сценарий</h2>
             <p className="text-sm text-slate-400">
-              {result.status === "confirmed" ? "Подтверждён" : "Черновик"} · Редакция {result.revision}
+              {dirty ? "Несохранённые изменения" : result.status === "confirmed" ? "Подтверждён" : "Черновик"} · Редакция {result.revision}
             </p>
             <textarea aria-label="Текст сценария" rows={16} value={content}
-              disabled={loading || saving}
+              disabled={busy}
               onChange={(event) => { setContent(event.target.value); setMessage(""); }}
               className="w-full bg-slate-950 border border-slate-800 rounded-xl p-4" />
             {content !== result.content && <p className="text-sm text-amber-300">Есть несохранённые изменения. Сохраните их перед подтверждением.</p>}
             <div className="flex flex-wrap gap-3">
-              <button onClick={() => handleSave()} disabled={loading || saving || !content.trim() || content === result.content}
+              <button onClick={() => handleSave()} disabled={busy || !content.trim() || content === result.content}
                 className="px-4 py-2 bg-emerald-700 rounded-xl disabled:opacity-50">Сохранить изменения</button>
-              <button onClick={() => handleSave(true)} disabled={loading || saving || content !== result.content || result.status === "confirmed"}
+              <button onClick={() => handleSave(true)} disabled={busy || content !== result.content || result.status === "confirmed"}
                 className="px-4 py-2 bg-teal-700 rounded-xl disabled:opacity-50">Подтвердить сценарий</button>
+              <button onClick={() => { setAiOpen(true); setAiError(""); }} disabled={busy || !content.trim()}
+                className="px-4 py-2 bg-slate-700 rounded-xl disabled:opacity-50">Изменить с помощью ИИ</button>
             </div>
+            {aiOpen && (
+              <div className="border border-slate-700 rounded-xl p-4 space-y-3">
+                <label htmlFor="script-edit-instruction" className="block text-sm">Что изменить в сценарии?</label>
+                <textarea id="script-edit-instruction" rows={3} maxLength={2000} value={instruction}
+                  disabled={editing} onChange={(event) => setInstruction(event.target.value)}
+                  placeholder="Сделай вступление более интригующим; сократи третий блок; добавь динамики, сохрани факты"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3" />
+                {content.length > 20000 && <p className="text-amber-300 text-sm">Для ИИ-редактирования допустимо до 20 000 символов.</p>}
+                {aiError && <p role="alert" className="text-red-400 text-sm">{aiError}</p>}
+                <div className="flex gap-3">
+                  <button onClick={handleAiEdit} disabled={busy || !instruction.trim() || !content.trim() || content.length > 20000}
+                    className="px-4 py-2 bg-emerald-700 rounded-xl disabled:opacity-50">{editing ? "ИИ редактирует…" : "Применить"}</button>
+                  <button onClick={cancelEdit} className="px-4 py-2 bg-slate-700 rounded-xl">Отмена</button>
+                </div>
+              </div>
+            )}
           </section>
         )}
         {message && <p role="status" className="text-emerald-300">{message}</p>}
@@ -229,46 +310,6 @@ function ScriptEditor({ projectId }) {
         </div>
       </div>
 
-      {/* Модальное окно результата */}
-      {isModalOpen && result && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-slate-900 border border-emerald-500/30 rounded-2xl max-w-3xl w-full overflow-hidden shadow-2xl">
-            <div className="p-6 border-b border-slate-800 flex items-center justify-between">
-              <h3 className="text-xl font-bold text-white flex items-center space-x-2">
-                <span>📝 Ваш сценарий</span>
-              </h3>
-              <button
-                onClick={() => setIsModalOpen(false)}
-                className="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-slate-800 transition-colors"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="p-6 space-y-4">
-              <div className="bg-slate-950 p-5 rounded-xl border border-slate-800 max-h-96 overflow-y-auto">
-                <pre className="text-slate-200 text-sm whitespace-pre-wrap font-sans">
-                  {result.content}
-                </pre>
-              </div>
-
-              <div className="text-xs text-slate-400 bg-slate-950/50 p-3 rounded-xl border border-slate-800">
-                <span>Создано: {new Date(result.generatedAt).toLocaleString("ru-RU")}</span>
-              </div>
-            </div>
-
-            <div className="p-6 border-t border-slate-800 bg-slate-950/50 flex justify-end space-x-3">
-              <button
-                onClick={() => setIsModalOpen(false)}
-                className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-white text-sm font-medium rounded-xl transition-colors"
-              >
-                Закрыть
-              </button>
-              
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

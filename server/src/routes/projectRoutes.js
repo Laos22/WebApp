@@ -6,6 +6,7 @@ import {
   generateVideoTopic,
   generateCoverData,
   generateScript,
+  editScript,
 } from "../services/geminiService.js";
 import {
   resolveProfile,
@@ -277,6 +278,26 @@ router.post("/:id/generate-script", ensureAuthenticated, async (req, res) => {
     res.status(500).json({
       error: error.message || "Ошибка при генерации сценария",
     });
+  }
+});
+
+// AI editing is a preview only: no Project or legacy-file writes.
+router.post("/:id/edit-script", ensureAuthenticated, async (req, res) => {
+  try {
+    const body = req.body;
+    if (!body || typeof body !== "object" || Array.isArray(body) ||
+        Object.keys(body).some((key) => !["currentScript", "instruction"].includes(key)) ||
+        typeof body.currentScript !== "string" || !body.currentScript.trim() || body.currentScript.length > 20000 ||
+        typeof body.instruction !== "string" || !body.instruction.trim() || body.instruction.length > 2000) {
+      return res.status(400).json({ error: "Нужны текст сценария (до 20 000 символов) и инструкция (до 2 000 символов)." });
+    }
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!project) return res.status(404).json({ error: "Проект не найден" });
+    const settings = await Settings.findOne({ userId: req.user._id });
+    const content = await editScript(body.currentScript, body.instruction, resolveProfile(settings, "text"));
+    res.json({ content });
+  } catch {
+    res.status(500).json({ error: "Не удалось изменить сценарий с помощью ИИ. Текущий текст сохранён в редакторе. Попробуйте ещё раз." });
   }
 });
 

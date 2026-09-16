@@ -11,7 +11,7 @@ import { getDecryptedApiKey } from "./aiProfileResolver.js";
  * @param {string} operation - Название операции для логов
  */
 function resolveTextConfig(profile, operation) {
-  console.log(`Профиль для операции "${operation}":`, profile);
+  // Do not log the profile object: it contains the encrypted API key.
   // Ключ в профиле хранится в зашифрованном виде — расшифровываем его
   // только здесь, непосредственно перед вызовом Gemini API.
   const profileKey = getDecryptedApiKey(profile);
@@ -285,4 +285,23 @@ export async function generateScript(systemPrompt, projectDescription, profile) 
     console.error("❌ Ошибка Gemini API при генерации сценария:", error);
     throw error;
   }
+}
+
+
+export async function editScript(currentScript, instruction, profile) {
+  const { apiKey, model } = resolveTextConfig(profile, "edit-script");
+  const ai = new GoogleGenAI({ apiKey });
+  const response = await ai.models.generateContent({
+    model,
+    contents: [{ role: "user", parts: [{ text: JSON.stringify({ currentScript, instruction }) }] }],
+    config: {
+      systemInstruction: "Отредактируй сценарий согласно инструкции пользователя. Верни полный обновлённый сценарий, а не список изменений. Сохрани язык исходного сценария. Не добавляй Markdown-обёртки, пояснения и комментарии о редактировании.",
+    },
+  });
+  const text = typeof response.text === "function" ? response.text()
+    : response.text ?? response.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (typeof text !== "string" || !text.trim()) throw new Error("Empty edited script");
+  const cleaned = text.trim().replace(/^```[^\n]*\n([\s\S]*?)\n```$/, "$1").trim();
+  if (!cleaned || cleaned.length > 20000) throw new Error("Invalid edited script length");
+  return cleaned;
 }

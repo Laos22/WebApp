@@ -45,3 +45,17 @@ export const getProject = (id) => projectRequest(id);
 export const generateProjectScript = (id, payload) => projectRequest(id, "/generate-script", "POST", payload);
 export const saveProjectScript = (id, content, revision) => projectRequest(id, "/script", "PUT", { content, revision });
 export const confirmProjectScript = (id, revision) => projectRequest(id, "/script/confirm", "POST", { revision });
+
+export async function editProjectScript(id, currentScript, instruction, signal) {
+  const response = await fetch(`${import.meta.env.VITE_SERVER_URL}/api/projects/${id}/edit-script`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ currentScript, instruction }),
+    signal,
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Не удалось изменить сценарий");
+  if (typeof data.content !== "string" || !data.content.trim()) throw new Error("ИИ вернул пустой сценарий");
+  return data.content;
+}
