@@ -49,6 +49,8 @@ async function projectRequest(projectId, suffix = "", method = "GET", body) {
 
 export const getProject = (id) => projectRequest(id);
 export const getVisualBible = (projectId) => projectRequest(projectId, "/visual-bible");
+export const updateVisualBible = (projectId, payload) =>
+  projectRequest(projectId, "/visual-bible", "PUT", payload);
 export const generateVisualBibleDraft = (projectId, sourceScriptRevision, expectedEditVersion) =>
   projectRequest(projectId, "/visual-bible/draft", "POST", { sourceScriptRevision, expectedEditVersion });
 export const confirmVisualBible = (projectId, sourceScriptRevision, expectedEditVersion) =>

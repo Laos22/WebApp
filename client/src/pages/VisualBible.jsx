@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getVisualBible, generateVisualBibleDraft, confirmVisualBible } from "../services/api";
+import { getVisualBible, generateVisualBibleDraft, confirmVisualBible, updateVisualBible } from "../services/api";
 
 const styleLabels = {
   concept: "Концепция", realism: "Реализм", colorPalette: "Цветовая палитра",
@@ -23,9 +23,43 @@ const sections = [
   }],
   ["objects", "Объекты", { ...commonLabels, visualAnchorEn: "Визуальный ориентир (EN)" }],
 ];
+const contentFields = {
+  visualStyle: { concept: "text", realism: "text", colorPalette: "list", lightingRules: "list", cameraRules: "list", textureRules: "list", promptAnchorEn: "text", avoid: "list" },
+  visualModes: { name: "text", purpose: "text", styleEn: "text", paletteEn: "text", lightingOptionsEn: "list", cameraOptionsEn: "list", atmosphereOptionsEn: "list", avoidEn: "list" },
+  characters: { name: "text", sourceFacts: "list", designDecisions: "list", role: "text", recurring: "boolean", identityAnchorEn: "text", defaultWardrobeEn: "text", optionalPropsEn: "list" },
+  locations: { name: "text", sourceFacts: "list", designDecisions: "list", identityAnchorEn: "text", variableConditionsEn: "list" },
+  objects: { name: "text", sourceFacts: "list", designDecisions: "list", visualAnchorEn: "text" },
+};
 const statuses = { empty: "Не создана", draft: "Черновик", confirmed: "Подтверждено", stale: "Устарела" };
 const panel = "bg-slate-900/80 border border-slate-800 rounded-2xl p-6 space-y-4";
 const button = "px-4 py-3 rounded-xl bg-purple-700 hover:bg-purple-600 disabled:opacity-50 disabled:cursor-not-allowed";
+
+const copyBible = (bible) => JSON.parse(JSON.stringify(bible));
+const listToText = (value) => Array.isArray(value) ? value.join("\n") : "";
+const textToDraftList = (value) => value.split("\n");
+
+function contentFromBible(bible) {
+  const mapFields = (item, fields) => Object.fromEntries(Object.entries(fields).map(([key, type]) => {
+    const value = item?.[key];
+    return [key, type === "list" ? (Array.isArray(value) ? value.map(item => String(item).trim()).filter(Boolean) : [])
+      : type === "boolean" ? Boolean(value) : typeof value === "string" ? value : ""];
+  }));
+  const collection = (key) => (Array.isArray(bible?.[key]) ? bible[key] : []).map(item => ({
+    ...(typeof item.id === "string" && item.id ? { id: item.id } : {}),
+    ...mapFields(item, contentFields[key]),
+  }));
+  return {
+    visualStyle: mapFields(bible?.visualStyle, contentFields.visualStyle),
+    continuityRules: Array.isArray(bible?.continuityRules) ? bible.continuityRules.map(item => String(item).trim()).filter(Boolean) : [],
+    visualModes: collection("visualModes"), characters: collection("characters"),
+    locations: collection("locations"), objects: collection("objects"),
+  };
+}
+
+function emptyItem(key) {
+  return Object.fromEntries(Object.entries(contentFields[key]).map(([field, type]) =>
+    [field, type === "list" ? [] : type === "boolean" ? false : ""]));
+}
 
 function Value({ value }) {
   if (Array.isArray(value)) return value.length
@@ -40,6 +74,18 @@ function Fields({ value = {}, labels }) {
   return <dl className="space-y-3 text-sm">{Object.entries(labels).map(([key, label]) => (
     <div key={key}><dt className="text-slate-400 mb-1">{label}</dt><dd><Value value={value[key]} /></dd></div>
   ))}</dl>;
+}
+
+function EditorFields({ value = {}, labels, onChange }) {
+  return <div className="space-y-3 text-sm">{Object.entries(labels).map(([key, label]) => {
+    const type = key === "recurring" ? "boolean" : Array.isArray(value[key]) ? "list" : "text";
+    if (type === "boolean") return <label key={key} className="flex items-center gap-3 text-slate-300"><input type="checkbox" checked={Boolean(value[key])} onChange={event => onChange(key, event.target.checked)} />{label}</label>;
+    return <label key={key} className="block"><span className="block text-slate-400 mb-1">{label}</span>
+      {type === "list" ? <textarea className="w-full min-h-24 rounded-lg bg-slate-950 border border-slate-700 p-3" value={listToText(value[key])} onChange={event => onChange(key, textToDraftList(event.target.value))} />
+        : key === "name" ? <input className="w-full rounded-lg bg-slate-950 border border-slate-700 p-3" value={value[key] || ""} onChange={event => onChange(key, event.target.value)} />
+          : <textarea className="w-full min-h-24 rounded-lg bg-slate-950 border border-slate-700 p-3" value={value[key] || ""} onChange={event => onChange(key, event.target.value)} />}
+    </label>;
+  })}</div>;
 }
 
 function readableError(error) {
@@ -70,6 +116,8 @@ function BibleViewer({ projectId }) {
   const [data, setData] = useState(null);
   const [pending, setPending] = useState("load");
   const [error, setError] = useState(null);
+  const [originalBible, setOriginalBible] = useState(null);
+  const [draftBible, setDraftBible] = useState(null);
   const inFlight = useRef(false);
   const mounted = useRef(false);
 
@@ -96,7 +144,10 @@ function BibleViewer({ projectId }) {
         : action === "generate"
           ? await generateVisualBibleDraft(projectId, data.scriptRevision, data.visualBible.editVersion)
           : await confirmVisualBible(projectId, data.visualBible.sourceScriptRevision, data.visualBible.editVersion);
-      if (mounted.current) setData(result);
+      if (mounted.current) {
+        setData(result);
+        if (action === "load" && draftBible) setOriginalBible(copyBible(result.visualBible));
+      }
     } catch (err) {
       if (mounted.current) setError(readableError(err));
     } finally {
@@ -107,7 +158,57 @@ function BibleViewer({ projectId }) {
 
   const bible = data?.visualBible;
   const scriptConfirmed = data?.scriptStatus === "confirmed";
-  const blocked = Boolean(pending) || error?.status === 409;
+  const editing = Boolean(draftBible);
+  const dirty = editing && JSON.stringify(contentFromBible(draftBible)) !== JSON.stringify(contentFromBible(originalBible));
+  const blocked = Boolean(pending) || error?.status === 409 || editing;
+
+  useEffect(() => {
+    if (!dirty) return undefined;
+    const warn = (event) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
+  const beginEdit = () => {
+    setError(null);
+    const snapshot = copyBible(bible);
+    setOriginalBible(snapshot);
+    setDraftBible(copyBible(snapshot));
+  };
+  const updateDraft = (updater) => setDraftBible(current => updater(copyBible(current)));
+  const updateCollectionItem = (key, index, field, value) => updateDraft(next => {
+    next[key][index][field] = value;
+    return next;
+  });
+  const cancelEdit = () => {
+    if (pending || (dirty && !window.confirm("Отменить несохранённые изменения?"))) return;
+    setDraftBible(null);
+    setOriginalBible(null);
+    setError(null);
+  };
+  const saveEdit = async () => {
+    if (pending || inFlight.current || !originalBible || !draftBible || error?.status === 409) return;
+    inFlight.current = true;
+    setPending("save");
+    setError(null);
+    try {
+      await updateVisualBible(projectId, {
+        expectedEditVersion: originalBible.editVersion,
+        ...contentFromBible(draftBible),
+      });
+      const result = await getVisualBible(projectId);
+      if (mounted.current) {
+        setData(result);
+        setDraftBible(null);
+        setOriginalBible(null);
+      }
+    } catch (err) {
+      if (mounted.current) setError(readableError(err));
+    } finally {
+      inFlight.current = false;
+      if (mounted.current) setPending(null);
+    }
+  };
   return (
     <div className="min-h-[calc(100vh-4rem)] text-white p-6 md:p-12">
       <div className="max-w-3xl mx-auto space-y-6">
@@ -138,6 +239,12 @@ function BibleViewer({ projectId }) {
             {!scriptConfirmed && <p className="text-amber-300">Сначала сохраните и подтвердите сценарий. Затем можно создать Visual Bible. <Link className="underline" to={`/projects/${projectId}/script`}>Перейти к сценарию</Link></p>}
             {bible.status === "stale" && <p className="text-amber-300">Сценарий изменён. Visual Bible нужно пересоздать</p>}
             <div className="space-y-3">
+              {bible.status === "draft" && !editing && <button className={button} disabled={Boolean(pending) || error?.status === 409} onClick={beginEdit}>Редактировать</button>}
+              {editing && <div className="flex flex-wrap gap-3">
+                <button className={button} disabled={Boolean(pending) || error?.status === 409} onClick={saveEdit}>{pending === "save" ? "Сохраняю изменения…" : "Сохранить изменения"}</button>
+                <button className={`${button} bg-slate-700 hover:bg-slate-600`} disabled={Boolean(pending)} onClick={cancelEdit}>Отмена</button>
+              </div>}
+              {!editing && <>
               <button className={button} disabled={blocked || !scriptConfirmed} onClick={() => run("generate")}>
                 {pending === "generate" ? "Создаю Visual Bible…" : bible.status === "empty" ? "Создать Visual Bible" : "Пересоздать Visual Bible"}
               </button>
@@ -146,21 +253,31 @@ function BibleViewer({ projectId }) {
                 disabled={blocked || !scriptConfirmed || bible.sourceScriptRevision !== data.scriptRevision} onClick={() => run("confirm")}>
                 {pending === "confirm" ? "Подтверждаю…" : "Подтвердить Visual Bible"}
               </button>}
+              </>}
             </div>
           </section>
-          <section className={panel}><h2 className="text-xl font-bold">Общий визуальный стиль</h2><Fields value={bible.visualStyle} labels={styleLabels} /></section>
+          <section className={panel}><h2 className="text-xl font-bold">Общий визуальный стиль</h2>
+            {editing ? <EditorFields value={draftBible.visualStyle} labels={styleLabels} onChange={(key, value) => updateDraft(next => { next.visualStyle[key] = value; return next; })} /> : <Fields value={bible.visualStyle} labels={styleLabels} />}
+          </section>
           {sections.map(([key, title, labels], index) => (
             <div key={key} className="space-y-6">
               <section className={panel}>
                 <h2 className="text-xl font-bold">{title}</h2>
-                {bible[key]?.length ? bible[key].map((item, itemIndex) => (
+                {editing && <button className={button} disabled={Boolean(pending)} onClick={() => updateDraft(next => { next[key].push(emptyItem(key)); return next; })}>Добавить</button>}
+                {(editing ? draftBible[key] : bible[key])?.length ? (editing ? draftBible[key] : bible[key]).map((item, itemIndex) => (
                   <article key={item.id || itemIndex} className="border border-slate-700 rounded-xl p-4 space-y-3">
                     <h3 className="font-semibold break-words">{item.name || `Без названия ${itemIndex + 1}`}</h3>
-                    <Fields value={item} labels={labels} />
+                    {editing ? <><EditorFields value={item} labels={{ name: "Название", ...labels }} onChange={(field, value) => updateCollectionItem(key, itemIndex, field, value)} />
+                      <button className={`${button} bg-red-700 hover:bg-red-600`} disabled={Boolean(pending)} onClick={() => {
+                        if (item.id && !window.confirm("Удалить существующий элемент?")) return;
+                        updateDraft(next => { next[key].splice(itemIndex, 1); return next; });
+                      }}>Удалить</button></> : <Fields value={item} labels={labels} />}
                   </article>
                 )) : <p className="text-slate-500">Не обнаружено</p>}
               </section>
-              {index === 0 && <section className={panel}><h2 className="text-xl font-bold">Правила целостности</h2><Value value={bible.continuityRules} /></section>}
+              {index === 0 && <section className={panel}><h2 className="text-xl font-bold">Правила целостности</h2>
+                {editing ? <textarea className="w-full min-h-32 rounded-lg bg-slate-950 border border-slate-700 p-3" value={listToText(draftBible.continuityRules)} onChange={event => updateDraft(next => { next.continuityRules = textToDraftList(event.target.value); return next; })} /> : <Value value={bible.continuityRules} />}
+              </section>}
             </div>
           ))}
         </>}
