@@ -1,5 +1,6 @@
 // server/src/routes/projectRoutes.js
 import express from "express";
+import multer from "multer";
 import { ensureAuthenticated } from "../middleware/auth.js";
 import Settings, { DEFAULT_VISUAL_BIBLE_PROMPT, DEFAULT_VISUAL_BIBLE_EDIT_PROMPT } from "../models/Settings.js";
 import {
@@ -15,15 +16,57 @@ import {
   logProfileUsage,
 } from "../services/aiProfileResolver.js";
 import Project from "../models/Project.js";
+import VisualReference from "../models/VisualReference.js";
 import {
   normalizeVisualBible, validateVisualBibleContent, markVisualBibleStaleUpdate,
   normalizeGeneratedVisualBible,
   normalizeEditedVisualBible,
 } from "../services/visualBibleService.js";
+import {
+  MAX_VISUAL_REFERENCE_BYTES, saveVisualReferenceFile, readVisualReferenceFile,
+  deleteVisualReferenceFile,
+} from "../services/visualReferenceStorage.js";
+import { buildVisualReferencePrompt } from "../services/visualReferencePrompt.js";
 import path from "path";
 import fs from "fs";
 
 const router = express.Router();
+const referenceCollections = new Set(["characters", "locations", "objects"]);
+const visualReferenceUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_VISUAL_REFERENCE_BYTES, files: 1, fields: 3, parts: 4 },
+});
+
+function parseVisualReferenceUpload(req, res, next) {
+  visualReferenceUpload.single("image")(req, res, error => {
+    if (!error) return next();
+    return res.status(error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE" ? 413 : 400)
+      .json({ error: "Некорректный файл референса" });
+  });
+}
+
+function visualReferenceMetadata(reference, bible) {
+  return {
+    id: reference._id.toString(), entityCollection: reference.entityCollection,
+    entityId: reference.entityId, sourceBibleRevision: reference.sourceBibleRevision,
+    sourceBibleEditVersion: reference.sourceBibleEditVersion, status: reference.status,
+    mimeType: reference.mimeType, byteSize: reference.byteSize, prompt: reference.prompt,
+    errorCode: reference.errorCode, createdAt: reference.createdAt, updatedAt: reference.updatedAt,
+    stale: bible.status !== "confirmed" || reference.sourceBibleRevision !== bible.revision ||
+      reference.sourceBibleEditVersion !== bible.editVersion,
+  };
+}
+
+function referenceEntity(bible, entityCollection, entityId) {
+  if (!referenceCollections.has(entityCollection) || typeof entityId !== "string") return null;
+  return bible[entityCollection]?.find(entity => entity.id === entityId) ?? null;
+}
+
+export function parseVisualReferenceVersion(value) {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
+  const version = Number(value);
+  return Number.isSafeInteger(version) && version >= 0 ? version : null;
+}
 
 // Существующий route для генерации темы
 router.post("/generate-topic", ensureAuthenticated, async (req, res) => {
@@ -516,6 +559,150 @@ router.post('/:id/visual-bible/edit', ensureAuthenticated, async (req, res) => {
   } catch (error) {
     if (error.code === 'VISUAL_BIBLE_EDIT_FAILED') return res.status(502).json({ code: error.code });
     return res.status(500).json({ error: 'Не удалось подготовить preview Visual Bible' });
+  }
+});
+
+router.get('/:id/visual-references', ensureAuthenticated, async (req, res) => {
+  try {
+    if (!/^[a-f\d]{24}$/i.test(req.params.id)) return res.status(404).json({ error: "Проект не найден" });
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!project) return res.status(404).json({ error: "Проект не найден" });
+    const bible = normalizeVisualBible(project);
+    const references = await VisualReference.find({ projectId: project._id, userId: req.user._id });
+    return res.json({ success: true, references: references.map(reference => visualReferenceMetadata(reference, bible)) });
+  } catch {
+    return res.status(500).json({ error: "Не удалось загрузить референсы" });
+  }
+});
+
+router.get('/:id/visual-references/:entityCollection/:entityId/flow-prompt', ensureAuthenticated, async (req, res) => {
+  try {
+    if (!/^[a-f\d]{24}$/i.test(req.params.id)) return res.status(404).json({ error: "Проект не найден" });
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!project) return res.status(404).json({ error: "Проект не найден" });
+    const bible = normalizeVisualBible(project);
+    if (bible.status !== "confirmed") return res.status(409).json({ error: "Visual Bible должна быть подтверждена" });
+    const entity = referenceEntity(bible, req.params.entityCollection, req.params.entityId);
+    if (!entity) return res.status(400).json({ error: "Некорректная сущность референса" });
+    const settings = await Settings.findOne({ userId: req.user._id });
+    let prompt;
+    try {
+      prompt = buildVisualReferencePrompt(project, bible, req.params.entityCollection, entity, settings?.prompts?.visualReferencePrompt);
+    } catch (error) {
+      if (error.code === "FLOW_PROMPT_TOO_LONG") return res.status(400).json({ code: error.code });
+      throw error;
+    }
+    return res.json({
+      success: true, prompt, entityCollection: req.params.entityCollection, entityId: req.params.entityId,
+      sourceBibleRevision: bible.revision, sourceBibleEditVersion: bible.editVersion,
+    });
+  } catch {
+    return res.status(500).json({ error: "Не удалось сформировать prompt для Flow" });
+  }
+});
+
+router.post('/:id/visual-references/:entityCollection/:entityId/upload', ensureAuthenticated, parseVisualReferenceUpload, async (req, res) => {
+  let storedFile;
+  try {
+    if (!/^[a-f\d]{24}$/i.test(req.params.id)) return res.status(404).json({ error: "Проект не найден" });
+    const prompt = typeof req.body?.prompt === "string" ? req.body.prompt.trim() : "";
+    const sourceBibleRevision = parseVisualReferenceVersion(req.body?.sourceBibleRevision);
+    const sourceBibleEditVersion = parseVisualReferenceVersion(req.body?.sourceBibleEditVersion);
+    if (Object.keys(req.body || {}).some(key => !["prompt", "sourceBibleRevision", "sourceBibleEditVersion"].includes(key)) ||
+        !prompt || prompt.length > 12000 || sourceBibleRevision === null || sourceBibleEditVersion === null || !req.file?.buffer) {
+      return res.status(400).json({ error: "Нужны изображение, prompt и корректные версии Visual Bible" });
+    }
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!project) return res.status(404).json({ error: "Проект не найден" });
+    const bible = normalizeVisualBible(project);
+    if (bible.status !== "confirmed" || bible.revision !== sourceBibleRevision || bible.editVersion !== sourceBibleEditVersion) {
+      return res.status(409).json({ error: "Visual Bible изменилась. Сформируйте новый prompt и повторите загрузку." });
+    }
+    const entity = referenceEntity(bible, req.params.entityCollection, req.params.entityId);
+    if (!entity) return res.status(400).json({ error: "Некорректная сущность референса" });
+    storedFile = await saveVisualReferenceFile({
+      projectId: project._id.toString(), entityCollection: req.params.entityCollection,
+      entityId: req.params.entityId, buffer: req.file.buffer,
+    });
+    const previous = await VisualReference.findOne({
+      projectId: project._id, userId: req.user._id, entityCollection: req.params.entityCollection, entityId: req.params.entityId,
+    }).select("+storageKey");
+    const currentProject = await Project.exists({
+      _id: project._id, userId: req.user._id,
+      "visualBible.status": "confirmed", "visualBible.revision": sourceBibleRevision,
+      "visualBible.editVersion": sourceBibleEditVersion,
+    });
+    if (!currentProject) {
+      await deleteVisualReferenceFile(storedFile.storageKey).catch(() => {});
+      storedFile = null;
+      return res.status(409).json({ error: "Visual Bible изменилась. Сформируйте новый prompt и повторите загрузку." });
+    }
+    let reference;
+    try {
+      reference = await VisualReference.findOneAndUpdate(
+        { projectId: project._id, userId: req.user._id, entityCollection: req.params.entityCollection, entityId: req.params.entityId },
+        { $set: {
+          sourceBibleRevision, sourceBibleEditVersion, status: "ready",
+          storageKey: storedFile.storageKey, mimeType: storedFile.mimeType, byteSize: storedFile.byteSize,
+          prompt, errorCode: "",
+        }, $setOnInsert: { userId: req.user._id } },
+        { new: true, upsert: true, runValidators: true },
+      ).select("+storageKey");
+    } catch {
+      await deleteVisualReferenceFile(storedFile.storageKey).catch(() => {});
+      return res.status(500).json({ error: "Не удалось сохранить референс" });
+    }
+    if (previous?.storageKey && previous.storageKey !== storedFile.storageKey) {
+      deleteVisualReferenceFile(previous.storageKey).catch(() => console.error("VISUAL_REFERENCE_OLD_FILE_DELETE_FAILED"));
+    }
+    return res.json({ success: true, reference: visualReferenceMetadata(reference, bible) });
+  } catch (error) {
+    if (storedFile) await deleteVisualReferenceFile(storedFile.storageKey).catch(() => {});
+    if (["INVALID_IMAGE_FILE", "INVALID_STORAGE_KEY"].includes(error.code)) {
+      return res.status(400).json({ error: "Поддерживаются только PNG, JPEG и WebP изображения" });
+    }
+    return res.status(500).json({ error: "Не удалось сохранить файл референса" });
+  }
+});
+
+router.get('/:id/visual-references/:referenceId/image', ensureAuthenticated, async (req, res) => {
+  try {
+    if (!/^[a-f\d]{24}$/i.test(req.params.id) || !/^[a-f\d]{24}$/i.test(req.params.referenceId)) {
+      return res.status(404).json({ error: "Референс не найден" });
+    }
+    const reference = await VisualReference.findOne({ _id: req.params.referenceId, projectId: req.params.id, userId: req.user._id })
+      .select("+storageKey");
+    if (!reference) return res.status(404).json({ error: "Референс не найден" });
+    let image;
+    try {
+      image = await readVisualReferenceFile(reference.storageKey);
+    } catch (error) {
+      if (["VISUAL_REFERENCE_FILE_NOT_FOUND", "INVALID_STORAGE_KEY"].includes(error.code)) {
+        return res.status(404).json({ error: "Файл референса не найден" });
+      }
+      throw error;
+    }
+    res.set("Content-Type", reference.mimeType);
+    res.set("Cache-Control", "private, no-store");
+    return res.send(image);
+  } catch {
+    return res.status(500).json({ error: "Не удалось загрузить файл референса" });
+  }
+});
+
+router.delete('/:id/visual-references/:referenceId', ensureAuthenticated, async (req, res) => {
+  try {
+    if (!/^[a-f\d]{24}$/i.test(req.params.id) || !/^[a-f\d]{24}$/i.test(req.params.referenceId)) {
+      return res.status(404).json({ error: "Референс не найден" });
+    }
+    const reference = await VisualReference.findOneAndDelete({
+      _id: req.params.referenceId, projectId: req.params.id, userId: req.user._id,
+    }).select("+storageKey");
+    if (!reference) return res.status(404).json({ error: "Референс не найден" });
+    deleteVisualReferenceFile(reference.storageKey).catch(() => console.error("VISUAL_REFERENCE_FILE_DELETE_FAILED"));
+    return res.json({ success: true });
+  } catch {
+    return res.status(500).json({ error: "Не удалось удалить референс" });
   }
 });
 

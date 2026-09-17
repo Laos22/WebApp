@@ -1,6 +1,6 @@
 import express from "express";
 import { ensureAuthenticated } from "../middleware/auth.js";
-import Settings, { DEFAULT_SYSTEM_PROMPT, DEFAULT_VISUAL_BIBLE_PROMPT, DEFAULT_VISUAL_BIBLE_EDIT_PROMPT } from "../models/Settings.js";
+import Settings, { DEFAULT_SYSTEM_PROMPT, DEFAULT_VISUAL_BIBLE_PROMPT, DEFAULT_VISUAL_BIBLE_EDIT_PROMPT, DEFAULT_VISUAL_REFERENCE_PROMPT } from "../models/Settings.js";
 import {
   encryptData,
   decryptData,
@@ -44,6 +44,7 @@ router.get("/", ensureAuthenticated, async (req, res) => {
         }),
         visualBiblePrompt: settings.prompts?.visualBiblePrompt ?? DEFAULT_VISUAL_BIBLE_PROMPT,
         visualBibleEditPrompt: settings.prompts?.visualBibleEditPrompt ?? DEFAULT_VISUAL_BIBLE_EDIT_PROMPT,
+        visualReferencePrompt: settings.prompts?.visualReferencePrompt ?? DEFAULT_VISUAL_REFERENCE_PROMPT,
       },
       driveConnected: await getDriveConnectionStatus(req.user._id),
       driveFileId: settings.driveFileId || null,
@@ -60,7 +61,7 @@ router.get("/", ensureAuthenticated, async (req, res) => {
 router.post("/", ensureAuthenticated, async (req, res) => {
   try {
     const body = req.body;
-    const promptFields = ["theme", "script", "cover", "audio", "timelineDavinci", "visualBiblePrompt", "visualBibleEditPrompt"];
+    const promptFields = ["theme", "script", "cover", "audio", "timelineDavinci", "visualBiblePrompt", "visualBibleEditPrompt", "visualReferencePrompt"];
 
     if (
       !body || typeof body !== "object" || Array.isArray(body) ||
@@ -74,13 +75,13 @@ router.post("/", ensureAuthenticated, async (req, res) => {
       !prompts || typeof prompts !== "object" || Array.isArray(prompts) ||
       Object.keys(prompts).some((key) => !promptFields.includes(key)) ||
       promptFields.some((key) =>
-        ["visualBiblePrompt", "visualBibleEditPrompt"].includes(key) && !Object.hasOwn(prompts, key)
+        ["visualBiblePrompt", "visualBibleEditPrompt", "visualReferencePrompt"].includes(key) && !Object.hasOwn(prompts, key)
           ? false
           : !Object.hasOwn(prompts, key) || typeof prompts[key] !== "string"
       )
     ) {
       return res.status(400).json({
-        error: "prompts должен содержать обязательные строковые поля theme, script, cover, audio, timelineDavinci и только необязательные строковые поля visualBiblePrompt и visualBibleEditPrompt",
+        error: "prompts должен содержать обязательные строковые поля theme, script, cover, audio, timelineDavinci и только необязательные строковые поля visualBiblePrompt, visualBibleEditPrompt и visualReferencePrompt",
       });
     }
 
@@ -93,8 +94,8 @@ router.post("/", ensureAuthenticated, async (req, res) => {
     // Копируем только разрешённые поля текущего frontend.
     settings.prompts = Object.fromEntries(promptFields.map((key) => [
       key,
-      ["visualBiblePrompt", "visualBibleEditPrompt"].includes(key) && !Object.hasOwn(prompts, key)
-        ? settings.prompts?.[key] ?? (key === "visualBiblePrompt" ? DEFAULT_VISUAL_BIBLE_PROMPT : DEFAULT_VISUAL_BIBLE_EDIT_PROMPT)
+      ["visualBiblePrompt", "visualBibleEditPrompt", "visualReferencePrompt"].includes(key) && !Object.hasOwn(prompts, key)
+        ? settings.prompts?.[key] ?? ({ visualBiblePrompt: DEFAULT_VISUAL_BIBLE_PROMPT, visualBibleEditPrompt: DEFAULT_VISUAL_BIBLE_EDIT_PROMPT, visualReferencePrompt: DEFAULT_VISUAL_REFERENCE_PROMPT }[key])
         : prompts[key],
     ]));
 

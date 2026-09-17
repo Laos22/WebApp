@@ -83,6 +83,17 @@ export const DEFAULT_VISUAL_BIBLE_EDIT_PROMPT = `Отредактируй пол
 
 Верни только JSON полной Visual Bible, а не частичный patch. Используй существующую camelCase-схему. Выполни инструкцию и сохрани всё, чего она не касается. Существующие id сохраняй без изменений только в той же коллекции. Новые элементы возвращай без id, удалённые элементы не возвращай. Не придумывай id и не переноси id между коллекциями. Не добавляй Markdown, ограждения кода, пояснения или служебные поля вне JSON.`;
 
+export const DEFAULT_VISUAL_REFERENCE_PROMPT = `Создай одно чистое референсное изображение для Google Flow.
+
+Проект: {{PROJECT_TITLE}}
+Общий визуальный стиль: {{VISUAL_STYLE}}
+Правила целостности: {{CONTINUITY_RULES}}
+Тип сущности: {{ENTITY_TYPE}}
+Название сущности: {{ENTITY_NAME}}
+Данные сущности: {{ENTITY_DATA}}
+
+Создай единое изображение сущности, пригодное как ingredient/reference в Google Flow. Не добавляй подписи, текст, интерфейс, водяные знаки, рамки, коллажи или несколько вариантов.`;
+
 // Схема для отдельного профиля провайдера
 const profileSchema = new mongoose.Schema({
   name: { type: String, required: true }, // Например: "OpenRouter Main"
@@ -162,6 +173,7 @@ const settingsSchema = new mongoose.Schema(
       timelineDavinci: { type: String, default: "" },
       visualBiblePrompt: { type: String, default: DEFAULT_VISUAL_BIBLE_PROMPT },
       visualBibleEditPrompt: { type: String, default: "" },
+      visualReferencePrompt: { type: String, default: "" },
     },
 
     driveCredentials: { type: driveCredentialsSchema, default: null, select: false },

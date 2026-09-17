@@ -24,6 +24,7 @@ export default function Settings() {
     timelineDavinci: "1",
     visualBiblePrompt: "",
     visualBibleEditPrompt: "",
+    visualReferencePrompt: "",
   });
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -58,6 +59,7 @@ export default function Settings() {
         timelineDavinci: response.data.prompts.timelineDavinci || "",
         visualBiblePrompt: response.data.prompts.visualBiblePrompt ?? "",
         visualBibleEditPrompt: response.data.prompts.visualBibleEditPrompt ?? "",
+        visualReferencePrompt: response.data.prompts.visualReferencePrompt ?? "",
       }));
     } catch (e) {
       console.error("Ошибка загрузки настроек:", e);
@@ -92,6 +94,7 @@ export default function Settings() {
           timelineDavinci: prompts.timelineDavinci,
           visualBiblePrompt: prompts.visualBiblePrompt,
           visualBibleEditPrompt: prompts.visualBibleEditPrompt,
+          visualReferencePrompt: prompts.visualReferencePrompt,
         },
       });
 
@@ -268,6 +271,23 @@ export default function Settings() {
               onChange={(e) => setPrompts((prev) => ({ ...prev, visualBibleEditPrompt: e.target.value }))}
               className="w-full h-80 bg-slate-950 border border-slate-800 rounded-xl p-4 text-sm text-white focus:border-purple-500 transition-all outline-none resize-y"
               placeholder="Опишите требования к AI-редактированию Visual Bible..."
+            />
+          </section>
+
+          <section className="space-y-4 pb-6 border-b border-slate-800">
+            <h2 className="text-xl font-bold text-white">
+              <label htmlFor="visualReferencePrompt">Шаблон prompt для референсов Google Flow</label>
+            </h2>
+            <p id="visualReferencePromptHelp" className="text-xs text-slate-400">
+              Пустое значение использует стандартный шаблон. Placeholders: {"{{PROJECT_TITLE}}"}, {"{{VISUAL_STYLE}}"}, {"{{CONTINUITY_RULES}}"}, {"{{ENTITY_TYPE}}"}, {"{{ENTITY_NAME}}"}, {"{{ENTITY_DATA}}"}.
+            </p>
+            <textarea
+              id="visualReferencePrompt"
+              aria-describedby="visualReferencePromptHelp"
+              value={prompts.visualReferencePrompt}
+              onChange={(e) => setPrompts((prev) => ({ ...prev, visualReferencePrompt: e.target.value }))}
+              className="w-full h-80 bg-slate-950 border border-slate-800 rounded-xl p-4 text-sm text-white focus:border-purple-500 transition-all outline-none resize-y"
+              placeholder="Опишите требования к референсу Google Flow..."
             />
           </section>
 
