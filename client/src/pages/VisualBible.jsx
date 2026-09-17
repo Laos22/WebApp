@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getVisualBible, generateVisualBibleDraft, confirmVisualBible, updateVisualBible } from "../services/api";
+import { getVisualBible, generateVisualBibleDraft, confirmVisualBible, updateVisualBible, editVisualBiblePreview } from "../services/api";
 
 const styleLabels = {
   concept: "Концепция", realism: "Реализм", colorPalette: "Цветовая палитра",
@@ -118,6 +118,8 @@ function BibleViewer({ projectId }) {
   const [error, setError] = useState(null);
   const [originalBible, setOriginalBible] = useState(null);
   const [draftBible, setDraftBible] = useState(null);
+  const [aiInstruction, setAiInstruction] = useState("");
+  const [instructionError, setInstructionError] = useState("");
   const inFlight = useRef(false);
   const mounted = useRef(false);
 
@@ -209,6 +211,34 @@ function BibleViewer({ projectId }) {
       if (mounted.current) setPending(null);
     }
   };
+  const previewAiEdit = async () => {
+    const instruction = aiInstruction.trim();
+    if (!instruction || instruction.length > 2000) {
+      setInstructionError("Введите инструкцию длиной от 1 до 2000 символов.");
+      return;
+    }
+    if (pending || inFlight.current || !bible || bible.status !== "draft") return;
+    inFlight.current = true;
+    setPending("ai-edit");
+    setError(null);
+    setInstructionError("");
+    try {
+      const response = await editVisualBiblePreview(projectId, instruction, bible.editVersion, bible.sourceScriptRevision);
+      if (!response.preview || typeof response.preview !== "object" || Array.isArray(response.preview)) {
+        throw new Error("Missing Visual Bible preview");
+      }
+      if (mounted.current) {
+        setOriginalBible(copyBible(bible));
+        setDraftBible(contentFromBible(response.preview));
+        setAiInstruction("");
+      }
+    } catch (err) {
+      if (mounted.current) setError(readableError(err));
+    } finally {
+      inFlight.current = false;
+      if (mounted.current) setPending(null);
+    }
+  };
   return (
     <div className="min-h-[calc(100vh-4rem)] text-white p-6 md:p-12">
       <div className="max-w-3xl mx-auto space-y-6">
@@ -256,6 +286,16 @@ function BibleViewer({ projectId }) {
               </>}
             </div>
           </section>
+          {bible.status === "draft" && !editing && !pending && <section className={panel}>
+            <h2 className="text-xl font-bold">Изменить с помощью ИИ</h2>
+            <p className="text-sm text-slate-400">Результат сначала откроется как preview и не сохранится автоматически.</p>
+            <label className="block text-sm"><span className="block text-slate-400 mb-1">Инструкция</span>
+              <textarea className="w-full min-h-28 rounded-lg bg-slate-950 border border-slate-700 p-3" value={aiInstruction} onChange={event => { setAiInstruction(event.target.value); setInstructionError(""); }} />
+            </label>
+            {instructionError && <p role="alert" className="text-sm text-red-300">{instructionError}</p>}
+            <button className={button} onClick={previewAiEdit}>Изменить с помощью ИИ</button>
+          </section>}
+          {pending === "ai-edit" && <p role="status" className="text-slate-400">ИИ изменяет Visual Bible…</p>}
           <section className={panel}><h2 className="text-xl font-bold">Общий визуальный стиль</h2>
             {editing ? <EditorFields value={draftBible.visualStyle} labels={styleLabels} onChange={(key, value) => updateDraft(next => { next.visualStyle[key] = value; return next; })} /> : <Fields value={bible.visualStyle} labels={styleLabels} />}
           </section>

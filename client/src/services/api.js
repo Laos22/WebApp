@@ -51,6 +51,8 @@ export const getProject = (id) => projectRequest(id);
 export const getVisualBible = (projectId) => projectRequest(projectId, "/visual-bible");
 export const updateVisualBible = (projectId, payload) =>
   projectRequest(projectId, "/visual-bible", "PUT", payload);
+export const editVisualBiblePreview = (projectId, instruction, expectedEditVersion, sourceScriptRevision) =>
+  projectRequest(projectId, "/visual-bible/edit", "POST", { instruction, expectedEditVersion, sourceScriptRevision });
 export const generateVisualBibleDraft = (projectId, sourceScriptRevision, expectedEditVersion) =>
   projectRequest(projectId, "/visual-bible/draft", "POST", { sourceScriptRevision, expectedEditVersion });
 export const confirmVisualBible = (projectId, sourceScriptRevision, expectedEditVersion) =>
