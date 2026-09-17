@@ -60,6 +60,38 @@ export const confirmVisualBible = (projectId, sourceScriptRevision, expectedEdit
 export const generateProjectScript = (id, payload) => projectRequest(id, "/generate-script", "POST", payload);
 export const saveProjectScript = (id, content, revision) => projectRequest(id, "/script", "PUT", { content, revision });
 export const confirmProjectScript = (id, revision) => projectRequest(id, "/script/confirm", "POST", { revision });
+export const getReferencePlan = (projectId) => projectRequest(projectId, "/reference-plan");
+export const analyzeReferencePlan = (projectId, payload) =>
+  projectRequest(projectId, "/reference-plan/analyze", "POST", payload);
+export const saveReferencePlan = (projectId, payload) =>
+  projectRequest(projectId, "/reference-plan", "PUT", payload);
+export const confirmReferencePlan = (projectId, payload) =>
+  projectRequest(projectId, "/reference-plan/confirm", "POST", payload);
+export const detailReferencePrompt = (projectId, referenceId, payload) =>
+  projectRequest(projectId, `/reference-plan/${encodeURIComponent(referenceId)}/detail-prompt`, "POST", payload);
+
+export async function uploadVisualReference(projectId, referenceId, { file, prompt, sourceReferenceVersion }) {
+  const form = new FormData();
+  form.append("image", file);
+  form.append("prompt", prompt);
+  form.append("sourceReferenceVersion", String(sourceReferenceVersion));
+  const response = await fetch(`${import.meta.env.VITE_SERVER_URL}/api/projects/${projectId}/visual-references/${encodeURIComponent(referenceId)}/upload`, {
+    method: "POST", credentials: "include", body: form,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success) {
+    const error = new Error(data.error || "Не удалось загрузить изображение");
+    error.status = response.status;
+    error.code = data.code;
+    throw error;
+  }
+  return data;
+}
+
+export const deleteVisualReference = (projectId, referenceId) =>
+  projectRequest(projectId, `/visual-references/${encodeURIComponent(referenceId)}`, "DELETE");
+export const getVisualReferenceImageUrl = (projectId, imageId, updatedAt) =>
+  `${import.meta.env.VITE_SERVER_URL}/api/projects/${projectId}/visual-references/${encodeURIComponent(imageId)}/image?v=${encodeURIComponent(updatedAt || "0")}`;
 
 export async function editProjectScript(id, currentScript, instruction, signal) {
   const response = await fetch(`${import.meta.env.VITE_SERVER_URL}/api/projects/${id}/edit-script`, {

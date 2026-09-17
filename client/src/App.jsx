@@ -1,4 +1,3 @@
-import React from "react";
 import {
   BrowserRouter as Router,
   Routes,
@@ -16,6 +15,7 @@ import ImageGen from "./pages/ImageGen";
 import AudioGen from "./pages/AudioGen";
 import ScriptGen from "./pages/ScriptGen";
 import VisualBible from "./pages/VisualBible";
+import References from "./pages/References";
 import CoverGen from "./pages/CoverGen";
 import Settings from "./pages/Settings";
 
@@ -65,6 +65,10 @@ function AppContent() {
           <Route
             path="/projects/:projectId/visual-bible"
             element={<ProtectedRoute><VisualBible /></ProtectedRoute>}
+          />
+          <Route
+            path="/projects/:projectId/references"
+            element={<ProtectedRoute><References /></ProtectedRoute>}
           />
           <Route
             path="/projects/:projectId/cover"

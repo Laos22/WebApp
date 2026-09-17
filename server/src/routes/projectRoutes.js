@@ -2,7 +2,7 @@
 import express from "express";
 import multer from "multer";
 import { ensureAuthenticated } from "../middleware/auth.js";
-import Settings, { DEFAULT_VISUAL_BIBLE_PROMPT, DEFAULT_VISUAL_BIBLE_EDIT_PROMPT } from "../models/Settings.js";
+import Settings, { DEFAULT_VISUAL_BIBLE_PROMPT, DEFAULT_VISUAL_BIBLE_EDIT_PROMPT, DEFAULT_REFERENCE_ANALYSIS_PROMPT, DEFAULT_REFERENCE_DETAIL_PROMPT } from "../models/Settings.js";
 import {
   generateVideoTopic,
   generateCoverData,
@@ -10,6 +10,8 @@ import {
   editScript,
   generateVisualBibleDraft,
   editVisualBible,
+  analyzeScriptReferences,
+  detailReferencePrompt,
 } from "../services/geminiService.js";
 import {
   resolveProfile,
@@ -26,12 +28,13 @@ import {
   MAX_VISUAL_REFERENCE_BYTES, saveVisualReferenceFile, readVisualReferenceFile,
   deleteVisualReferenceFile,
 } from "../services/visualReferenceStorage.js";
-import { buildVisualReferencePrompt } from "../services/visualReferencePrompt.js";
+import {
+  normalizeReferencePlan, parseReferenceAnalysis, validateReferenceItems,
+} from "../services/referencePlanService.js";
 import path from "path";
 import fs from "fs";
 
 const router = express.Router();
-const referenceCollections = new Set(["characters", "locations", "objects"]);
 const visualReferenceUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_VISUAL_REFERENCE_BYTES, files: 1, fields: 3, parts: 4 },
@@ -45,24 +48,17 @@ function parseVisualReferenceUpload(req, res, next) {
   });
 }
 
-function visualReferenceMetadata(reference, bible) {
+function visualReferenceMetadata(reference, item) {
   return {
-    id: reference._id.toString(), entityCollection: reference.entityCollection,
-    entityId: reference.entityId, sourceBibleRevision: reference.sourceBibleRevision,
-    sourceBibleEditVersion: reference.sourceBibleEditVersion, status: reference.status,
+    id: reference._id.toString(), referenceId: reference.referenceId,
+    sourceReferenceVersion: reference.sourceReferenceVersion, status: reference.status,
     mimeType: reference.mimeType, byteSize: reference.byteSize, prompt: reference.prompt,
     errorCode: reference.errorCode, createdAt: reference.createdAt, updatedAt: reference.updatedAt,
-    stale: bible.status !== "confirmed" || reference.sourceBibleRevision !== bible.revision ||
-      reference.sourceBibleEditVersion !== bible.editVersion,
+    stale: !item || reference.sourceReferenceVersion !== item.version,
   };
 }
 
-function referenceEntity(bible, entityCollection, entityId) {
-  if (!referenceCollections.has(entityCollection) || typeof entityId !== "string") return null;
-  return bible[entityCollection]?.find(entity => entity.id === entityId) ?? null;
-}
-
-export function parseVisualReferenceVersion(value) {
+function parseVisualReferenceVersion(value) {
   if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
   const version = Number(value);
   return Number.isSafeInteger(version) && version >= 0 ? version : null;
@@ -139,6 +135,8 @@ router.delete("/:id", ensureAuthenticated, async (req, res) => {
       userId: req.user._id,
     });
     if (!project) return res.status(404).json({ error: "Проект не найден" });
+    const references = await VisualReference.find({ projectId: project._id, userId: req.user._id })
+      .select("+storageKey");
 
     // Удаление папки с диска
     if (project.projectPath && fs.existsSync(project.projectPath)) {
@@ -146,6 +144,9 @@ router.delete("/:id", ensureAuthenticated, async (req, res) => {
     }
 
     await project.deleteOne();
+    await VisualReference.deleteMany({ projectId: project._id, userId: req.user._id });
+    await Promise.all(references.map(reference => deleteVisualReferenceFile(reference.storageKey)
+      .catch(() => console.error("VISUAL_REFERENCE_PROJECT_DELETE_FAILED"))));
     res.json({ success: true, message: "Проект удален" });
   } catch (error) {
     res.status(500).json({ error: "Ошибка при удалении проекта" });
@@ -562,102 +563,266 @@ router.post('/:id/visual-bible/edit', ensureAuthenticated, async (req, res) => {
   }
 });
 
-router.get('/:id/visual-references', ensureAuthenticated, async (req, res) => {
+function referencePlanResponse(project, assets = []) {
+  const plan = normalizeReferencePlan(project);
+  const assetByReference = new Map(assets.map(asset => [asset.referenceId, asset]));
+  return {
+    success: true,
+    scriptStatus: project.script?.status ?? null,
+    scriptRevision: project.script?.revision ?? null,
+    referencePlan: {
+      ...plan,
+      items: plan.items.map(item => ({
+        ...(item.toObject?.() ?? item),
+        image: assetByReference.has(item.id)
+          ? visualReferenceMetadata(assetByReference.get(item.id), item)
+          : null,
+      })),
+    },
+  };
+}
+
+async function loadReferencePlanResponse(project, userId) {
+  const assets = await VisualReference.find({ projectId: project._id, userId });
+  return referencePlanResponse(project, assets);
+}
+
+async function removeOrphanReferenceAssets(projectId, userId, retainedIds) {
+  const orphans = await VisualReference.find({
+    projectId, userId, referenceId: { $nin: retainedIds },
+  }).select('+storageKey');
+  if (!orphans.length) return;
+  await VisualReference.deleteMany({ _id: { $in: orphans.map(item => item._id) }, projectId, userId });
+  await Promise.all(orphans.map(item => deleteVisualReferenceFile(item.storageKey)
+    .catch(() => console.error('VISUAL_REFERENCE_ORPHAN_DELETE_FAILED'))));
+}
+
+router.get('/:id/reference-plan', ensureAuthenticated, async (req, res) => {
   try {
-    if (!/^[a-f\d]{24}$/i.test(req.params.id)) return res.status(404).json({ error: "Проект не найден" });
+    if (!/^[a-f\d]{24}$/i.test(req.params.id)) return res.status(404).json({ error: 'Проект не найден' });
     const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
-    if (!project) return res.status(404).json({ error: "Проект не найден" });
-    const bible = normalizeVisualBible(project);
-    const references = await VisualReference.find({ projectId: project._id, userId: req.user._id });
-    return res.json({ success: true, references: references.map(reference => visualReferenceMetadata(reference, bible)) });
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    return res.json(await loadReferencePlanResponse(project, req.user._id));
   } catch {
-    return res.status(500).json({ error: "Не удалось загрузить референсы" });
+    return res.status(500).json({ error: 'Не удалось загрузить план референсов' });
   }
 });
 
-router.get('/:id/visual-references/:entityCollection/:entityId/flow-prompt', ensureAuthenticated, async (req, res) => {
+router.post('/:id/reference-plan/analyze', ensureAuthenticated, async (req, res) => {
   try {
-    if (!/^[a-f\d]{24}$/i.test(req.params.id)) return res.status(404).json({ error: "Проект не найден" });
-    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
-    if (!project) return res.status(404).json({ error: "Проект не найден" });
-    const bible = normalizeVisualBible(project);
-    if (bible.status !== "confirmed") return res.status(409).json({ error: "Visual Bible должна быть подтверждена" });
-    const entity = referenceEntity(bible, req.params.entityCollection, req.params.entityId);
-    if (!entity) return res.status(400).json({ error: "Некорректная сущность референса" });
-    const settings = await Settings.findOne({ userId: req.user._id });
-    let prompt;
-    try {
-      prompt = buildVisualReferencePrompt(project, bible, req.params.entityCollection, entity, settings?.prompts?.visualReferencePrompt);
-    } catch (error) {
-      if (error.code === "FLOW_PROMPT_TOO_LONG") return res.status(400).json({ code: error.code });
-      throw error;
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body) ||
+        Object.keys(body).some(key => !['instructions', 'items', 'expectedEditVersion', 'sourceScriptRevision'].includes(key)) ||
+        typeof body.instructions !== 'string' || body.instructions.length > 4000 ||
+        !Array.isArray(body.items) ||
+        !Number.isSafeInteger(body.expectedEditVersion) || body.expectedEditVersion < 0 ||
+        !Number.isSafeInteger(body.sourceScriptRevision) || body.sourceScriptRevision < 1) {
+      return res.status(400).json({ error: 'Некорректные параметры анализа' });
     }
-    return res.json({
-      success: true, prompt, entityCollection: req.params.entityCollection, entityId: req.params.entityId,
-      sourceBibleRevision: bible.revision, sourceBibleEditVersion: bible.editVersion,
-    });
-  } catch {
-    return res.status(500).json({ error: "Не удалось сформировать prompt для Flow" });
+    const owner = { _id: req.params.id, userId: req.user._id };
+    const project = await Project.findOne(owner);
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const plan = normalizeReferencePlan(project);
+    if (project.script?.status !== 'confirmed' || project.script.revision !== body.sourceScriptRevision ||
+        plan.editVersion !== body.expectedEditVersion) {
+      return res.status(409).json({ error: 'Сценарий или список референсов изменились. Обновите страницу.' });
+    }
+    let currentItems;
+    try { currentItems = validateReferenceItems(body.items, plan.items); }
+    catch { return res.status(400).json({ error: 'Некорректные карточки референсов' }); }
+    const settings = await Settings.findOne({ userId: req.user._id });
+    const raw = await analyzeScriptReferences(
+      project, currentItems, body.instructions.trim(),
+      settings?.prompts?.referenceAnalysisPrompt || DEFAULT_REFERENCE_ANALYSIS_PROMPT,
+      resolveProfile(settings, 'text'),
+    );
+    let items;
+    try { items = parseReferenceAnalysis(raw, currentItems); }
+    catch { return res.status(502).json({ code: 'INVALID_REFERENCE_ANALYSIS' }); }
+    const now = new Date();
+    const versionFilter = body.expectedEditVersion === 0
+      ? { $or: [{ 'referencePlan.editVersion': 0 }, { 'referencePlan.editVersion': { $exists: false } }] }
+      : { 'referencePlan.editVersion': body.expectedEditVersion };
+    const saved = await Project.findOneAndUpdate({
+      ...owner, 'script.status': 'confirmed', 'script.revision': body.sourceScriptRevision, ...versionFilter,
+    }, { $set: {
+      referencePlan: {
+        status: 'draft', revision: plan.revision || 0, editVersion: body.expectedEditVersion + 1,
+        sourceScriptRevision: body.sourceScriptRevision, instructions: body.instructions.trim(), items,
+        updatedAt: now, confirmedAt: null,
+      }, updatedAt: now,
+    } }, { new: true, runValidators: true });
+    if (!saved) return res.status(409).json({ error: 'Сценарий или список референсов изменились. Обновите страницу.' });
+    await removeOrphanReferenceAssets(saved._id, req.user._id, items.map(item => item.id));
+    return res.json(await loadReferencePlanResponse(saved, req.user._id));
+  } catch (error) {
+    if (error.code === 'REFERENCE_ANALYSIS_FAILED') return res.status(502).json({ code: error.code });
+    return res.status(500).json({ error: 'Не удалось проанализировать сценарий' });
   }
 });
 
-router.post('/:id/visual-references/:entityCollection/:entityId/upload', ensureAuthenticated, parseVisualReferenceUpload, async (req, res) => {
+router.put('/:id/reference-plan', ensureAuthenticated, async (req, res) => {
+  try {
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body) ||
+        Object.keys(body).some(key => !['instructions', 'items', 'expectedEditVersion'].includes(key)) ||
+        typeof body.instructions !== 'string' || body.instructions.length > 4000 ||
+        !Number.isSafeInteger(body.expectedEditVersion) || body.expectedEditVersion < 1) {
+      return res.status(400).json({ error: 'Некорректный план референсов' });
+    }
+    const owner = { _id: req.params.id, userId: req.user._id };
+    const project = await Project.findOne(owner);
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const plan = normalizeReferencePlan(project);
+    if (plan.editVersion !== body.expectedEditVersion || plan.status === 'empty') {
+      return res.status(409).json({ error: 'Список референсов изменился. Обновите страницу.' });
+    }
+    let items;
+    try { items = validateReferenceItems(body.items, plan.items); }
+    catch { return res.status(400).json({ error: 'Некорректные карточки референсов' }); }
+    const saved = await Project.findOneAndUpdate({ ...owner, 'referencePlan.editVersion': body.expectedEditVersion }, {
+      $set: {
+        'referencePlan.items': items, 'referencePlan.instructions': body.instructions.trim(),
+        'referencePlan.status': 'draft', 'referencePlan.confirmedAt': null,
+        'referencePlan.updatedAt': new Date(), updatedAt: new Date(),
+      }, $inc: { 'referencePlan.editVersion': 1 },
+    }, { new: true, runValidators: true });
+    if (!saved) return res.status(409).json({ error: 'Список референсов изменился. Обновите страницу.' });
+    await removeOrphanReferenceAssets(saved._id, req.user._id, items.map(item => item.id));
+    return res.json(await loadReferencePlanResponse(saved, req.user._id));
+  } catch {
+    return res.status(500).json({ error: 'Не удалось сохранить план референсов' });
+  }
+});
+
+router.post('/:id/reference-plan/confirm', ensureAuthenticated, async (req, res) => {
+  try {
+    const { expectedEditVersion, sourceScriptRevision } = req.body || {};
+    if (!Number.isSafeInteger(expectedEditVersion) || expectedEditVersion < 1 ||
+        !Number.isSafeInteger(sourceScriptRevision) || sourceScriptRevision < 1) {
+      return res.status(400).json({ error: 'Некорректные версии плана' });
+    }
+    const saved = await Project.findOneAndUpdate({
+      _id: req.params.id, userId: req.user._id, 'script.status': 'confirmed',
+      'script.revision': sourceScriptRevision, 'referencePlan.status': 'draft',
+      'referencePlan.sourceScriptRevision': sourceScriptRevision,
+      'referencePlan.editVersion': expectedEditVersion,
+      'referencePlan.items': { $elemMatch: { selected: true } },
+    }, { $set: {
+      'referencePlan.status': 'confirmed', 'referencePlan.confirmedAt': new Date(),
+      'referencePlan.updatedAt': new Date(), updatedAt: new Date(),
+    }, $inc: { 'referencePlan.revision': 1, 'referencePlan.editVersion': 1 } },
+    { new: true, runValidators: true });
+    if (!saved) return res.status(409).json({ error: 'План или сценарий изменились либо не выбран ни один референс.' });
+    return res.json(await loadReferencePlanResponse(saved, req.user._id));
+  } catch {
+    return res.status(500).json({ error: 'Не удалось утвердить план референсов' });
+  }
+});
+
+router.post('/:id/reference-plan/:referenceId/detail-prompt', ensureAuthenticated, async (req, res) => {
+  try {
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body) ||
+        Object.keys(body).some(key => !['instruction', 'expectedEditVersion', 'sourceScriptRevision'].includes(key)) ||
+        typeof body.instruction !== 'string' || body.instruction.length > 2000 ||
+        !Number.isSafeInteger(body.expectedEditVersion) || body.expectedEditVersion < 1 ||
+        !Number.isSafeInteger(body.sourceScriptRevision) || body.sourceScriptRevision < 1) {
+      return res.status(400).json({ error: 'Некорректные параметры детализации' });
+    }
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const plan = normalizeReferencePlan(project);
+    const reference = plan.items.find(item => item.id === req.params.referenceId);
+    if (!reference) return res.status(404).json({ error: 'Референс не найден' });
+    if (project.script?.status !== 'confirmed' || project.script.revision !== body.sourceScriptRevision ||
+        plan.sourceScriptRevision !== body.sourceScriptRevision || plan.editVersion !== body.expectedEditVersion ||
+        !['draft', 'confirmed'].includes(plan.status)) {
+      return res.status(409).json({ error: 'Сценарий или план референсов изменились. Обновите страницу.' });
+    }
+    const settings = await Settings.findOne({ userId: req.user._id });
+    const prompt = await detailReferencePrompt(
+      project, reference, body.instruction.trim(),
+      settings?.prompts?.referenceDetailPrompt || DEFAULT_REFERENCE_DETAIL_PROMPT,
+      resolveProfile(settings, 'text'),
+    );
+    const saved = await Project.findOneAndUpdate({
+      _id: project._id, userId: req.user._id, 'script.status': 'confirmed',
+      'script.revision': body.sourceScriptRevision, 'referencePlan.editVersion': body.expectedEditVersion,
+      'referencePlan.items': { $elemMatch: { id: reference.id, version: reference.version } },
+    }, { $set: {
+      'referencePlan.items.$[item].prompt': prompt,
+      'referencePlan.status': 'draft', 'referencePlan.confirmedAt': null,
+      'referencePlan.updatedAt': new Date(), updatedAt: new Date(),
+    }, $inc: {
+      'referencePlan.items.$[item].version': 1,
+      'referencePlan.editVersion': 1,
+    } }, { new: true, runValidators: true, arrayFilters: [{ 'item.id': reference.id }] });
+    if (!saved) return res.status(409).json({ error: 'План референсов изменился. Повторите детализацию.' });
+    return res.json(await loadReferencePlanResponse(saved, req.user._id));
+  } catch (error) {
+    if (error.code === 'REFERENCE_DETAIL_FAILED') return res.status(502).json({ code: error.code });
+    return res.status(500).json({ error: 'Не удалось детализировать prompt' });
+  }
+});
+
+router.post('/:id/visual-references/:referenceId/upload', ensureAuthenticated, parseVisualReferenceUpload, async (req, res) => {
   let storedFile;
+  let committed = false;
   try {
     if (!/^[a-f\d]{24}$/i.test(req.params.id)) return res.status(404).json({ error: "Проект не найден" });
     const prompt = typeof req.body?.prompt === "string" ? req.body.prompt.trim() : "";
-    const sourceBibleRevision = parseVisualReferenceVersion(req.body?.sourceBibleRevision);
-    const sourceBibleEditVersion = parseVisualReferenceVersion(req.body?.sourceBibleEditVersion);
-    if (Object.keys(req.body || {}).some(key => !["prompt", "sourceBibleRevision", "sourceBibleEditVersion"].includes(key)) ||
-        !prompt || prompt.length > 12000 || sourceBibleRevision === null || sourceBibleEditVersion === null || !req.file?.buffer) {
-      return res.status(400).json({ error: "Нужны изображение, prompt и корректные версии Visual Bible" });
+    const sourceReferenceVersion = parseVisualReferenceVersion(req.body?.sourceReferenceVersion);
+    if (Object.keys(req.body || {}).some(key => !["prompt", "sourceReferenceVersion"].includes(key)) ||
+        !prompt || prompt.length > 12000 || !sourceReferenceVersion || !req.file?.buffer) {
+      return res.status(400).json({ error: "Нужны изображение, prompt и версия референса" });
     }
     const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
     if (!project) return res.status(404).json({ error: "Проект не найден" });
-    const bible = normalizeVisualBible(project);
-    if (bible.status !== "confirmed" || bible.revision !== sourceBibleRevision || bible.editVersion !== sourceBibleEditVersion) {
-      return res.status(409).json({ error: "Visual Bible изменилась. Сформируйте новый prompt и повторите загрузку." });
+    const plan = normalizeReferencePlan(project);
+    const item = plan.items.find(value => value.id === req.params.referenceId);
+    if (plan.status !== 'confirmed' || !item?.selected || item.version !== sourceReferenceVersion || item.prompt !== prompt) {
+      return res.status(409).json({ error: "Референс изменился. Утвердите план и повторите загрузку." });
     }
-    const entity = referenceEntity(bible, req.params.entityCollection, req.params.entityId);
-    if (!entity) return res.status(400).json({ error: "Некорректная сущность референса" });
     storedFile = await saveVisualReferenceFile({
-      projectId: project._id.toString(), entityCollection: req.params.entityCollection,
-      entityId: req.params.entityId, buffer: req.file.buffer,
+      projectId: project._id.toString(), referenceId: req.params.referenceId, buffer: req.file.buffer,
     });
-    const previous = await VisualReference.findOne({
-      projectId: project._id, userId: req.user._id, entityCollection: req.params.entityCollection, entityId: req.params.entityId,
-    }).select("+storageKey");
     const currentProject = await Project.exists({
       _id: project._id, userId: req.user._id,
-      "visualBible.status": "confirmed", "visualBible.revision": sourceBibleRevision,
-      "visualBible.editVersion": sourceBibleEditVersion,
+      'referencePlan.status': 'confirmed',
+      'referencePlan.items': { $elemMatch: { id: req.params.referenceId, selected: true, version: sourceReferenceVersion, prompt } },
     });
     if (!currentProject) {
       await deleteVisualReferenceFile(storedFile.storageKey).catch(() => {});
       storedFile = null;
-      return res.status(409).json({ error: "Visual Bible изменилась. Сформируйте новый prompt и повторите загрузку." });
+      return res.status(409).json({ error: "Референс изменился. Утвердите план и повторите загрузку." });
     }
-    let reference;
+    let replaced;
     try {
-      reference = await VisualReference.findOneAndUpdate(
-        { projectId: project._id, userId: req.user._id, entityCollection: req.params.entityCollection, entityId: req.params.entityId },
+      replaced = await VisualReference.findOneAndUpdate(
+        { projectId: project._id, userId: req.user._id, referenceId: req.params.referenceId },
         { $set: {
-          sourceBibleRevision, sourceBibleEditVersion, status: "ready",
+          sourceReferenceVersion, status: "ready", entityCollection: 'references', entityId: req.params.referenceId,
           storageKey: storedFile.storageKey, mimeType: storedFile.mimeType, byteSize: storedFile.byteSize,
           prompt, errorCode: "",
-        }, $setOnInsert: { userId: req.user._id } },
-        { new: true, upsert: true, runValidators: true },
+        }, $setOnInsert: { userId: req.user._id, referenceId: req.params.referenceId } },
+        { new: false, upsert: true, runValidators: true },
       ).select("+storageKey");
+      committed = true;
     } catch {
       await deleteVisualReferenceFile(storedFile.storageKey).catch(() => {});
       return res.status(500).json({ error: "Не удалось сохранить референс" });
     }
-    if (previous?.storageKey && previous.storageKey !== storedFile.storageKey) {
-      deleteVisualReferenceFile(previous.storageKey).catch(() => console.error("VISUAL_REFERENCE_OLD_FILE_DELETE_FAILED"));
+    if (replaced?.storageKey && replaced.storageKey !== storedFile.storageKey) {
+      deleteVisualReferenceFile(replaced.storageKey).catch(() => console.error("VISUAL_REFERENCE_OLD_FILE_DELETE_FAILED"));
     }
-    return res.json({ success: true, reference: visualReferenceMetadata(reference, bible) });
+    const reference = await VisualReference.findOne({
+      projectId: project._id, userId: req.user._id, referenceId: req.params.referenceId,
+    });
+    if (!reference) return res.status(500).json({ error: "Не удалось сохранить референс" });
+    return res.json({ success: true, reference: visualReferenceMetadata(reference, item) });
   } catch (error) {
-    if (storedFile) await deleteVisualReferenceFile(storedFile.storageKey).catch(() => {});
+    if (storedFile && !committed) await deleteVisualReferenceFile(storedFile.storageKey).catch(() => {});
     if (["INVALID_IMAGE_FILE", "INVALID_STORAGE_KEY"].includes(error.code)) {
       return res.status(400).json({ error: "Поддерживаются только PNG, JPEG и WebP изображения" });
     }

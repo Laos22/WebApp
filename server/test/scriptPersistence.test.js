@@ -20,11 +20,21 @@ function setup({ owner = true, failWrite = false, failMirror = false } = {}) {
     async findOneAndUpdate(filter, update, options) {
       assert.equal(filter.userId, 'owner');
       assert.equal(options.new, true);
-      assert.equal(options.runValidators, true);
       if (failWrite) throw new Error('Database unavailable');
       if (!owner || (filter['script.revision'] !== undefined && filter['script.revision'] !== project.script?.revision)
         || (filter['script.status'] && filter['script.status'] !== project.script?.status)) return null;
       project.script ||= {};
+      if (Array.isArray(update)) {
+        const set = update[0].$set;
+        project.script.content = set['script.content'].$literal;
+        project.script.status = set['script.status'];
+        project.script.generatedAt = set['script.generatedAt'];
+        project.script.confirmedAt = set['script.confirmedAt'];
+        project.script.revision = (project.script.revision || 0) + 1;
+        project.updatedAt = set.updatedAt;
+        return structuredClone(project);
+      }
+      assert.equal(options.runValidators, true);
       for (const [key, value] of Object.entries(update.$set)) {
         if (key.startsWith('script.')) project.script[key.slice(7)] = value;
         else project[key] = value;
@@ -37,6 +47,11 @@ function setup({ owner = true, failWrite = false, failMirror = false } = {}) {
     (path, ...handlers) => routes.set(`${method} ${path}`, handlers.at(-1))]));
   vm.runInNewContext(source, {
     express: { Router: () => router }, ensureAuthenticated() {}, Project,
+    multer: Object.assign(() => ({ single: () => (_req, _res, next) => next() }), {
+      memoryStorage: () => ({}), MulterError: class MulterError extends Error {},
+    }),
+    MAX_VISUAL_REFERENCE_BYTES: 15 * 1024 * 1024,
+    markVisualBibleStaleUpdate: () => ({ $set: {} }),
     Settings: { findOne: async () => ({ prompts: { script: 'unchanged prompt' } }) },
     resolveProfile: () => 'profile',
     generateScript: async (...args) => {

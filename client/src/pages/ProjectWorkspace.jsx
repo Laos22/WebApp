@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import axios from "axios";
 
@@ -14,19 +14,16 @@ export default function ProjectWorkspace() {
   const [showDetails, setShowDetails] = useState(false);
 
   useEffect(() => {
-    fetchProject();
-  }, [projectId]);
-
-  const fetchProject = async () => {
-    try {
-      const data = await getProject(projectId);
-      setProject(data.project);
-    } catch (err) {
+    let active = true;
+    getProject(projectId).then(data => {
+      if (active) setProject(data.project);
+    }).catch(err => {
       console.error("Ошибка при загрузке проекта:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
+    }).finally(() => {
+      if (active) setLoading(false);
+    });
+    return () => { active = false; };
+  }, [projectId]);
 
   const handleDelete = async () => {
     if (
@@ -117,6 +114,18 @@ export default function ProjectWorkspace() {
               Перейти &rarr;
             </div>
           </Link>
+
+          {project.script?.status === "confirmed" && <Link
+            to={`/projects/${projectId}/references`}
+            className="group p-8 bg-slate-900/80 hover:bg-slate-900 border border-fuchsia-500/20 hover:border-fuchsia-500/60 rounded-2xl transition-all shadow-xl flex flex-col justify-between"
+          >
+            <div>
+              <div className="w-12 h-12 rounded-xl bg-fuchsia-600/20 border border-fuchsia-500/30 flex items-center justify-center text-2xl mb-4 group-hover:scale-110 transition-transform">🎭</div>
+              <h2 className="text-2xl font-bold mb-2 group-hover:text-fuchsia-300 transition-colors">Работа с референсами</h2>
+              <p className="text-slate-400 text-sm">ИИ предложит героев, локации и предметы, важные для целостной раскадровки.</p>
+            </div>
+            <div className="mt-6 flex items-center text-fuchsia-400 font-semibold text-sm group-hover:translate-x-1 transition-transform">Перейти &rarr;</div>
+          </Link>}
 
           <Link
             to={`/projects/${projectId}/cover`}

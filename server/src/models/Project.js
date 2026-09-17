@@ -66,6 +66,35 @@ const scriptSchema = new mongoose.Schema({
   confirmedAt: { type: Date, default: null }
 }, { _id: false });
 
+const referenceItemSchema = new mongoose.Schema({
+  id: { type: String, required: true, maxlength: 80 },
+  name: { type: String, required: true, maxlength: 200 },
+  type: { type: String, enum: ['character', 'location', 'object', 'other'], default: 'other' },
+  description: { type: String, default: '', maxlength: 4000 },
+  reason: { type: String, default: '', maxlength: 2000 },
+  mentions: { type: Number, min: 0, default: 0, validate: Number.isSafeInteger },
+  prompt: { type: String, default: '', maxlength: 12000 },
+  selected: { type: Boolean, default: true },
+  version: { type: Number, min: 1, default: 1, validate: Number.isSafeInteger },
+}, { _id: false, strict: 'throw' });
+
+const referencePlanSchema = new mongoose.Schema({
+  status: { type: String, enum: ['empty', 'draft', 'confirmed', 'stale'], default: 'empty' },
+  revision: integer(0, 0),
+  editVersion: integer(0, 0),
+  sourceScriptRevision: {
+    type: Number, default: null, min: 1,
+    validate: value => value === null || Number.isSafeInteger(value),
+  },
+  instructions: { type: String, default: '', maxlength: 4000 },
+  items: {
+    type: [referenceItemSchema], default: [],
+    validate: value => value.length <= 100 && new Set(value.map(item => item.id)).size === value.length,
+  },
+  updatedAt: { type: Date, default: null },
+  confirmedAt: { type: Date, default: null },
+}, { _id: false, strict: 'throw' });
+
 const projectSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -103,6 +132,7 @@ const projectSchema = new mongoose.Schema({
   },
   script: { type: scriptSchema, default: undefined },
   visualBible: { type: visualBibleSchema, default: undefined },
+  referencePlan: { type: referencePlanSchema, default: undefined },
   scriptPath: {
     type: String,
     default: ""

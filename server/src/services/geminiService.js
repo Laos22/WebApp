@@ -1,7 +1,74 @@
 // server/src/services/geminiService.js
 import { GoogleGenAI } from "@google/genai";
 import { getDecryptedApiKey } from "./aiProfileResolver.js";
-import { DEFAULT_VISUAL_BIBLE_PROMPT, DEFAULT_VISUAL_BIBLE_EDIT_PROMPT } from "../models/Settings.js";
+import { DEFAULT_VISUAL_BIBLE_PROMPT, DEFAULT_VISUAL_BIBLE_EDIT_PROMPT, DEFAULT_REFERENCE_ANALYSIS_PROMPT, DEFAULT_REFERENCE_DETAIL_PROMPT } from "../models/Settings.js";
+
+function modelText(response) {
+  const text = typeof response.text === "function" ? response.text()
+    : response.text ?? response.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (typeof text !== "string" || !text.trim()) throw new Error("Missing model text");
+  return text.trim();
+}
+
+export function buildReferenceAnalysisPrompt(project, currentReferences, instructions, template) {
+  const source = typeof template === 'string' && template.trim() ? template : DEFAULT_REFERENCE_ANALYSIS_PROMPT;
+  const visibleReferences = (currentReferences || []).map(reference => ({
+    id: reference.id, name: reference.name, type: reference.type,
+    description: reference.description, reason: reference.reason,
+    mentions: reference.mentions, prompt: reference.prompt, selected: reference.selected,
+  }));
+  return source.split('{{PROJECT_TITLE}}').join(project.title || '')
+    .split('{{SCRIPT}}').join(project.script?.content || '')
+    .split('{{CURRENT_REFERENCES}}').join(JSON.stringify(visibleReferences))
+    .split('{{INSTRUCTIONS}}').join(instructions || 'Нет дополнительных инструкций.');
+}
+
+export async function analyzeScriptReferences(project, currentReferences, instructions, template, profile) {
+  try {
+    const { apiKey, model } = resolveTextConfig(profile, 'analyze-script-references');
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await ai.models.generateContent({
+      model,
+      contents: [{ role: 'user', parts: [{ text: buildReferenceAnalysisPrompt(project, currentReferences, instructions, template) }] }],
+      config: { responseMimeType: 'application/json' },
+    });
+    return modelText(response);
+  } catch {
+    const error = new Error('Не удалось проанализировать сценарий');
+    error.code = 'REFERENCE_ANALYSIS_FAILED';
+    throw error;
+  }
+}
+
+export function buildReferenceDetailPrompt(project, reference, instruction, template) {
+  const source = typeof template === 'string' && template.trim() ? template : DEFAULT_REFERENCE_DETAIL_PROMPT;
+  return source.split('{{PROJECT_TITLE}}').join(project.title || '')
+    .split('{{SCRIPT}}').join(project.script?.content || '')
+    .split('{{REFERENCE}}').join(JSON.stringify({
+      name: reference.name, type: reference.type, description: reference.description,
+      reason: reference.reason, mentions: reference.mentions,
+    }))
+    .split('{{CURRENT_PROMPT}}').join(reference.prompt || '')
+    .split('{{INSTRUCTION}}').join(instruction || 'Нет дополнительной инструкции.');
+}
+
+export async function detailReferencePrompt(project, reference, instruction, template, profile) {
+  try {
+    const { apiKey, model } = resolveTextConfig(profile, 'detail-reference-prompt');
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await ai.models.generateContent({
+      model,
+      contents: [{ role: 'user', parts: [{ text: buildReferenceDetailPrompt(project, reference, instruction, template) }] }],
+    });
+    const text = modelText(response);
+    if (text.length > 12000) throw new Error('Prompt too long');
+    return text;
+  } catch {
+    const error = new Error('Не удалось детализировать prompt');
+    error.code = 'REFERENCE_DETAIL_FAILED';
+    throw error;
+  }
+}
 
 export function buildVisualBiblePrompt(projectTitle, confirmedScript, visualBiblePrompt) {
   const template = typeof visualBiblePrompt === "string" && visualBiblePrompt.trim()

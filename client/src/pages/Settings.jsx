@@ -25,6 +25,8 @@ export default function Settings() {
     visualBiblePrompt: "",
     visualBibleEditPrompt: "",
     visualReferencePrompt: "",
+    referenceAnalysisPrompt: "",
+    referenceDetailPrompt: "",
   });
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -60,6 +62,8 @@ export default function Settings() {
         visualBiblePrompt: response.data.prompts.visualBiblePrompt ?? "",
         visualBibleEditPrompt: response.data.prompts.visualBibleEditPrompt ?? "",
         visualReferencePrompt: response.data.prompts.visualReferencePrompt ?? "",
+        referenceAnalysisPrompt: response.data.prompts.referenceAnalysisPrompt ?? "",
+        referenceDetailPrompt: response.data.prompts.referenceDetailPrompt ?? "",
       }));
     } catch (e) {
       console.error("Ошибка загрузки настроек:", e);
@@ -95,6 +99,8 @@ export default function Settings() {
           visualBiblePrompt: prompts.visualBiblePrompt,
           visualBibleEditPrompt: prompts.visualBibleEditPrompt,
           visualReferencePrompt: prompts.visualReferencePrompt,
+          referenceAnalysisPrompt: prompts.referenceAnalysisPrompt,
+          referenceDetailPrompt: prompts.referenceDetailPrompt,
         },
       });
 
@@ -275,20 +281,27 @@ export default function Settings() {
           </section>
 
           <section className="space-y-4 pb-6 border-b border-slate-800">
-            <h2 className="text-xl font-bold text-white">
-              <label htmlFor="visualReferencePrompt">Шаблон prompt для референсов Google Flow</label>
-            </h2>
-            <p id="visualReferencePromptHelp" className="text-xs text-slate-400">
-              Пустое значение использует стандартный шаблон. Placeholders: {"{{PROJECT_TITLE}}"}, {"{{VISUAL_STYLE}}"}, {"{{CONTINUITY_RULES}}"}, {"{{ENTITY_TYPE}}"}, {"{{ENTITY_NAME}}"}, {"{{ENTITY_DATA}}"}.
+            <h2 className="text-xl font-bold text-white"><label htmlFor="referenceAnalysisPrompt">Анализ сценария для референсов</label></h2>
+            <p id="referenceAnalysisPromptHelp" className="text-xs text-slate-400">
+              Управляет тем, как ИИ выбирает необходимое количество героев, локаций, предметов и других референсов. Placeholders: {"{{PROJECT_TITLE}}"}, {"{{SCRIPT}}"}, {"{{CURRENT_REFERENCES}}"}, {"{{INSTRUCTIONS}}"}.
             </p>
-            <textarea
-              id="visualReferencePrompt"
-              aria-describedby="visualReferencePromptHelp"
-              value={prompts.visualReferencePrompt}
-              onChange={(e) => setPrompts((prev) => ({ ...prev, visualReferencePrompt: e.target.value }))}
+            <textarea id="referenceAnalysisPrompt" aria-describedby="referenceAnalysisPromptHelp"
+              value={prompts.referenceAnalysisPrompt}
+              onChange={(e) => setPrompts((prev) => ({ ...prev, referenceAnalysisPrompt: e.target.value }))}
               className="w-full h-80 bg-slate-950 border border-slate-800 rounded-xl p-4 text-sm text-white focus:border-purple-500 transition-all outline-none resize-y"
-              placeholder="Опишите требования к референсу Google Flow..."
-            />
+              placeholder="Инструкции для анализа сценария..." />
+          </section>
+
+          <section className="space-y-4 pb-6 border-b border-slate-800">
+            <h2 className="text-xl font-bold text-white"><label htmlFor="referenceDetailPrompt">Детализация prompt референса</label></h2>
+            <p id="referenceDetailPromptHelp" className="text-xs text-slate-400">
+              Используется кнопкой «Детализировать prompt» для одной карточки. Placeholders: {"{{PROJECT_TITLE}}"}, {"{{SCRIPT}}"}, {"{{REFERENCE}}"}, {"{{CURRENT_PROMPT}}"}, {"{{INSTRUCTION}}"}.
+            </p>
+            <textarea id="referenceDetailPrompt" aria-describedby="referenceDetailPromptHelp"
+              value={prompts.referenceDetailPrompt}
+              onChange={(e) => setPrompts((prev) => ({ ...prev, referenceDetailPrompt: e.target.value }))}
+              className="w-full h-80 bg-slate-950 border border-slate-800 rounded-xl p-4 text-sm text-white focus:border-purple-500 transition-all outline-none resize-y"
+              placeholder="Инструкции для подробного Flow prompt..." />
           </section>
 
           {/* Кнопка сохранения */}

@@ -6,8 +6,7 @@ export const MAX_VISUAL_REFERENCE_BYTES = 15 * 1024 * 1024;
 const UPLOADS_ROOT = path.resolve(process.cwd(), "uploads");
 const REFERENCES_ROOT = path.join(UPLOADS_ROOT, "visual-references");
 const projectIdPattern = /^[a-f\d]{24}$/i;
-const entityCollectionPattern = /^(characters|locations|objects)$/;
-const entityIdPattern = /^(char|loc|obj)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const referenceIdPattern = /^ref_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function storageError(code) {
   const error = new Error(code);
@@ -49,12 +48,11 @@ export function resolveVisualReferenceStorageKey(storageKey) {
   return absolutePath;
 }
 
-export async function saveVisualReferenceFile({ projectId, entityCollection, entityId, buffer }) {
+export async function saveVisualReferenceFile({ projectId, referenceId, buffer }) {
   const safeProjectId = safeSegment(projectId, projectIdPattern);
-  const safeCollection = safeSegment(entityCollection, entityCollectionPattern);
-  const safeEntityId = safeSegment(entityId, entityIdPattern);
+  const safeReferenceId = safeSegment(referenceId, referenceIdPattern);
   const format = detectImageFormat(buffer);
-  const directory = path.join(REFERENCES_ROOT, safeProjectId, safeCollection, safeEntityId);
+  const directory = path.join(REFERENCES_ROOT, safeProjectId, safeReferenceId);
   const filename = `${randomUUID()}.${format.extension}`;
   const targetPath = path.join(directory, filename);
   const temporaryPath = path.join(directory, `.${randomUUID()}.tmp`);
@@ -67,7 +65,7 @@ export async function saveVisualReferenceFile({ projectId, entityCollection, ent
     throw storageError("VISUAL_REFERENCE_STORAGE_FAILED");
   }
   return {
-    storageKey: path.posix.join("visual-references", safeProjectId, safeCollection, safeEntityId, filename),
+    storageKey: path.posix.join("visual-references", safeProjectId, safeReferenceId, filename),
     mimeType: format.mimeType,
     byteSize: buffer.length,
   };

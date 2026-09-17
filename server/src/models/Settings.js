@@ -94,6 +94,39 @@ export const DEFAULT_VISUAL_REFERENCE_PROMPT = `Создай одно чисто
 
 Создай единое изображение сущности, пригодное как ingredient/reference в Google Flow. Не добавляй подписи, текст, интерфейс, водяные знаки, рамки, коллажи или несколько вариантов.`;
 
+export const DEFAULT_REFERENCE_ANALYSIS_PROMPT = `Ты — режиссёр раскадровки и специалист по визуальной консистентности.
+Проанализируй утверждённый сценарий проекта «{{PROJECT_TITLE}}» и предложи только те референсы, которые действительно помогут сохранять целостность будущей раскадровки.
+
+СЦЕНАРИЙ:
+{{SCRIPT}}
+
+ТЕКУЩИЙ СПИСОК (при повторном анализе):
+{{CURRENT_REFERENCES}}
+
+ДОПОЛНИТЕЛЬНЫЕ ИНСТРУКЦИИ ПОЛЬЗОВАТЕЛЯ:
+{{INSTRUCTIONS}}
+
+Сам реши количество и состав референсов. Учитывай повторяющихся героев, важные локации, узнаваемые предметы, транспорт, животных и другие визуальные элементы. Не создавай карточки для незначительных деталей. Если сохраняешь существующую карточку, верни её id без изменений. Новые карточки возвращай без id.
+
+Верни только JSON вида {"references":[...]}. Для каждой карточки используй поля: id (только для сохранённой существующей карточки), name, type (character/location/object/other), description, reason, mentions (целое число 0 или больше), prompt (может быть пустым или черновым), selected (boolean). Не добавляй Markdown и пояснения вне JSON.`;
+
+export const DEFAULT_REFERENCE_DETAIL_PROMPT = `Подготовь подробный финальный prompt для создания одного чистого референсного изображения в Google Flow.
+
+Проект: {{PROJECT_TITLE}}
+Утверждённый сценарий:
+{{SCRIPT}}
+
+Карточка референса:
+{{REFERENCE}}
+
+Текущий prompt (может быть пустым):
+{{CURRENT_PROMPT}}
+
+Дополнительная инструкция пользователя:
+{{INSTRUCTION}}
+
+Сам выбери важные визуальные характеристики в зависимости от типа референса. Для персонажа подробно опиши устойчивую внешность, одежду и характерные детали; для локации — пространство, архитектуру, материалы, эпоху и свет; для предмета — форму, масштаб, материал и отличительные признаки. Сохрани факты сценария и не добавляй противоречий. Требуй одно чистое изображение без текста, подписей, UI, водяных знаков, рамок и коллажа, пригодное как ingredient/reference в Google Flow. Верни только готовый prompt без Markdown и комментариев.`;
+
 // Схема для отдельного профиля провайдера
 const profileSchema = new mongoose.Schema({
   name: { type: String, required: true }, // Например: "OpenRouter Main"
@@ -174,6 +207,8 @@ const settingsSchema = new mongoose.Schema(
       visualBiblePrompt: { type: String, default: DEFAULT_VISUAL_BIBLE_PROMPT },
       visualBibleEditPrompt: { type: String, default: "" },
       visualReferencePrompt: { type: String, default: "" },
+      referenceAnalysisPrompt: { type: String, default: "" },
+      referenceDetailPrompt: { type: String, default: "" },
     },
 
     driveCredentials: { type: driveCredentialsSchema, default: null, select: false },

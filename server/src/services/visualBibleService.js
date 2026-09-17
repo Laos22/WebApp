@@ -275,5 +275,12 @@ export function markVisualBibleStaleUpdate() {
       editVersion: { $add: [{ $ifNull: ['$visualBible.editVersion', 0] }, 1] },
     }] },
     { $cond: [{ $eq: [{ $type: '$visualBible' }, 'missing'] }, '$$REMOVE', '$visualBible'] },
+  ] }, referencePlan: { $cond: [
+    { $in: ['$referencePlan.status', ['draft', 'confirmed', 'stale']] },
+    { $mergeObjects: ['$referencePlan', {
+      status: 'stale', confirmedAt: null, updatedAt: '$$NOW',
+      editVersion: { $add: [{ $ifNull: ['$referencePlan.editVersion', 0] }, 1] },
+    }] },
+    { $cond: [{ $eq: [{ $type: '$referencePlan' }, 'missing'] }, '$$REMOVE', '$referencePlan'] },
   ] } } };
 }
