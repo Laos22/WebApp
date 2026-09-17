@@ -70,6 +70,19 @@ export const DEFAULT_VISUAL_BIBLE_PROMPT = `Создай Visual Bible проек
 }
 Не добавляй Markdown, ограждения кода и пояснения вне JSON.`;
 
+export const DEFAULT_VISUAL_BIBLE_EDIT_PROMPT = `Отредактируй полную Visual Bible проекта «{{PROJECT_TITLE}}» по инструкции пользователя.
+
+Подтверждённый сценарий:
+{{SCRIPT}}
+
+Текущая Visual Bible:
+{{CURRENT_VISUAL_BIBLE}}
+
+Инструкция пользователя:
+{{INSTRUCTION}}
+
+Верни только JSON полной Visual Bible, а не частичный patch. Используй существующую camelCase-схему. Выполни инструкцию и сохрани всё, чего она не касается. Существующие id сохраняй без изменений только в той же коллекции. Новые элементы возвращай без id, удалённые элементы не возвращай. Не придумывай id и не переноси id между коллекциями. Не добавляй Markdown, ограждения кода, пояснения или служебные поля вне JSON.`;
+
 // Схема для отдельного профиля провайдера
 const profileSchema = new mongoose.Schema({
   name: { type: String, required: true }, // Например: "OpenRouter Main"
@@ -148,6 +161,7 @@ const settingsSchema = new mongoose.Schema(
       audio: { type: String, default: "" },
       timelineDavinci: { type: String, default: "" },
       visualBiblePrompt: { type: String, default: DEFAULT_VISUAL_BIBLE_PROMPT },
+      visualBibleEditPrompt: { type: String, default: "" },
     },
 
     driveCredentials: { type: driveCredentialsSchema, default: null, select: false },

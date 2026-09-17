@@ -109,8 +109,7 @@ function generatedFields(input, fields) {
   }));
 }
 
-// Generated content only: metadata and provider IDs never cross this boundary.
-export function normalizeGeneratedVisualBible(rawResponse) {
+function parseGeneratedVisualBible(rawResponse) {
   let input = rawResponse;
   if (typeof input === 'string') {
     const trimmed = input.trim();
@@ -131,6 +130,12 @@ export function normalizeGeneratedVisualBible(rawResponse) {
       }
     }
   }
+  return input;
+}
+
+// Generated content only: metadata and provider IDs never cross this boundary.
+export function normalizeGeneratedVisualBible(rawResponse) {
+  const input = parseGeneratedVisualBible(rawResponse);
 
   const fields = [];
   const style = generatedValue(input, 'visualStyle');
@@ -156,6 +161,49 @@ export function normalizeGeneratedVisualBible(rawResponse) {
   return result;
 }
 
+export function normalizeEditedVisualBible(rawResponse, currentBible) {
+  const input = parseGeneratedVisualBible(rawResponse);
+  const missingContent = contentFields.filter(key => generatedKey(input, key) === undefined);
+  if (missingContent.length) invalidGeneratedResponse(missingContent);
+  const fields = [];
+  const style = generatedValue(input, 'visualStyle');
+  if (style != null && !isGeneratedObject(style)) fields.push('visualStyle');
+  const result = {
+    visualStyle: generatedFields(isGeneratedObject(style) ? style : {}, styleFields),
+    visualModes: [],
+    continuityRules: generatedList(generatedValue(input, 'continuityRules')),
+    characters: [],
+    locations: [],
+    objects: [],
+  };
+  const usedIds = new Set();
+  const allExistingIds = new Set(Object.keys(collections).flatMap(key =>
+    (currentBible?.[key] || []).map(item => item.id)));
+  for (const [key, spec] of Object.entries(collections)) {
+    const values = generatedValue(input, key);
+    if (values == null) continue;
+    if (!Array.isArray(values) || values.some(item => !isGeneratedObject(item))) {
+      fields.push(key);
+      continue;
+    }
+    const existingIds = new Set((currentBible?.[key] || []).map(item => item.id));
+    result[key] = values.map(item => {
+      const normalized = generatedFields(item, spec.fields);
+      if (Object.hasOwn(item, 'id')) {
+        if (typeof item.id !== 'string' || !existingIds.has(item.id) || usedIds.has(item.id) || !allExistingIds.has(item.id)) {
+          fields.push(`${key}.id`);
+        } else {
+          normalized.id = item.id;
+          usedIds.add(item.id);
+        }
+      }
+      return normalized;
+    });
+  }
+  if (fields.length) invalidGeneratedResponse([...new Set(fields)]);
+  return result;
+}
+
 export function normalizeVisualBible(project) {
   const bible = project?.visualBible;
   if (bible != null) return typeof bible.toObject === 'function' ? bible.toObject() : structuredClone(bible);
@@ -169,7 +217,7 @@ export function normalizeVisualBible(project) {
 
 // A full content replacement: top-level sections are required; omitted entity
 // fields receive empty defaults. Metadata is never accepted from the client.
-export function validateVisualBibleContent(input, currentBible) {
+export function validateVisualBibleContent(input, currentBible, { assignNewIds = true } = {}) {
   object(input, contentFields, 'content');
   if (contentFields.some(key => !Object.hasOwn(input, key))) invalid('content');
   if (Buffer.byteLength(JSON.stringify(input), 'utf8') > 80000) invalid('content.size');
@@ -192,10 +240,10 @@ export function validateVisualBibleContent(input, currentBible) {
       return result;
     });
   }
-  return assignStableEntityIds(content, currentBible);
+  return assignStableEntityIds(content, currentBible, { assignNewIds });
 }
 
-export function assignStableEntityIds(content, currentBible) {
+export function assignStableEntityIds(content, currentBible, { assignNewIds = true } = {}) {
   const result = structuredClone(content);
   for (const [key, { prefix }] of Object.entries(collections)) {
     const existing = new Set((currentBible?.[key] || []).map(item => item.id));
@@ -205,11 +253,13 @@ export function assignStableEntityIds(content, currentBible) {
         if (typeof item.id !== 'string' ||
             !new RegExp(`^${prefix}_${uuidPattern}$`).test(item.id) ||
             !existing.has(item.id)) invalid(`${key}.id`);
-      } else {
+      } else if (assignNewIds) {
         do { item.id = `${prefix}_${randomUUID()}`; } while (existing.has(item.id) || seen.has(item.id));
       }
-      if (seen.has(item.id)) invalid(`${key}.id`);
-      seen.add(item.id);
+      if (Object.hasOwn(item, 'id')) {
+        if (seen.has(item.id)) invalid(`${key}.id`);
+        seen.add(item.id);
+      }
     }
   }
   return result;

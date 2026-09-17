@@ -1,7 +1,7 @@
 // server/src/services/geminiService.js
 import { GoogleGenAI } from "@google/genai";
 import { getDecryptedApiKey } from "./aiProfileResolver.js";
-import { DEFAULT_VISUAL_BIBLE_PROMPT } from "../models/Settings.js";
+import { DEFAULT_VISUAL_BIBLE_PROMPT, DEFAULT_VISUAL_BIBLE_EDIT_PROMPT } from "../models/Settings.js";
 
 export function buildVisualBiblePrompt(projectTitle, confirmedScript, visualBiblePrompt) {
   const template = typeof visualBiblePrompt === "string" && visualBiblePrompt.trim()
@@ -30,6 +30,39 @@ export async function generateVisualBibleDraft(projectTitle, confirmedScript, vi
     const error = new Error("Не удалось сгенерировать Visual Bible");
     error.status = 502;
     error.code = "VISUAL_BIBLE_GENERATION_FAILED";
+    throw error;
+  }
+}
+
+export function buildVisualBibleEditPrompt(projectTitle, confirmedScript, currentVisualBible, instruction, visualBibleEditPrompt) {
+  const template = typeof visualBibleEditPrompt === "string" && visualBibleEditPrompt.trim()
+    ? visualBibleEditPrompt : DEFAULT_VISUAL_BIBLE_EDIT_PROMPT;
+  return template.split("{{PROJECT_TITLE}}").join(projectTitle)
+    .split("{{SCRIPT}}").join(confirmedScript)
+    .split("{{CURRENT_VISUAL_BIBLE}}").join(JSON.stringify(currentVisualBible))
+    .split("{{INSTRUCTION}}").join(instruction);
+}
+
+export async function editVisualBible(projectTitle, confirmedScript, currentVisualBible, instruction, visualBibleEditPrompt, profile) {
+  try {
+    if (!profile || !profile.textSettings?.primaryModel) throw new Error("Missing text profile");
+    const { apiKey, model } = resolveTextConfig(profile, "edit-visual-bible");
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await ai.models.generateContent({
+      model,
+      contents: [{ role: "user", parts: [{
+        text: buildVisualBibleEditPrompt(projectTitle, confirmedScript, currentVisualBible, instruction, visualBibleEditPrompt),
+      }] }],
+      config: { responseMimeType: "application/json" },
+    });
+    const text = typeof response.text === "function" ? response.text()
+      : response.text ?? response.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (typeof text !== "string") throw new Error("Missing model text");
+    return text;
+  } catch {
+    const error = new Error("Не удалось отредактировать Visual Bible");
+    error.status = 502;
+    error.code = "VISUAL_BIBLE_EDIT_FAILED";
     throw error;
   }
 }
