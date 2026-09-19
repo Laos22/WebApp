@@ -221,7 +221,7 @@ const profileSchema = new mongoose.Schema({
   },
 
   imageSettings: {
-    model: { type: String },
+    model: { type: String, default: "gemini-3.1-flash-image" },
     format: { type: String, default: "jpeg" }, // png, webp
     quality: { type: String, default: "standard" }, // standard, hd
     aspectRatio: { type: String, default: "16:9" },

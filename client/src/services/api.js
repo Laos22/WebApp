@@ -114,6 +114,12 @@ export const saveStoryboard = (projectId, payload) =>
   projectRequest(projectId, "/storyboard", "PUT", payload);
 export const confirmStoryboard = (projectId, payload) =>
   projectRequest(projectId, "/storyboard/confirm", "POST", payload);
+export const generateStoryboardFrameImage = (projectId, frameId, payload) =>
+  projectRequest(projectId, `/storyboard/frames/${encodeURIComponent(frameId)}/generate-image`, "POST", payload);
+export const resetStoryboardImages = (projectId, payload) =>
+  projectRequest(projectId, "/storyboard/images/reset", "POST", payload);
+export const getStoryboardFrameImageUrl = (projectId, frameId, updatedAt, download = false) =>
+  `${import.meta.env.VITE_SERVER_URL}/api/projects/${projectId}/storyboard/frames/${encodeURIComponent(frameId)}/image?v=${encodeURIComponent(updatedAt || "0")}${download ? "&download=1" : ""}`;
 
 export async function editProjectScript(id, currentScript, instruction, signal) {
   const response = await fetch(`${import.meta.env.VITE_SERVER_URL}/api/projects/${id}/edit-script`, {

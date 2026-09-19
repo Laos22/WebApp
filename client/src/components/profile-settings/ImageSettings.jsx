@@ -29,8 +29,15 @@ export default function ImageSettings({ settings, onChange }) {
           value={settings.model}
           onChange={(e) => onChange("model", e.target.value)}
           className={inputClass}
-          placeholder="imagen-3.0-generate-002"
+          placeholder="gemini-3.1-flash-image"
+          list="google-image-models"
         />
+        <datalist id="google-image-models">
+          <option value="gemini-3.1-flash-image" />
+          <option value="gemini-3.1-flash-lite-image" />
+          <option value="gemini-3-pro-image-preview" />
+        </datalist>
+        <p className="mt-2 text-xs text-slate-400">Для автоматической генерации кадров используйте профиль Google Studio.</p>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">

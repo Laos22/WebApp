@@ -22,6 +22,7 @@ import {
 } from "../services/aiProfileResolver.js";
 import Project from "../models/Project.js";
 import VisualReference from "../models/VisualReference.js";
+import StoryboardImage from "../models/StoryboardImage.js";
 import {
   normalizeVisualBible, validateVisualBibleContent, markVisualBibleStaleUpdate,
   normalizeGeneratedVisualBible,
@@ -44,6 +45,10 @@ import {
 } from "../services/voiceoverService.js";
 import { synthesizeElevenLabs } from "../services/elevenLabsService.js";
 import { saveVoiceoverAudio, readVoiceoverAudio } from "../services/voiceoverStorage.js";
+import { generateGoogleStoryboardImage } from "../services/googleImageService.js";
+import {
+  saveStoryboardImageFile, readStoryboardImageFile, deleteStoryboardImageFile,
+} from "../services/storyboardImageStorage.js";
 import path from "path";
 import fs from "fs";
 
@@ -150,6 +155,8 @@ router.delete("/:id", ensureAuthenticated, async (req, res) => {
     if (!project) return res.status(404).json({ error: "Проект не найден" });
     const references = await VisualReference.find({ projectId: project._id, userId: req.user._id })
       .select("+storageKey");
+    const storyboardImages = await StoryboardImage.find({ projectId: project._id, userId: req.user._id })
+      .select("+storageKey");
 
     // Удаление папки с диска
     if (project.projectPath && fs.existsSync(project.projectPath)) {
@@ -158,8 +165,11 @@ router.delete("/:id", ensureAuthenticated, async (req, res) => {
 
     await project.deleteOne();
     await VisualReference.deleteMany({ projectId: project._id, userId: req.user._id });
+    await StoryboardImage.deleteMany({ projectId: project._id, userId: req.user._id });
     await Promise.all(references.map(reference => deleteVisualReferenceFile(reference.storageKey)
       .catch(() => console.error("VISUAL_REFERENCE_PROJECT_DELETE_FAILED"))));
+    await Promise.all(storyboardImages.map(image => deleteStoryboardImageFile(image.storageKey)
+      .catch(() => console.error("STORYBOARD_IMAGE_PROJECT_DELETE_FAILED"))));
     res.json({ success: true, message: "Проект удален" });
   } catch (error) {
     res.status(500).json({ error: "Ошибка при удалении проекта" });
@@ -1003,6 +1013,25 @@ async function storyboardResponse(project, userId) {
     projectId: project._id, userId, referenceId: { $in: selected.map(item => item.id) },
   });
   const ready = new Set(assets.filter(asset => asset.status === 'ready').map(asset => asset.referenceId));
+  const generatedImages = await StoryboardImage.find({
+    projectId: project._id, userId, frameId: { $in: stored.frames.map(frame => frame.id) },
+  }).select('+storageKey');
+  const imageByFrame = new Map(generatedImages.map(image => [image.frameId, image]));
+  const frames = stored.frames.map(frame => {
+    const image = imageByFrame.get(frame.id);
+    const current = image && image.sourceStoryboardRevision === stored.revision &&
+      image.sourcePrompt === frame.prompt &&
+      JSON.stringify(image.sourceReferenceIds || []) === JSON.stringify(frame.referenceIds || []);
+    return {
+      ...frame,
+      image: current ? {
+        id: image._id.toString(), status: image.status, hasImage: image.status === 'ready' && Boolean(image.storageKey),
+        mimeType: image.mimeType, byteSize: image.byteSize, profileId: image.profileId,
+        model: image.model, errorCode: image.errorCode, generatedAt: image.generatedAt,
+        updatedAt: image.updatedAt,
+      } : { status: 'pending', hasImage: false, stale: Boolean(image) },
+    };
+  });
   return {
     success: true,
     scriptStatus: project.script?.status ?? null,
@@ -1019,6 +1048,7 @@ async function storyboardResponse(project, userId) {
     })),
     storyboard: {
       ...stored,
+      frames,
       status: stored.status === 'empty' || storyboardIsCurrent(project, stored) ? stored.status : 'stale',
     },
   };
@@ -1306,6 +1336,184 @@ router.post('/:id/storyboard/confirm', ensureAuthenticated, async (req, res) => 
     return res.json(await storyboardResponse(saved, req.user._id));
   } catch {
     return res.status(500).json({ error: 'Не удалось утвердить раскадровку' });
+  }
+});
+
+router.post('/:id/storyboard/images/reset', ensureAuthenticated, async (req, res) => {
+  try {
+    const { sourceStoryboardRevision } = req.body || {};
+    if (Object.keys(req.body || {}).some(key => key !== 'sourceStoryboardRevision') ||
+        !Number.isSafeInteger(sourceStoryboardRevision) || sourceStoryboardRevision < 1) {
+      return res.status(400).json({ error: 'Некорректная версия раскадровки' });
+    }
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const storyboard = normalizeStoryboard(project);
+    if (storyboard.status !== 'confirmed' || storyboard.revision !== sourceStoryboardRevision ||
+        !storyboardIsCurrent(project, storyboard)) {
+      return res.status(409).json({ error: 'Раскадровка изменилась. Обновите страницу.' });
+    }
+    if (storyboard.frames.length) {
+      await StoryboardImage.bulkWrite(storyboard.frames.map(frame => ({
+        updateOne: {
+          filter: { projectId: project._id, userId: req.user._id, frameId: frame.id },
+          update: {
+            $set: {
+              sourceStoryboardRevision, sourcePrompt: frame.prompt,
+              sourceReferenceIds: frame.referenceIds, status: 'pending', errorCode: '',
+            },
+            $setOnInsert: { projectId: project._id, userId: req.user._id, frameId: frame.id },
+          },
+          upsert: true,
+        },
+      })));
+    }
+    return res.json(await storyboardResponse(project, req.user._id));
+  } catch {
+    return res.status(500).json({ error: 'Не удалось начать генерацию изображений заново' });
+  }
+});
+
+router.post('/:id/storyboard/frames/:frameId/generate-image', ensureAuthenticated, async (req, res) => {
+  let generatedFile = null;
+  let previousStorageKey = '';
+  let failureContext = null;
+  try {
+    const { profileId, sourceStoryboardRevision } = req.body || {};
+    if (Object.keys(req.body || {}).some(key => !['profileId', 'sourceStoryboardRevision'].includes(key)) ||
+        typeof profileId !== 'string' || !profileId ||
+        !Number.isSafeInteger(sourceStoryboardRevision) || sourceStoryboardRevision < 1) {
+      return res.status(400).json({ error: 'Выберите профиль и обновите раскадровку' });
+    }
+    const owner = { _id: req.params.id, userId: req.user._id };
+    const project = await Project.findOne(owner);
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const storyboard = normalizeStoryboard(project);
+    const frame = storyboard.frames.find(item => item.id === req.params.frameId);
+    if (!frame) return res.status(404).json({ error: 'Кадр не найден' });
+    if (storyboard.status !== 'confirmed' || storyboard.revision !== sourceStoryboardRevision ||
+        !storyboardIsCurrent(project, storyboard)) {
+      return res.status(409).json({ error: 'Раскадровка изменилась. Обновите страницу.' });
+    }
+    const settings = await Settings.findOne({ userId: req.user._id });
+    const profile = settings?.profiles?.id(profileId);
+    if (!profile || profile.type !== 'image' || profile.provider !== 'google_studio') {
+      return res.status(400).json({ code: 'INVALID_IMAGE_PROFILE', error: 'Выберите профиль изображения Google Studio.' });
+    }
+    logProfileUsage('generate-storyboard-image', profile, 'image');
+
+    const previous = await StoryboardImage.findOne({
+      projectId: project._id, userId: req.user._id, frameId: frame.id,
+    }).select('+storageKey');
+    previousStorageKey = previous?.storageKey || '';
+    failureContext = {
+      projectId: project._id, userId: req.user._id, frameId: frame.id,
+      sourceStoryboardRevision, sourcePrompt: frame.prompt,
+    };
+    await StoryboardImage.findOneAndUpdate(
+      { projectId: project._id, userId: req.user._id, frameId: frame.id },
+      {
+        $set: {
+          sourceStoryboardRevision, sourcePrompt: frame.prompt, sourceReferenceIds: frame.referenceIds,
+          status: 'generating', profileId: profile._id.toString(),
+          model: profile.imageSettings?.model?.trim() || 'gemini-3.1-flash-image', errorCode: '',
+        },
+        $setOnInsert: { projectId: project._id, userId: req.user._id, frameId: frame.id },
+      },
+      { upsert: true, runValidators: true },
+    );
+
+    const selectedItems = (project.referencePlan?.items || []).filter(item =>
+      item.selected && frame.referenceIds.includes(item.id));
+    const referenceAssets = await VisualReference.find({
+      projectId: project._id, userId: req.user._id,
+      referenceId: { $in: selectedItems.map(item => item.id) }, status: 'ready',
+    }).select('+storageKey');
+    const assetByReference = new Map(referenceAssets.map(asset => [asset.referenceId, asset]));
+    const references = (await Promise.all(selectedItems.map(async item => {
+      const asset = assetByReference.get(item.id);
+      if (!asset || asset.sourceReferenceVersion !== item.version || !asset.storageKey) return null;
+      try {
+        return {
+          name: item.name, type: item.type, mimeType: asset.mimeType,
+          buffer: await readVisualReferenceFile(asset.storageKey),
+        };
+      } catch {
+        return null;
+      }
+    }))).filter(Boolean);
+
+    const generated = await generateGoogleStoryboardImage({ frame, references, profile });
+    generatedFile = await saveStoryboardImageFile({
+      projectId: project._id.toString(), frameId: frame.id, buffer: generated.buffer,
+    });
+    const stillCurrent = await Project.exists({
+      ...owner, 'storyboard.status': 'confirmed', 'storyboard.revision': sourceStoryboardRevision,
+      'storyboard.frames': { $elemMatch: { id: frame.id, prompt: frame.prompt, referenceIds: frame.referenceIds } },
+    });
+    if (!stillCurrent) {
+      await deleteStoryboardImageFile(generatedFile.storageKey).catch(() => {});
+      generatedFile = null;
+      return res.status(409).json({ error: 'Раскадровка изменилась во время генерации. Повторите запрос.' });
+    }
+    const savedImage = await StoryboardImage.findOneAndUpdate({
+      projectId: project._id, userId: req.user._id, frameId: frame.id,
+      sourceStoryboardRevision, sourcePrompt: frame.prompt, status: 'generating',
+    }, { $set: {
+      status: 'ready', storageKey: generatedFile.storageKey, mimeType: generatedFile.mimeType,
+      byteSize: generatedFile.byteSize, model: generated.model, generatedAt: new Date(), errorCode: '',
+    } }, { new: true, runValidators: true });
+    if (!savedImage) {
+      await deleteStoryboardImageFile(generatedFile.storageKey).catch(() => {});
+      generatedFile = null;
+      return res.status(409).json({ error: 'Состояние генерации изменилось. Повторите запрос.' });
+    }
+    if (previousStorageKey && previousStorageKey !== generatedFile.storageKey) {
+      deleteStoryboardImageFile(previousStorageKey).catch(() => console.error('STORYBOARD_IMAGE_OLD_FILE_DELETE_FAILED'));
+    }
+    return res.json(await storyboardResponse(project, req.user._id));
+  } catch (error) {
+    if (generatedFile?.storageKey) await deleteStoryboardImageFile(generatedFile.storageKey).catch(() => {});
+    if (failureContext) {
+      await StoryboardImage.updateOne(failureContext, {
+        $set: { status: 'error', errorCode: error.code || 'IMAGE_GENERATION_FAILED' },
+      }).catch(() => {});
+    }
+    if (error?.publicMessage) return res.status(502).json({ code: error.code, error: error.publicMessage });
+    if (['INVALID_IMAGE_FILE', 'STORYBOARD_IMAGE_STORAGE_FAILED'].includes(error.code)) {
+      return res.status(500).json({ code: error.code, error: 'Не удалось сохранить изображение кадра.' });
+    }
+    return res.status(500).json({ error: 'Не удалось сгенерировать изображение кадра' });
+  }
+});
+
+router.get('/:id/storyboard/frames/:frameId/image', ensureAuthenticated, async (req, res) => {
+  try {
+    const image = await StoryboardImage.findOne({
+      projectId: req.params.id, userId: req.user._id, frameId: req.params.frameId, status: 'ready',
+    }).select('+storageKey');
+    if (!image?.storageKey) return res.status(404).json({ error: 'Изображение кадра не найдено' });
+    const projectCurrent = await Project.exists({
+      _id: req.params.id, userId: req.user._id, 'storyboard.status': 'confirmed',
+      'storyboard.revision': image.sourceStoryboardRevision,
+      'storyboard.frames': { $elemMatch: {
+        id: image.frameId, prompt: image.sourcePrompt, referenceIds: image.sourceReferenceIds,
+      } },
+    });
+    if (!projectCurrent) return res.status(404).json({ error: 'Изображение кадра устарело' });
+    const buffer = await readStoryboardImageFile(image.storageKey);
+    res.set('Content-Type', image.mimeType);
+    res.set('Cache-Control', 'private, no-store');
+    if (req.query.download === '1') {
+      const extension = image.mimeType === 'image/png' ? 'png' : image.mimeType === 'image/webp' ? 'webp' : 'jpg';
+      res.set('Content-Disposition', `attachment; filename="storyboard-${image.frameId}.${extension}"`);
+    }
+    return res.send(buffer);
+  } catch (error) {
+    if (['STORYBOARD_IMAGE_FILE_NOT_FOUND', 'INVALID_STORAGE_KEY'].includes(error.code)) {
+      return res.status(404).json({ error: 'Файл изображения не найден' });
+    }
+    return res.status(500).json({ error: 'Не удалось загрузить изображение кадра' });
   }
 });
 

@@ -69,7 +69,7 @@ export const getEmptyProfile = () => ({
     temperature: 0.7,
   },
   imageSettings: {
-    model: "",
+    model: "gemini-3.1-flash-image",
     format: "jpeg",
     quality: "standard",
     aspectRatio: "16:9",

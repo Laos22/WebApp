@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { confirmStoryboard, detailStoryboardFramePrompt, generateStoryboard, getStoryboard, resetStoryboardPromptDetails, saveStoryboard } from "../services/api";
+import {
+  confirmStoryboard, detailStoryboardFramePrompt, generateStoryboard,
+  generateStoryboardFrameImage, getStoryboard, getStoryboardFrameImageUrl,
+  resetStoryboardImages, resetStoryboardPromptDetails, saveStoryboard,
+} from "../services/api";
+import { fetchProfiles } from "../services/profileService";
 
 const panel = "bg-slate-900/80 border border-slate-800 rounded-2xl p-5 md:p-6 space-y-4";
 const button = "px-4 py-2.5 rounded-xl bg-purple-700 hover:bg-purple-600 disabled:opacity-50 disabled:cursor-not-allowed";
@@ -22,6 +27,9 @@ function readableError(error) {
   if (error?.code === "STORYBOARD_TEXT_COVERAGE_MISMATCH") return "ИИ изменил текст озвучки при разделении на кадры. Попробуйте создать раскадровку заново.";
   if (error?.code === "STORYBOARD_FRAME_WORD_LIMIT_MISMATCH") return "Количество созданных кадров не позволяет распределить текст по 5–15 слов. Повторите генерацию.";
   if (error?.code === "STORYBOARD_DETAIL_FAILED") return "ИИ не смог детализировать prompt кадра. Повторите запрос.";
+  if (error?.code === "INVALID_IMAGE_PROFILE") return "Выберите профиль изображения Google Studio.";
+  if (error?.code === "IMAGE_PROVIDER_AUTH_FAILED") return "Google Studio отклонил API-ключ или доступ к выбранной модели.";
+  if (error?.code === "IMAGE_PROVIDER_RATE_LIMIT") return "Google Studio временно ограничил запросы. Позже нажмите «Продолжить генерацию».";
   if (error?.status === 502) return "ИИ вернул некорректную раскадровку. Уточните инструкцию и попробуйте снова.";
   if (error?.code === "STORYBOARD_INPUT_TOO_LONG") return "Данных слишком много для одного запроса. Сократите инструкции или текущие prompts.";
   return error?.message || "Не удалось выполнить операцию.";
@@ -34,11 +42,15 @@ export default function ImageGen() {
   const [instructions, setInstructions] = useState("");
   const [detailInstruction, setDetailInstruction] = useState("");
   const [detailProgress, setDetailProgress] = useState(null);
+  const [imageProfiles, setImageProfiles] = useState([]);
+  const [imageProfileId, setImageProfileId] = useState("");
+  const [imageProgress, setImageProgress] = useState(null);
   const [pending, setPending] = useState("load");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const mounted = useRef(true);
   const stopDetail = useRef(false);
+  const stopImages = useRef(false);
 
   const applyData = (result) => {
     setData(result);
@@ -49,15 +61,18 @@ export default function ImageGen() {
   useEffect(() => {
     mounted.current = true;
     let active = true;
-    getStoryboard(projectId).then(result => {
+    Promise.all([getStoryboard(projectId), fetchProfiles()]).then(([result, profiles]) => {
       if (active) {
         setData(result);
         setFrames(result.storyboard.frames.map(editableFrame));
         setInstructions(result.storyboard.instructions || "");
+        const available = profiles.filter(profile => profile.type === "image" && profile.provider === "google_studio");
+        setImageProfiles(available);
+        setImageProfileId((available.find(profile => profile.isDefault) || available[0])?.id || "");
       }
     }).catch(err => { if (active) setError(readableError(err)); })
       .finally(() => { if (active) setPending(""); });
-    return () => { active = false; mounted.current = false; stopDetail.current = true; };
+    return () => { active = false; mounted.current = false; stopDetail.current = true; stopImages.current = true; };
   }, [projectId]);
 
   const storyboard = data?.storyboard;
@@ -72,6 +87,13 @@ export default function ImageGen() {
     const ready = storedFrames.filter(frame => frame.promptDetailStatus === "ready").length;
     const failed = storedFrames.filter(frame => frame.promptDetailStatus === "error").length;
     return { ready, failed, pending: storedFrames.length - ready, total: storedFrames.length };
+  }, [storyboard]);
+  const imageStats = useMemo(() => {
+    const storedFrames = storyboard?.frames || [];
+    const ready = storedFrames.filter(frame => frame.image?.status === "ready").length;
+    const failed = storedFrames.filter(frame => frame.image?.status === "error").length;
+    const generating = storedFrames.filter(frame => frame.image?.status === "generating").length;
+    return { ready, failed, generating, pending: storedFrames.length - ready, total: storedFrames.length };
   }, [storyboard]);
 
   useEffect(() => {
@@ -182,6 +204,61 @@ export default function ImageGen() {
     sourceVoiceoverRevision: storyboard.sourceVoiceoverRevision,
   }), "Раскадровка утверждена.");
 
+  const generateImageOne = (frameId, currentData) => generateStoryboardFrameImage(projectId, frameId, {
+    profileId: imageProfileId,
+    sourceStoryboardRevision: currentData.storyboard.revision,
+  });
+
+  const generateFrameImage = frameId => run(`image:${frameId}`, async () => {
+    try {
+      return await generateImageOne(frameId, data);
+    } catch (generationError) {
+      try { applyData(await getStoryboard(projectId)); } catch { /* keep last valid state */ }
+      throw generationError;
+    }
+  }, "Изображение кадра готово.");
+
+  const generateAllImages = async (restart = false) => {
+    if (pending || dirty || storyboard?.status !== "confirmed" || !imageProfileId) return;
+    stopImages.current = false;
+    setPending("image-all"); setError(""); setMessage("");
+    let current = data;
+    try {
+      if (restart) {
+        current = await resetStoryboardImages(projectId, {
+          sourceStoryboardRevision: current.storyboard.revision,
+        });
+        if (mounted.current) applyData(current);
+      }
+      const targets = current.storyboard.frames
+        .filter(frame => frame.image?.status !== "ready")
+        .map(frame => frame.id);
+      if (!targets.length) {
+        if (mounted.current) setMessage("Все изображения кадров уже готовы.");
+        return;
+      }
+      setImageProgress({ done: 0, total: targets.length });
+      for (let index = 0; index < targets.length; index += 1) {
+        if (stopImages.current) break;
+        current = await generateImageOne(targets[index], current);
+        if (mounted.current) {
+          applyData(current);
+          setImageProgress({ done: index + 1, total: targets.length });
+        }
+      }
+      if (mounted.current) setMessage(stopImages.current
+        ? "Генерация остановлена. Готовые изображения сохранены."
+        : "Все изображения кадров сгенерированы.");
+    } catch (err) {
+      if (mounted.current) {
+        setError(readableError(err));
+        try { applyData(await getStoryboard(projectId)); } catch { /* keep last valid state */ }
+      }
+    } finally {
+      if (mounted.current) setPending("");
+    }
+  };
+
   const updateFrame = (index, field, value) => setFrames(current =>
     current.map((frame, i) => i === index ? { ...frame, [field]: value } : frame));
   const moveFrame = (index, direction) => setFrames(current => {
@@ -249,8 +326,48 @@ export default function ImageGen() {
           {storyboard.status === "confirmed" && !dirty && <p className="text-emerald-300">Раскадровка готова для следующего этапа — генерации изображений.</p>}
         </section>
 
+        {storyboard.status === "confirmed" && !dirty && <section className={panel}>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div><h2 className="text-xl font-bold">Генерация изображений</h2>
+              <p className="text-sm text-slate-400 mt-1">Google Studio создаёт отдельное изображение для каждого утверждённого кадра.</p></div>
+            <span className="text-sm text-slate-300">Готово {imageStats.ready}/{imageStats.total}</span>
+          </div>
+          <label className="block"><span className="block text-sm text-slate-300 mb-2">Профиль изображения</span>
+            <select value={imageProfileId} onChange={event => setImageProfileId(event.target.value)} disabled={Boolean(pending)}
+              className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3">
+              <option value="">Выберите профиль Google Studio</option>
+              {imageProfiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}{profile.isDefault ? " — по умолчанию" : ""}</option>)}
+            </select>
+          </label>
+          {!imageProfiles.length && <p className="text-amber-300">Создайте в настройках профиль типа «Изображение» с провайдером Google Studio.</p>}
+          <div className="flex flex-wrap gap-3">
+            <button type="button" className={`${button} bg-cyan-700 hover:bg-cyan-600`}
+              disabled={Boolean(pending) || !imageProfileId || imageStats.pending === 0}
+              onClick={() => generateAllImages(false)}>
+              {pending === "image-all" ? "Генерация…" : "Продолжить генерацию"}
+            </button>
+            <button type="button" className={`${button} bg-blue-800 hover:bg-blue-700`}
+              disabled={Boolean(pending) || !imageProfileId}
+              onClick={() => { if (window.confirm("Начать генерацию всех изображений заново с первого кадра?")) generateAllImages(true); }}>
+              Начать заново
+            </button>
+            {pending === "image-all" && <button type="button" className={`${button} bg-red-800 hover:bg-red-700`}
+              onClick={() => { stopImages.current = true; }}>Остановить после текущего кадра</button>}
+          </div>
+          {imageProgress && <p className="text-sm text-cyan-300">Обработано в этом запуске: {imageProgress.done}/{imageProgress.total}</p>}
+          <p className="text-sm text-slate-400">
+            Статусы: <span className="text-emerald-400">готово {imageStats.ready}</span>
+            {imageStats.failed > 0 ? <span className="text-red-400"> · ошибок {imageStats.failed}</span> : null}
+            {imageStats.generating > 0 ? <span className="text-cyan-400"> · генерируется {imageStats.generating}</span> : null}
+            <span> · ожидает {imageStats.total - imageStats.ready - imageStats.failed - imageStats.generating}</span>
+          </p>
+        </section>}
+
         {frames.map((frame, index) => {
-          const detailStatus = storyboard.frames.find(item => item.id === frame.id)?.promptDetailStatus || "pending";
+          const storedFrame = storyboard.frames.find(item => item.id === frame.id);
+          const detailStatus = storedFrame?.promptDetailStatus || "pending";
+          const imageState = storedFrame?.image || { status: "pending", hasImage: false };
+          const effectiveImageStatus = pending === `image:${frame.id}` ? "generating" : imageState.status;
           return <article key={frame.id || `new-${index}`} className={panel}>
           <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-xl font-bold">Кадр {index + 1}</h2><div className="flex gap-2">
             <button type="button" className={`${button} bg-slate-700 hover:bg-slate-600`} disabled={index === 0 || Boolean(pending)} onClick={() => moveFrame(index, -1)}>↑</button>
@@ -269,6 +386,26 @@ export default function ImageGen() {
           <fieldset className="border border-slate-700 rounded-xl p-4 space-y-3"><legend className="px-2 text-sm text-slate-300">Референсы этого кадра</legend>
             {data.references.length ? <div className="grid sm:grid-cols-2 gap-2">{data.references.map(reference => <label key={reference.id} className="flex items-start gap-2 p-2 rounded-lg bg-slate-950/60"><input type="checkbox" checked={frame.referenceIds.includes(reference.id)} onChange={() => toggleReference(index, reference.id)} /><span><span className="block">{reference.name}</span><span className={`text-xs ${reference.imageReady ? "text-emerald-400" : "text-slate-500"}`}>{reference.imageReady ? "Изображение загружено" : "Только текстовый референс"}</span></span></label>)}</div> : <p className="text-slate-500">Нет выбранных референсов.</p>}
           </fieldset>
+          {storyboard.status === "confirmed" && !dirty && <section className="border border-cyan-800/60 bg-cyan-950/20 rounded-xl p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="font-semibold">Изображение кадра</h3>
+              <span className={`text-sm ${effectiveImageStatus === "ready" ? "text-emerald-400" : effectiveImageStatus === "error" ? "text-red-400" : effectiveImageStatus === "generating" ? "text-cyan-300" : "text-slate-400"}`}>
+                {effectiveImageStatus === "ready" ? "Готово" : effectiveImageStatus === "error" ? "Ошибка" : effectiveImageStatus === "generating" ? "Генерируется…" : "Ожидает"}
+              </span>
+            </div>
+            {imageState.hasImage && <img
+              src={getStoryboardFrameImageUrl(projectId, frame.id, imageState.updatedAt)}
+              alt={`Кадр ${index + 1}`} className="w-full rounded-xl border border-slate-700" />}
+            <div className="flex flex-wrap gap-3">
+              <button type="button" className={`${button} bg-cyan-700 hover:bg-cyan-600`}
+                disabled={Boolean(pending) || !imageProfileId}
+                onClick={() => generateFrameImage(frame.id)}>
+                {pending === `image:${frame.id}` ? "Генерация…" : imageState.status === "ready" ? "Перегенерировать" : "Сгенерировать"}
+              </button>
+              {imageState.hasImage && <a className={`${button} bg-slate-700 hover:bg-slate-600`}
+                href={getStoryboardFrameImageUrl(projectId, frame.id, imageState.updatedAt, true)}>Скачать</a>}
+            </div>
+          </section>}
           <button type="button" className={`${button} bg-red-800 hover:bg-red-700`} disabled={Boolean(pending)} onClick={() => { if (window.confirm(`Удалить кадр ${index + 1}?`)) setFrames(current => current.filter((_, i) => i !== index)); }}>Удалить кадр</button>
         </article>})}
 
