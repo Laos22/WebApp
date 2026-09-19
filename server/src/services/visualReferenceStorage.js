@@ -1,6 +1,9 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import {
+  ensureProjectWorkspace, isProjectStorageKey, projectStorageKey, resolveProjectStorageKey,
+} from "./projectStorage.js";
 
 export const MAX_VISUAL_REFERENCE_BYTES = 15 * 1024 * 1024;
 const UPLOADS_ROOT = path.resolve(process.cwd(), "uploads");
@@ -48,12 +51,23 @@ export function resolveVisualReferenceStorageKey(storageKey) {
   return absolutePath;
 }
 
-export async function saveVisualReferenceFile({ projectId, referenceId, buffer }) {
-  const safeProjectId = safeSegment(projectId, projectIdPattern);
+export async function saveVisualReferenceFile({ projectId, projectPath, referenceId, buffer }) {
   const safeReferenceId = safeSegment(referenceId, referenceIdPattern);
   const format = detectImageFormat(buffer);
-  const directory = path.join(REFERENCES_ROOT, safeProjectId, safeReferenceId);
-  const filename = `${randomUUID()}.${format.extension}`;
+  let directory;
+  let filename;
+  let storageKey;
+  if (projectPath) {
+    const root = await ensureProjectWorkspace(projectPath);
+    directory = path.join(root, "references", safeReferenceId);
+    filename = `${randomUUID()}.${format.extension}`;
+    storageKey = projectStorageKey("references", safeReferenceId, filename);
+  } else {
+    const safeProjectId = safeSegment(projectId, projectIdPattern);
+    directory = path.join(REFERENCES_ROOT, safeProjectId, safeReferenceId);
+    filename = `${randomUUID()}.${format.extension}`;
+    storageKey = path.posix.join("visual-references", safeProjectId, safeReferenceId, filename);
+  }
   const targetPath = path.join(directory, filename);
   const temporaryPath = path.join(directory, `.${randomUUID()}.tmp`);
   try {
@@ -65,15 +79,19 @@ export async function saveVisualReferenceFile({ projectId, referenceId, buffer }
     throw storageError("VISUAL_REFERENCE_STORAGE_FAILED");
   }
   return {
-    storageKey: path.posix.join("visual-references", safeProjectId, safeReferenceId, filename),
+    storageKey,
     mimeType: format.mimeType,
     byteSize: buffer.length,
+    filename,
   };
 }
 
-export async function readVisualReferenceFile(storageKey) {
+export async function readVisualReferenceFile(storageKey, projectPath = "") {
   try {
-    return await fs.readFile(resolveVisualReferenceStorageKey(storageKey));
+    const absolute = isProjectStorageKey(storageKey)
+      ? resolveProjectStorageKey(projectPath, storageKey, "references")
+      : resolveVisualReferenceStorageKey(storageKey);
+    return await fs.readFile(absolute);
   } catch (error) {
     if (error.code === "ENOENT") throw storageError("VISUAL_REFERENCE_FILE_NOT_FOUND");
     if (error.code === "INVALID_STORAGE_KEY") throw error;
@@ -81,9 +99,12 @@ export async function readVisualReferenceFile(storageKey) {
   }
 }
 
-export async function deleteVisualReferenceFile(storageKey) {
+export async function deleteVisualReferenceFile(storageKey, projectPath = "") {
   try {
-    await fs.unlink(resolveVisualReferenceStorageKey(storageKey));
+    const absolute = isProjectStorageKey(storageKey)
+      ? resolveProjectStorageKey(projectPath, storageKey, "references")
+      : resolveVisualReferenceStorageKey(storageKey);
+    await fs.unlink(absolute);
   } catch (error) {
     if (!["ENOENT", "INVALID_STORAGE_KEY"].includes(error.code)) throw storageError("VISUAL_REFERENCE_STORAGE_FAILED");
   }
