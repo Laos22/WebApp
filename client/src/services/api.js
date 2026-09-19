@@ -121,6 +121,51 @@ export const resetStoryboardImages = (projectId, payload) =>
 export const getStoryboardFrameImageUrl = (projectId, frameId, updatedAt, download = false) =>
   `${import.meta.env.VITE_SERVER_URL}/api/projects/${projectId}/storyboard/frames/${encodeURIComponent(frameId)}/image?v=${encodeURIComponent(updatedAt || "0")}${download ? "&download=1" : ""}`;
 
+async function flowFileRequest(url, options = {}) {
+  const response = await fetch(url, { credentials: "include", ...options });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    const error = new Error(data.error || "Ошибка обмена с Google Flow");
+    error.status = response.status;
+    error.code = data.code;
+    throw error;
+  }
+  return response;
+}
+
+export async function exportStoryboardFlowPackage(projectId, sourceStoryboardRevision, frameId = "") {
+  const params = new URLSearchParams({ sourceStoryboardRevision: String(sourceStoryboardRevision) });
+  if (frameId) params.set("frameId", frameId);
+  const response = await flowFileRequest(
+    `${import.meta.env.VITE_SERVER_URL}/api/projects/${projectId}/storyboard/flow/export?${params}`,
+  );
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "flow-storyboard.zip";
+  return { blob: await response.blob(), filename };
+}
+
+export async function importStoryboardFlowPackage(projectId, archive, sourceStoryboardRevision) {
+  const form = new FormData();
+  form.append("archive", archive);
+  form.append("sourceStoryboardRevision", String(sourceStoryboardRevision));
+  const response = await flowFileRequest(
+    `${import.meta.env.VITE_SERVER_URL}/api/projects/${projectId}/storyboard/flow/import`,
+    { method: "POST", body: form },
+  );
+  return response.json();
+}
+
+export async function importStoryboardFlowFrameImage(projectId, frameId, image, sourceStoryboardRevision) {
+  const form = new FormData();
+  form.append("image", image);
+  form.append("sourceStoryboardRevision", String(sourceStoryboardRevision));
+  const response = await flowFileRequest(
+    `${import.meta.env.VITE_SERVER_URL}/api/projects/${projectId}/storyboard/frames/${encodeURIComponent(frameId)}/import-flow-image`,
+    { method: "POST", body: form },
+  );
+  return response.json();
+}
+
 export async function editProjectScript(id, currentScript, instruction, signal) {
   const response = await fetch(`${import.meta.env.VITE_SERVER_URL}/api/projects/${id}/edit-script`, {
     method: "POST",

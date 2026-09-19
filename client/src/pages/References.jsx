@@ -171,7 +171,7 @@ export default function References() {
               onClick={analyze}>{pending === "analyze" ? "ИИ анализирует…" : items.length ? "Повторить анализ" : "Анализировать сценарий"}</button>
             {items.length > 0 && <button type="button" className={`${button} bg-slate-700 hover:bg-slate-600`} disabled={Boolean(pending) || !dirty} onClick={save}>Сохранить изменения</button>}
             {items.length > 0 && <button type="button" className={`${button} bg-emerald-700 hover:bg-emerald-600`} disabled={Boolean(pending) || dirty || plan.status !== "draft" || !items.some(item => item.selected)} onClick={confirm}>Утвердить набор</button>}
-            {confirmed && !dirty && <Link to={`/projects/${projectId}/image`} className={`${button} bg-purple-700 hover:bg-purple-600`}>Перейти к раскадровке</Link>}
+            {confirmed && !dirty && <Link to={`/projects/${projectId}/image`} className={`${button} bg-purple-700 hover:bg-purple-600`}>Перейти к работе с изображениями</Link>}
           </div>
         </section>
 

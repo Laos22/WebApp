@@ -176,10 +176,10 @@ export default function ProjectWorkspace() {
                 🎨
               </div>
               <h2 className="text-2xl font-bold mb-2 group-hover:text-purple-300 transition-colors">
-                Генерация раскадровки
+                Работа с изображениями
               </h2>
               <p className="text-slate-400 text-sm">
-                Генерация раскадровки для вашего проекта.
+                Раскадровка, детализация промтов и генерация изображений по кадрам.
               </p>
             </div>
             <div className="mt-6 flex items-center text-purple-400 font-semibold text-sm group-hover:translate-x-1 transition-transform">
