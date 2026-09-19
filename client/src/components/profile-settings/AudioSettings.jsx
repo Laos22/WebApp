@@ -1,9 +1,10 @@
 import { inputClass, labelClass } from "./settingsStyles";
+import { ELEVENLABS_MODELS } from "../../utils/aiProfileConstants";
 
 /**
  * Тонкие настройки для аудио-профилей (ElevenLabs TTS).
  * Ключи полей строго совпадают с audioSettings из aiProfileConstants:
- * voiceId, speed, stability, speakerBoost.
+ * voiceId, modelId, speed, stability, similarityBoost, speakerBoost.
  */
 export default function AudioSettings({ settings, onChange }) {
   return (
@@ -17,6 +18,24 @@ export default function AudioSettings({ settings, onChange }) {
           className={inputClass}
           placeholder="21m00Tcm4TlvDq8ikWAM"
         />
+      </div>
+
+      <div>
+        <label className={labelClass}>Модель ElevenLabs</label>
+        <select
+          value={settings.modelId || "eleven_v3"}
+          onChange={(e) => onChange("modelId", e.target.value)}
+          className={inputClass}
+        >
+          {ELEVENLABS_MODELS.map(model => (
+            <option key={model.value} value={model.value}>
+              {model.label} · до {model.characterLimit.toLocaleString("ru-RU")} символов
+            </option>
+          ))}
+        </select>
+        <p className="text-xs text-slate-500 mt-2">
+          Лимит действует на один блок. Для больших блоков используйте Multilingual v2 или Flash v2.5.
+        </p>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -49,6 +68,21 @@ export default function AudioSettings({ settings, onChange }) {
             className="w-full accent-purple-500"
           />
         </div>
+      </div>
+
+      <div>
+        <label className={labelClass}>
+          Сходство голоса: <span className="text-purple-400">{settings.similarityBoost ?? 0.75}</span>
+        </label>
+        <input
+          type="range"
+          min="0"
+          max="1"
+          step="0.05"
+          value={settings.similarityBoost ?? 0.75}
+          onChange={(e) => onChange("similarityBoost", parseFloat(e.target.value))}
+          className="w-full accent-purple-500"
+        />
       </div>
 
       <label className="flex items-center gap-3 cursor-pointer select-none">

@@ -2,7 +2,7 @@
 import express from "express";
 import multer from "multer";
 import { ensureAuthenticated } from "../middleware/auth.js";
-import Settings, { DEFAULT_VISUAL_BIBLE_PROMPT, DEFAULT_VISUAL_BIBLE_EDIT_PROMPT, DEFAULT_REFERENCE_ANALYSIS_PROMPT, DEFAULT_REFERENCE_DETAIL_PROMPT } from "../models/Settings.js";
+import Settings, { DEFAULT_VISUAL_BIBLE_PROMPT, DEFAULT_VISUAL_BIBLE_EDIT_PROMPT, DEFAULT_REFERENCE_ANALYSIS_PROMPT, DEFAULT_REFERENCE_DETAIL_PROMPT, DEFAULT_STORYBOARD_PROMPT, DEFAULT_STORYBOARD_DETAIL_PROMPT, DEFAULT_AUDIO_ADAPTATION_PROMPT } from "../models/Settings.js";
 import {
   generateVideoTopic,
   generateCoverData,
@@ -12,6 +12,9 @@ import {
   editVisualBible,
   analyzeScriptReferences,
   detailReferencePrompt,
+  generateStoryboard,
+  detailStoryboardFramePrompt,
+  generateVoiceoverAdaptation,
 } from "../services/geminiService.js";
 import {
   resolveProfile,
@@ -31,6 +34,16 @@ import {
 import {
   normalizeReferencePlan, parseReferenceAnalysis, validateReferenceItems,
 } from "../services/referencePlanService.js";
+import {
+  normalizeStoryboard, parseGeneratedStoryboard, storyboardIsCurrent,
+  validateStoryboardFrames,
+} from "../services/storyboardService.js";
+import {
+  splitScenarioBlocks, parseAdaptedBlocks, normalizeVoiceover,
+  validateManualVoiceoverBlocks, voiceoverIsCurrent,
+} from "../services/voiceoverService.js";
+import { synthesizeElevenLabs } from "../services/elevenLabsService.js";
+import { saveVoiceoverAudio, readVoiceoverAudio } from "../services/voiceoverStorage.js";
 import path from "path";
 import fs from "fs";
 
@@ -421,6 +434,216 @@ router.post("/:id/script/confirm", ensureAuthenticated, async (req, res) => {
   }
 });
 
+function voiceoverResponse(project) {
+  const stored = normalizeVoiceover(project);
+  return {
+    success: true,
+    scriptStatus: project.script?.status ?? null,
+    scriptRevision: project.script?.revision ?? null,
+    voiceoverStatus: project.voiceover?.status ?? 'empty',
+    voiceover: {
+      ...stored,
+      status: stored.status === 'empty' || voiceoverIsCurrent(project, stored) ? stored.status : 'stale',
+    },
+  };
+}
+
+router.get('/:id/voiceover', ensureAuthenticated, async (req, res) => {
+  try {
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    return res.json(voiceoverResponse(project));
+  } catch {
+    return res.status(500).json({ error: 'Не удалось загрузить озвучку' });
+  }
+});
+
+router.post('/:id/voiceover/adapt', ensureAuthenticated, async (req, res) => {
+  try {
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body) ||
+        Object.keys(body).some(key => !['instructions', 'expectedEditVersion', 'sourceScriptRevision'].includes(key)) ||
+        typeof body.instructions !== 'string' || body.instructions.length > 4000 ||
+        !Number.isSafeInteger(body.expectedEditVersion) || body.expectedEditVersion < 0 ||
+        !Number.isSafeInteger(body.sourceScriptRevision) || body.sourceScriptRevision < 1) {
+      return res.status(400).json({ error: 'Некорректные параметры адаптации' });
+    }
+    const owner = { _id: req.params.id, userId: req.user._id };
+    const project = await Project.findOne(owner).select('+voiceover.blocks.audioStorageKey');
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const current = normalizeVoiceover(project);
+    if (project.script?.status !== 'confirmed' || project.script.revision !== body.sourceScriptRevision ||
+        current.editVersion !== body.expectedEditVersion) {
+      return res.status(409).json({ error: 'Сценарий или текст озвучки изменился. Обновите страницу.' });
+    }
+    const sourceBlocks = splitScenarioBlocks(project.script.content);
+    if (!sourceBlocks.length) return res.status(409).json({ error: 'В сценарии не найдены блоки' });
+    const settings = await Settings.findOne({ userId: req.user._id });
+    const raw = await generateVoiceoverAdaptation(
+      project, sourceBlocks, body.instructions.trim(),
+      settings?.prompts?.audio || DEFAULT_AUDIO_ADAPTATION_PROMPT,
+      resolveProfile(settings, 'text'),
+    );
+    const previous = (project.voiceover?.blocks || []).map(block => block.toObject?.() ?? block);
+    const blocks = parseAdaptedBlocks(raw, sourceBlocks, previous);
+    const versionFilter = body.expectedEditVersion === 0
+      ? { $or: [{ 'voiceover.editVersion': 0 }, { 'voiceover.editVersion': { $exists: false } }] }
+      : { 'voiceover.editVersion': body.expectedEditVersion };
+    const saved = await Project.findOneAndUpdate({
+      ...owner, 'script.status': 'confirmed', 'script.revision': body.sourceScriptRevision, ...versionFilter,
+    }, { $set: {
+      voiceover: {
+        status: 'draft', revision: current.revision || 0,
+        editVersion: body.expectedEditVersion + 1,
+        sourceScriptRevision: body.sourceScriptRevision,
+        instructions: body.instructions.trim(), blocks,
+        updatedAt: new Date(), confirmedAt: null,
+      }, updatedAt: new Date(),
+    } }, { new: true, runValidators: true });
+    if (!saved) return res.status(409).json({ error: 'Данные изменились во время адаптации. Повторите запрос.' });
+    return res.json(voiceoverResponse(saved));
+  } catch (error) {
+    const known = ['EMPTY_SCRIPT_BLOCK', 'INVALID_AUDIO_ADAPTATION_RESPONSE', 'AUDIO_BLOCK_COUNT_MISMATCH'];
+    return res.status(known.includes(error.code) ? 502 : 500).json({
+      error: error.code === 'AUDIO_BLOCK_COUNT_MISMATCH'
+        ? 'ИИ изменил количество блоков. Адаптация не сохранена; повторите запрос.'
+        : error.message || 'Не удалось адаптировать текст', code: error.code,
+    });
+  }
+});
+
+router.put('/:id/voiceover', ensureAuthenticated, async (req, res) => {
+  try {
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body) ||
+        Object.keys(body).some(key => !['blocks', 'instructions', 'expectedEditVersion'].includes(key)) ||
+        typeof body.instructions !== 'string' || body.instructions.length > 4000 ||
+        !Number.isSafeInteger(body.expectedEditVersion) || body.expectedEditVersion < 1) {
+      return res.status(400).json({ error: 'Некорректные данные блоков' });
+    }
+    const owner = { _id: req.params.id, userId: req.user._id };
+    const project = await Project.findOne(owner).select('+voiceover.blocks.audioStorageKey');
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const current = normalizeVoiceover(project);
+    if (current.status === 'empty' || current.editVersion !== body.expectedEditVersion || !voiceoverIsCurrent(project, current)) {
+      return res.status(409).json({ error: 'Текст озвучки изменился. Обновите страницу.' });
+    }
+    const rawBlocks = (project.voiceover.blocks || []).map(block => block.toObject?.() ?? block);
+    const blocks = validateManualVoiceoverBlocks(body.blocks, rawBlocks);
+    const saved = await Project.findOneAndUpdate({
+      ...owner, 'voiceover.editVersion': body.expectedEditVersion,
+      'script.status': 'confirmed', 'script.revision': current.sourceScriptRevision,
+    }, { $set: {
+      'voiceover.blocks': blocks, 'voiceover.instructions': body.instructions.trim(),
+      'voiceover.status': 'draft', 'voiceover.confirmedAt': null,
+      'voiceover.updatedAt': new Date(), updatedAt: new Date(),
+    }, $inc: { 'voiceover.editVersion': 1 } }, { new: true, runValidators: true });
+    if (!saved) return res.status(409).json({ error: 'Текст озвучки изменился. Обновите страницу.' });
+    return res.json(voiceoverResponse(saved));
+  } catch (error) {
+    return res.status(error.code === 'INVALID_VOICEOVER_BLOCKS' ? 400 : 500)
+      .json({ error: error.code === 'INVALID_VOICEOVER_BLOCKS' ? 'Некорректные блоки озвучки' : 'Не удалось сохранить блоки' });
+  }
+});
+
+router.post('/:id/voiceover/confirm', ensureAuthenticated, async (req, res) => {
+  try {
+    const { expectedEditVersion, sourceScriptRevision } = req.body || {};
+    if (!Number.isSafeInteger(expectedEditVersion) || expectedEditVersion < 1 ||
+        !Number.isSafeInteger(sourceScriptRevision) || sourceScriptRevision < 1) {
+      return res.status(400).json({ error: 'Некорректная версия текста' });
+    }
+    const saved = await Project.findOneAndUpdate({
+      _id: req.params.id, userId: req.user._id,
+      'script.status': 'confirmed', 'script.revision': sourceScriptRevision,
+      'voiceover.status': 'draft', 'voiceover.sourceScriptRevision': sourceScriptRevision,
+      'voiceover.editVersion': expectedEditVersion, 'voiceover.blocks.0': { $exists: true },
+    }, { $set: {
+      'voiceover.status': 'confirmed', 'voiceover.confirmedAt': new Date(),
+      'voiceover.updatedAt': new Date(), updatedAt: new Date(),
+    }, $inc: { 'voiceover.revision': 1, 'voiceover.editVersion': 1 } }, { new: true, runValidators: true });
+    if (!saved) return res.status(409).json({ error: 'Сохраните актуальный текст перед подтверждением.' });
+    return res.json(voiceoverResponse(saved));
+  } catch {
+    return res.status(500).json({ error: 'Не удалось подтвердить текст озвучки' });
+  }
+});
+
+router.post('/:id/voiceover/blocks/:blockId/generate', ensureAuthenticated, async (req, res) => {
+  try {
+    const { expectedEditVersion, textRevision, profileId } = req.body || {};
+    if (!Number.isSafeInteger(expectedEditVersion) || expectedEditVersion < 1 ||
+        !Number.isSafeInteger(textRevision) || textRevision < 1 ||
+        (profileId !== undefined && typeof profileId !== 'string')) {
+      return res.status(400).json({ error: 'Некорректные параметры генерации' });
+    }
+    const owner = { _id: req.params.id, userId: req.user._id };
+    const project = await Project.findOne(owner).select('+voiceover.blocks.audioStorageKey');
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const current = normalizeVoiceover(project);
+    if (current.editVersion !== expectedEditVersion || !voiceoverIsCurrent(project, current) ||
+        !['draft', 'confirmed'].includes(current.status)) {
+      return res.status(409).json({ error: 'Текст озвучки изменился. Обновите страницу.' });
+    }
+    const block = (project.voiceover?.blocks || []).find(item => item.id === req.params.blockId);
+    if (!block || block.textRevision !== textRevision) return res.status(409).json({ error: 'Блок изменился. Обновите страницу.' });
+    const settings = await Settings.findOne({ userId: req.user._id });
+    const requested = profileId ? settings?.profiles?.id(profileId) : null;
+    const profile = requested || resolveProfile(settings, 'audio');
+    if (!profile || profile.type !== 'audio' || profile.provider !== 'elevenlabs') {
+      return res.status(409).json({ error: 'Создайте или выберите профиль «Звук / ElevenLabs».', code: 'ELEVENLABS_PROFILE_REQUIRED' });
+    }
+    const audio = await synthesizeElevenLabs(block.adaptedText, profile);
+    const stored = await saveVoiceoverAudio({
+      projectId: project._id.toString(), blockId: block.id, buffer: audio,
+    });
+    const saved = await Project.findOneAndUpdate({
+      ...owner, 'voiceover.editVersion': expectedEditVersion,
+      'voiceover.blocks': { $elemMatch: { id: block.id, textRevision } },
+    }, { $set: {
+      'voiceover.blocks.$[block].audioStatus': 'ready',
+      'voiceover.blocks.$[block].audioStorageKey': stored.storageKey,
+      'voiceover.blocks.$[block].audioMimeType': 'audio/mpeg',
+      'voiceover.blocks.$[block].audioByteSize': stored.byteSize,
+      'voiceover.blocks.$[block].audioProfileId': profile._id.toString(),
+      'voiceover.blocks.$[block].audioGeneratedAt': new Date(),
+      'voiceover.blocks.$[block].audioErrorCode': '',
+      'voiceover.updatedAt': new Date(), updatedAt: new Date(),
+    }, $inc: { 'voiceover.editVersion': 1 } }, {
+      new: true, runValidators: true, arrayFilters: [{ 'block.id': block.id, 'block.textRevision': textRevision }],
+    });
+    if (!saved) return res.status(409).json({ error: 'Блок изменился во время генерации. Повторите запрос.' });
+    return res.json(voiceoverResponse(saved));
+  } catch (error) {
+    const status = error.httpStatus || (error.code === 'ELEVENLABS_AUTH_FAILED' ? 401 :
+      error.code === 'ELEVENLABS_LIMIT_REACHED' ? 429 : 502);
+    return res.status(status).json({
+      error: error.publicMessage || 'Не удалось сгенерировать аудио блока',
+      code: error.code,
+      ...(Number.isInteger(error.providerStatus) ? { providerStatus: error.providerStatus } : {}),
+      ...(Number.isInteger(error.characterCount) ? { characterCount: error.characterCount } : {}),
+      ...(Number.isInteger(error.characterLimit) ? { characterLimit: error.characterLimit } : {}),
+    });
+  }
+});
+
+router.get('/:id/voiceover/blocks/:blockId/audio', ensureAuthenticated, async (req, res) => {
+  try {
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id })
+      .select('+voiceover.blocks.audioStorageKey');
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const block = (project.voiceover?.blocks || []).find(item => item.id === req.params.blockId);
+    if (!block?.audioStorageKey || block.audioStatus !== 'ready') return res.status(404).json({ error: 'Аудио не найдено' });
+    const audio = await readVoiceoverAudio(block.audioStorageKey);
+    res.set('Content-Type', block.audioMimeType || 'audio/mpeg');
+    res.set('Content-Length', String(audio.length));
+    res.set('Content-Disposition', `inline; filename="audio_block_${block.order}.mp3"`);
+    return res.send(audio);
+  } catch {
+    return res.status(500).json({ error: 'Не удалось прочитать аудио' });
+  }
+});
+
 const bibleContentFields = ['visualStyle', 'visualModes', 'continuityRules', 'characters', 'locations', 'objects'];
 
 function validBibleBody(body, action) {
@@ -570,6 +793,7 @@ function referencePlanResponse(project, assets = []) {
     success: true,
     scriptStatus: project.script?.status ?? null,
     scriptRevision: project.script?.revision ?? null,
+    voiceoverStatus: project.voiceover?.status ?? 'empty',
     referencePlan: {
       ...plan,
       items: plan.items.map(item => ({
@@ -624,8 +848,9 @@ router.post('/:id/reference-plan/analyze', ensureAuthenticated, async (req, res)
     if (!project) return res.status(404).json({ error: 'Проект не найден' });
     const plan = normalizeReferencePlan(project);
     if (project.script?.status !== 'confirmed' || project.script.revision !== body.sourceScriptRevision ||
+        project.voiceover?.status !== 'confirmed' || project.voiceover.sourceScriptRevision !== body.sourceScriptRevision ||
         plan.editVersion !== body.expectedEditVersion) {
-      return res.status(409).json({ error: 'Сценарий или список референсов изменились. Обновите страницу.' });
+      return res.status(409).json({ error: 'Сначала утвердите актуальный текст для озвучки.' });
     }
     let currentItems;
     try { currentItems = validateReferenceItems(body.items, plan.items); }
@@ -644,7 +869,8 @@ router.post('/:id/reference-plan/analyze', ensureAuthenticated, async (req, res)
       ? { $or: [{ 'referencePlan.editVersion': 0 }, { 'referencePlan.editVersion': { $exists: false } }] }
       : { 'referencePlan.editVersion': body.expectedEditVersion };
     const saved = await Project.findOneAndUpdate({
-      ...owner, 'script.status': 'confirmed', 'script.revision': body.sourceScriptRevision, ...versionFilter,
+      ...owner, 'script.status': 'confirmed', 'script.revision': body.sourceScriptRevision,
+      'voiceover.status': 'confirmed', 'voiceover.sourceScriptRevision': body.sourceScriptRevision, ...versionFilter,
     }, { $set: {
       referencePlan: {
         status: 'draft', revision: plan.revision || 0, editVersion: body.expectedEditVersion + 1,
@@ -705,6 +931,7 @@ router.post('/:id/reference-plan/confirm', ensureAuthenticated, async (req, res)
     const saved = await Project.findOneAndUpdate({
       _id: req.params.id, userId: req.user._id, 'script.status': 'confirmed',
       'script.revision': sourceScriptRevision, 'referencePlan.status': 'draft',
+      'voiceover.status': 'confirmed', 'voiceover.sourceScriptRevision': sourceScriptRevision,
       'referencePlan.sourceScriptRevision': sourceScriptRevision,
       'referencePlan.editVersion': expectedEditVersion,
       'referencePlan.items': { $elemMatch: { selected: true } },
@@ -736,6 +963,7 @@ router.post('/:id/reference-plan/:referenceId/detail-prompt', ensureAuthenticate
     const reference = plan.items.find(item => item.id === req.params.referenceId);
     if (!reference) return res.status(404).json({ error: 'Референс не найден' });
     if (project.script?.status !== 'confirmed' || project.script.revision !== body.sourceScriptRevision ||
+        project.voiceover?.status !== 'confirmed' || project.voiceover.sourceScriptRevision !== body.sourceScriptRevision ||
         plan.sourceScriptRevision !== body.sourceScriptRevision || plan.editVersion !== body.expectedEditVersion ||
         !['draft', 'confirmed'].includes(plan.status)) {
       return res.status(409).json({ error: 'Сценарий или план референсов изменились. Обновите страницу.' });
@@ -748,7 +976,9 @@ router.post('/:id/reference-plan/:referenceId/detail-prompt', ensureAuthenticate
     );
     const saved = await Project.findOneAndUpdate({
       _id: project._id, userId: req.user._id, 'script.status': 'confirmed',
-      'script.revision': body.sourceScriptRevision, 'referencePlan.editVersion': body.expectedEditVersion,
+      'script.revision': body.sourceScriptRevision, 'voiceover.status': 'confirmed',
+      'voiceover.sourceScriptRevision': body.sourceScriptRevision,
+      'referencePlan.editVersion': body.expectedEditVersion,
       'referencePlan.items': { $elemMatch: { id: reference.id, version: reference.version } },
     }, { $set: {
       'referencePlan.items.$[item].prompt': prompt,
@@ -763,6 +993,319 @@ router.post('/:id/reference-plan/:referenceId/detail-prompt', ensureAuthenticate
   } catch (error) {
     if (error.code === 'REFERENCE_DETAIL_FAILED') return res.status(502).json({ code: error.code });
     return res.status(500).json({ error: 'Не удалось детализировать prompt' });
+  }
+});
+
+async function storyboardResponse(project, userId) {
+  const stored = normalizeStoryboard(project);
+  const selected = (project.referencePlan?.items || []).filter(item => item.selected);
+  const assets = await VisualReference.find({
+    projectId: project._id, userId, referenceId: { $in: selected.map(item => item.id) },
+  });
+  const ready = new Set(assets.filter(asset => asset.status === 'ready').map(asset => asset.referenceId));
+  return {
+    success: true,
+    scriptStatus: project.script?.status ?? null,
+    scriptRevision: project.script?.revision ?? null,
+    referencePlanStatus: project.referencePlan?.status ?? 'empty',
+    referencePlanRevision: project.referencePlan?.revision ?? 0,
+    voiceoverStatus: project.voiceover?.status ?? 'empty',
+    voiceoverRevision: project.voiceover?.revision ?? 0,
+    voiceoverBlocks: (project.voiceover?.blocks || []).map(block => ({
+      id: block.id, order: block.order, sourceTitle: block.sourceTitle, adaptedText: block.adaptedText,
+    })),
+    references: selected.map(item => ({
+      id: item.id, name: item.name, type: item.type, imageReady: ready.has(item.id),
+    })),
+    storyboard: {
+      ...stored,
+      status: stored.status === 'empty' || storyboardIsCurrent(project, stored) ? stored.status : 'stale',
+    },
+  };
+}
+
+function selectedStoryboardReferences(project) {
+  return (project.referencePlan?.items || []).filter(item => item.selected);
+}
+
+router.get('/:id/storyboard', ensureAuthenticated, async (req, res) => {
+  try {
+    if (!/^[a-f\d]{24}$/i.test(req.params.id)) return res.status(404).json({ error: 'Проект не найден' });
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    return res.json(await storyboardResponse(project, req.user._id));
+  } catch {
+    return res.status(500).json({ error: 'Не удалось загрузить раскадровку' });
+  }
+});
+
+router.post('/:id/storyboard/generate', ensureAuthenticated, async (req, res) => {
+  try {
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body) ||
+        Object.keys(body).some(key => !['instructions', 'frames', 'expectedEditVersion', 'sourceScriptRevision', 'sourceReferencePlanRevision', 'sourceVoiceoverRevision'].includes(key)) ||
+        typeof body.instructions !== 'string' || body.instructions.length > 4000 || !Array.isArray(body.frames) ||
+        !Number.isSafeInteger(body.expectedEditVersion) || body.expectedEditVersion < 0 ||
+        !Number.isSafeInteger(body.sourceScriptRevision) || body.sourceScriptRevision < 1 ||
+        !Number.isSafeInteger(body.sourceReferencePlanRevision) || body.sourceReferencePlanRevision < 1 ||
+        !Number.isSafeInteger(body.sourceVoiceoverRevision) || body.sourceVoiceoverRevision < 1) {
+      return res.status(400).json({ error: 'Некорректные параметры раскадровки' });
+    }
+    const owner = { _id: req.params.id, userId: req.user._id };
+    const project = await Project.findOne(owner);
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const storyboard = normalizeStoryboard(project);
+    if (project.script?.status !== 'confirmed' || project.script.revision !== body.sourceScriptRevision ||
+        project.voiceover?.status !== 'confirmed' || project.voiceover.revision !== body.sourceVoiceoverRevision ||
+        project.referencePlan?.status !== 'confirmed' || project.referencePlan.revision !== body.sourceReferencePlanRevision ||
+        storyboard.editVersion !== body.expectedEditVersion) {
+      return res.status(409).json({ error: 'Сценарий, референсы или раскадровка изменились. Обновите страницу.' });
+    }
+    const references = selectedStoryboardReferences(project);
+    if (!references.length) return res.status(409).json({ error: 'Сначала утвердите хотя бы один референс.' });
+    const allowedReferenceIds = new Set(references.map(item => item.id));
+    const voiceoverBlocks = (project.voiceover.blocks || []).map(block => ({
+      id: block.id, order: block.order, adaptedText: block.adaptedText,
+    }));
+    const sanitizedInput = body.frames.map(frame => ({
+      ...frame,
+      referenceIds: Array.isArray(frame?.referenceIds)
+        ? frame.referenceIds.filter(id => allowedReferenceIds.has(id)) : [],
+    }));
+    let currentFrames;
+    try {
+      currentFrames = sanitizedInput.length
+        ? validateStoryboardFrames(sanitizedInput, storyboard.frames, allowedReferenceIds, voiceoverBlocks) : [];
+    } catch {
+      return res.status(400).json({ error: 'Некорректные карточки кадров' });
+    }
+    const settings = await Settings.findOne({ userId: req.user._id });
+    const raw = await generateStoryboard(
+      project, references, currentFrames, body.instructions.trim(),
+      settings?.prompts?.storyboardPrompt || DEFAULT_STORYBOARD_PROMPT,
+      resolveProfile(settings, 'text'),
+    );
+    let frames;
+    try { frames = parseGeneratedStoryboard(raw, currentFrames, allowedReferenceIds, voiceoverBlocks); }
+    catch (error) { return res.status(502).json({ code: error.code || 'INVALID_STORYBOARD_RESPONSE' }); }
+    const now = new Date();
+    const versionFilter = body.expectedEditVersion === 0
+      ? { $or: [{ 'storyboard.editVersion': 0 }, { 'storyboard.editVersion': { $exists: false } }] }
+      : { 'storyboard.editVersion': body.expectedEditVersion };
+    const saved = await Project.findOneAndUpdate({
+      ...owner, 'script.status': 'confirmed', 'script.revision': body.sourceScriptRevision,
+      'voiceover.status': 'confirmed', 'voiceover.revision': body.sourceVoiceoverRevision,
+      'referencePlan.status': 'confirmed', 'referencePlan.revision': body.sourceReferencePlanRevision,
+      ...versionFilter,
+    }, { $set: {
+      storyboard: {
+        status: 'draft', revision: storyboard.revision || 0,
+        editVersion: body.expectedEditVersion + 1,
+        sourceScriptRevision: body.sourceScriptRevision,
+        sourceReferencePlanRevision: body.sourceReferencePlanRevision,
+        sourceVoiceoverRevision: body.sourceVoiceoverRevision,
+        instructions: body.instructions.trim(), frames, updatedAt: now, confirmedAt: null,
+      }, updatedAt: now,
+    } }, { new: true, runValidators: true });
+    if (!saved) return res.status(409).json({ error: 'Сценарий, референсы или раскадровка изменились. Обновите страницу.' });
+    return res.json(await storyboardResponse(saved, req.user._id));
+  } catch (error) {
+    if (error.code === 'STORYBOARD_INPUT_TOO_LONG') return res.status(400).json({ code: error.code });
+    if (error.code === 'STORYBOARD_GENERATION_FAILED') return res.status(502).json({ code: error.code });
+    return res.status(500).json({ error: 'Не удалось создать раскадровку' });
+  }
+});
+
+router.post('/:id/storyboard/detail-prompts/reset', ensureAuthenticated, async (req, res) => {
+  try {
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body) ||
+        Object.keys(body).some(key => !['expectedEditVersion', 'sourceScriptRevision', 'sourceReferencePlanRevision', 'sourceVoiceoverRevision'].includes(key)) ||
+        !Number.isSafeInteger(body.expectedEditVersion) || body.expectedEditVersion < 1 ||
+        !Number.isSafeInteger(body.sourceScriptRevision) || body.sourceScriptRevision < 1 ||
+        !Number.isSafeInteger(body.sourceReferencePlanRevision) || body.sourceReferencePlanRevision < 1 ||
+        !Number.isSafeInteger(body.sourceVoiceoverRevision) || body.sourceVoiceoverRevision < 1) {
+      return res.status(400).json({ error: 'Некорректные параметры сброса детализации' });
+    }
+    const owner = { _id: req.params.id, userId: req.user._id };
+    const project = await Project.findOne(owner);
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const storyboard = normalizeStoryboard(project);
+    if (!storyboard.frames.length || !['draft', 'confirmed'].includes(storyboard.status) ||
+        !storyboardIsCurrent(project, storyboard) || storyboard.editVersion !== body.expectedEditVersion ||
+        storyboard.sourceScriptRevision !== body.sourceScriptRevision ||
+        storyboard.sourceReferencePlanRevision !== body.sourceReferencePlanRevision ||
+        storyboard.sourceVoiceoverRevision !== body.sourceVoiceoverRevision) {
+      return res.status(409).json({ error: 'Раскадровка или исходные данные изменились. Обновите страницу.' });
+    }
+    const saved = await Project.findOneAndUpdate({
+      ...owner, 'storyboard.editVersion': body.expectedEditVersion,
+      'storyboard.sourceScriptRevision': body.sourceScriptRevision,
+      'storyboard.sourceReferencePlanRevision': body.sourceReferencePlanRevision,
+      'storyboard.sourceVoiceoverRevision': body.sourceVoiceoverRevision,
+    }, { $set: {
+      'storyboard.frames.$[].promptDetailStatus': 'pending',
+      'storyboard.frames.$[].promptDetailedAt': null,
+      'storyboard.frames.$[].promptDetailErrorCode': '',
+      'storyboard.updatedAt': new Date(), updatedAt: new Date(),
+    }, $inc: { 'storyboard.editVersion': 1 } }, { new: true, runValidators: true });
+    if (!saved) return res.status(409).json({ error: 'Раскадровка изменилась. Обновите страницу.' });
+    return res.json(await storyboardResponse(saved, req.user._id));
+  } catch {
+    return res.status(500).json({ error: 'Не удалось начать детализацию заново' });
+  }
+});
+
+router.post('/:id/storyboard/frames/:frameId/detail-prompt', ensureAuthenticated, async (req, res) => {
+  let failureContext = null;
+  try {
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body) ||
+        Object.keys(body).some(key => !['instruction', 'expectedEditVersion', 'sourceScriptRevision', 'sourceReferencePlanRevision', 'sourceVoiceoverRevision'].includes(key)) ||
+        typeof body.instruction !== 'string' || body.instruction.length > 2000 ||
+        !Number.isSafeInteger(body.expectedEditVersion) || body.expectedEditVersion < 1 ||
+        !Number.isSafeInteger(body.sourceScriptRevision) || body.sourceScriptRevision < 1 ||
+        !Number.isSafeInteger(body.sourceReferencePlanRevision) || body.sourceReferencePlanRevision < 1 ||
+        !Number.isSafeInteger(body.sourceVoiceoverRevision) || body.sourceVoiceoverRevision < 1) {
+      return res.status(400).json({ error: 'Некорректные параметры детализации' });
+    }
+    const owner = { _id: req.params.id, userId: req.user._id };
+    const project = await Project.findOne(owner);
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const storyboard = normalizeStoryboard(project);
+    const frame = storyboard.frames.find(item => item.id === req.params.frameId);
+    if (!frame) return res.status(404).json({ error: 'Кадр не найден' });
+    if (!['draft', 'confirmed'].includes(storyboard.status) || !storyboardIsCurrent(project, storyboard) ||
+        storyboard.editVersion !== body.expectedEditVersion ||
+        storyboard.sourceScriptRevision !== body.sourceScriptRevision ||
+        storyboard.sourceReferencePlanRevision !== body.sourceReferencePlanRevision ||
+        storyboard.sourceVoiceoverRevision !== body.sourceVoiceoverRevision) {
+      return res.status(409).json({ error: 'Раскадровка или исходные данные изменились. Обновите страницу.' });
+    }
+    failureContext = { owner, frameId: frame.id, editVersion: body.expectedEditVersion };
+    const references = selectedStoryboardReferences(project);
+    const settings = await Settings.findOne({ userId: req.user._id });
+    const prompt = await detailStoryboardFramePrompt(
+      project, frame, references, body.instruction.trim(),
+      settings?.prompts?.storyboardDetailPrompt || DEFAULT_STORYBOARD_DETAIL_PROMPT,
+      resolveProfile(settings, 'text'),
+    );
+    const saved = await Project.findOneAndUpdate({
+      ...owner, 'storyboard.editVersion': body.expectedEditVersion,
+      'storyboard.sourceScriptRevision': body.sourceScriptRevision,
+      'storyboard.sourceReferencePlanRevision': body.sourceReferencePlanRevision,
+      'storyboard.sourceVoiceoverRevision': body.sourceVoiceoverRevision,
+      'storyboard.frames.id': frame.id,
+      'script.status': 'confirmed', 'script.revision': body.sourceScriptRevision,
+      'voiceover.status': 'confirmed', 'voiceover.revision': body.sourceVoiceoverRevision,
+      'referencePlan.status': 'confirmed', 'referencePlan.revision': body.sourceReferencePlanRevision,
+    }, { $set: {
+      'storyboard.frames.$[frame].prompt': prompt,
+      'storyboard.frames.$[frame].promptDetailStatus': 'ready',
+      'storyboard.frames.$[frame].promptDetailedAt': new Date(),
+      'storyboard.frames.$[frame].promptDetailErrorCode': '',
+      'storyboard.status': 'draft', 'storyboard.confirmedAt': null,
+      'storyboard.updatedAt': new Date(), updatedAt: new Date(),
+    }, $inc: { 'storyboard.editVersion': 1 } }, {
+      new: true, runValidators: true, arrayFilters: [{ 'frame.id': frame.id }],
+    });
+    if (!saved) return res.status(409).json({ error: 'Кадр изменился во время детализации. Повторите запрос.' });
+    return res.json(await storyboardResponse(saved, req.user._id));
+  } catch (error) {
+    if (error.code === 'STORYBOARD_DETAIL_FAILED') {
+      if (failureContext) {
+        await Project.findOneAndUpdate({
+          ...failureContext.owner, 'storyboard.editVersion': failureContext.editVersion,
+          'storyboard.frames.id': failureContext.frameId,
+        }, { $set: {
+          'storyboard.frames.$[frame].promptDetailStatus': 'error',
+          'storyboard.frames.$[frame].promptDetailErrorCode': error.code,
+          'storyboard.frames.$[frame].promptDetailedAt': null,
+        } }, { arrayFilters: [{ 'frame.id': failureContext.frameId }] }).catch(() => {});
+      }
+      return res.status(502).json({ error: 'ИИ не смог детализировать prompt кадра', code: error.code });
+    }
+    return res.status(500).json({ error: 'Не удалось детализировать prompt кадра' });
+  }
+});
+
+router.put('/:id/storyboard', ensureAuthenticated, async (req, res) => {
+  try {
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body) ||
+        Object.keys(body).some(key => !['instructions', 'frames', 'expectedEditVersion'].includes(key)) ||
+        typeof body.instructions !== 'string' || body.instructions.length > 4000 || !Array.isArray(body.frames) ||
+        !Number.isSafeInteger(body.expectedEditVersion) || body.expectedEditVersion < 1) {
+      return res.status(400).json({ error: 'Некорректная раскадровка' });
+    }
+    const owner = { _id: req.params.id, userId: req.user._id };
+    const project = await Project.findOne(owner);
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const storyboard = normalizeStoryboard(project);
+    if (storyboard.status === 'empty' || storyboard.editVersion !== body.expectedEditVersion ||
+        !storyboardIsCurrent(project, storyboard)) {
+      return res.status(409).json({ error: 'Сценарий, референсы или раскадровка изменились. Обновите страницу.' });
+    }
+    const allowedReferenceIds = new Set(selectedStoryboardReferences(project).map(item => item.id));
+    const voiceoverBlocks = (project.voiceover?.blocks || []).map(block => ({ id: block.id, order: block.order, adaptedText: block.adaptedText }));
+    let frames;
+    try { frames = validateStoryboardFrames(body.frames, storyboard.frames, allowedReferenceIds, voiceoverBlocks); }
+    catch { return res.status(400).json({ error: 'Некорректные карточки кадров' }); }
+    const saved = await Project.findOneAndUpdate({
+      ...owner, 'storyboard.editVersion': body.expectedEditVersion,
+      'script.status': 'confirmed', 'script.revision': storyboard.sourceScriptRevision,
+      'voiceover.status': 'confirmed', 'voiceover.revision': storyboard.sourceVoiceoverRevision,
+      'referencePlan.status': 'confirmed', 'referencePlan.revision': storyboard.sourceReferencePlanRevision,
+    }, { $set: {
+      'storyboard.frames': frames, 'storyboard.instructions': body.instructions.trim(),
+      'storyboard.status': 'draft', 'storyboard.confirmedAt': null,
+      'storyboard.updatedAt': new Date(), updatedAt: new Date(),
+    }, $inc: { 'storyboard.editVersion': 1 } }, { new: true, runValidators: true });
+    if (!saved) return res.status(409).json({ error: 'Раскадровка изменилась. Обновите страницу.' });
+    return res.json(await storyboardResponse(saved, req.user._id));
+  } catch {
+    return res.status(500).json({ error: 'Не удалось сохранить раскадровку' });
+  }
+});
+
+router.post('/:id/storyboard/confirm', ensureAuthenticated, async (req, res) => {
+  try {
+    const { expectedEditVersion, sourceScriptRevision, sourceReferencePlanRevision, sourceVoiceoverRevision } = req.body || {};
+    if (!Number.isSafeInteger(expectedEditVersion) || expectedEditVersion < 1 ||
+        !Number.isSafeInteger(sourceScriptRevision) || sourceScriptRevision < 1 ||
+        !Number.isSafeInteger(sourceReferencePlanRevision) || sourceReferencePlanRevision < 1 ||
+        !Number.isSafeInteger(sourceVoiceoverRevision) || sourceVoiceoverRevision < 1) {
+      return res.status(400).json({ error: 'Некорректные версии раскадровки' });
+    }
+    const owner = { _id: req.params.id, userId: req.user._id };
+    const project = await Project.findOne(owner);
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const storyboard = normalizeStoryboard(project);
+    if (storyboard.status !== 'draft' || storyboard.editVersion !== expectedEditVersion ||
+        storyboard.sourceScriptRevision !== sourceScriptRevision ||
+        storyboard.sourceReferencePlanRevision !== sourceReferencePlanRevision ||
+        storyboard.sourceVoiceoverRevision !== sourceVoiceoverRevision ||
+        !storyboard.frames.length || storyboard.frames.some(frame => !frame.scriptText || !frame.visualDescription || !frame.prompt) ||
+        !storyboardIsCurrent(project, storyboard)) {
+      return res.status(409).json({ error: 'Раскадровка, сценарий или референсы изменились.' });
+    }
+    const saved = await Project.findOneAndUpdate({
+      ...owner, 'storyboard.status': 'draft', 'storyboard.editVersion': expectedEditVersion,
+      'storyboard.sourceScriptRevision': sourceScriptRevision,
+      'storyboard.sourceReferencePlanRevision': sourceReferencePlanRevision,
+      'storyboard.sourceVoiceoverRevision': sourceVoiceoverRevision,
+      'script.status': 'confirmed', 'script.revision': sourceScriptRevision,
+      'voiceover.status': 'confirmed', 'voiceover.revision': sourceVoiceoverRevision,
+      'referencePlan.status': 'confirmed', 'referencePlan.revision': sourceReferencePlanRevision,
+    }, { $set: {
+      'storyboard.status': 'confirmed', 'storyboard.confirmedAt': new Date(),
+      'storyboard.updatedAt': new Date(), updatedAt: new Date(),
+    }, $inc: { 'storyboard.revision': 1, 'storyboard.editVersion': 1 } },
+    { new: true, runValidators: true });
+    if (!saved) return res.status(409).json({ error: 'Раскадровка изменилась. Обновите страницу.' });
+    return res.json(await storyboardResponse(saved, req.user._id));
+  } catch {
+    return res.status(500).json({ error: 'Не удалось утвердить раскадровку' });
   }
 });
 

@@ -95,6 +95,85 @@ const referencePlanSchema = new mongoose.Schema({
   confirmedAt: { type: Date, default: null },
 }, { _id: false, strict: 'throw' });
 
+const voiceoverBlockSchema = new mongoose.Schema({
+  id: { type: String, required: true, maxlength: 80 },
+  order: { type: Number, required: true, min: 1, validate: Number.isSafeInteger },
+  sourceTitle: { type: String, default: '', maxlength: 500 },
+  sourceText: { type: String, required: true, maxlength: 50000 },
+  adaptedText: { type: String, required: true, maxlength: 50000 },
+  textRevision: { type: Number, min: 1, default: 1, validate: Number.isSafeInteger },
+  audioStatus: {
+    type: String, enum: ['pending', 'ready', 'stale', 'error'], default: 'pending',
+  },
+  audioStorageKey: { type: String, default: '', maxlength: 1000, select: false },
+  audioMimeType: { type: String, default: '', maxlength: 100 },
+  audioByteSize: { type: Number, min: 0, default: 0 },
+  audioProfileId: { type: String, default: '', maxlength: 80 },
+  audioGeneratedAt: { type: Date, default: null },
+  audioErrorCode: { type: String, default: '', maxlength: 100 },
+}, { _id: false, strict: 'throw' });
+
+const voiceoverSchema = new mongoose.Schema({
+  status: { type: String, enum: ['empty', 'draft', 'confirmed', 'stale'], default: 'empty' },
+  revision: integer(0, 0), editVersion: integer(0, 0),
+  sourceScriptRevision: {
+    type: Number, default: null, min: 1,
+    validate: value => value === null || Number.isSafeInteger(value),
+  },
+  instructions: { type: String, default: '', maxlength: 4000 },
+  blocks: {
+    type: [voiceoverBlockSchema], default: [],
+    validate: value => value.length <= 200 &&
+      new Set(value.map(block => block.id)).size === value.length &&
+      value.every((block, index) => block.order === index + 1),
+  },
+  updatedAt: { type: Date, default: null },
+  confirmedAt: { type: Date, default: null },
+}, { _id: false, strict: 'throw' });
+
+const storyboardFrameSchema = new mongoose.Schema({
+  id: { type: String, required: true, maxlength: 80 },
+  order: { type: Number, required: true, min: 1, validate: Number.isSafeInteger },
+  sourceVoiceoverBlockId: { type: String, required: true, maxlength: 80 },
+  scriptText: { type: String, required: true, maxlength: 4000 },
+  visualDescription: { type: String, required: true, maxlength: 4000 },
+  prompt: { type: String, required: true, maxlength: 12000 },
+  referenceIds: {
+    type: [{ type: String, maxlength: 80 }], default: [],
+    validate: value => value.length <= 100 && new Set(value).size === value.length,
+  },
+  promptDetailStatus: {
+    type: String, enum: ['pending', 'ready', 'error'], default: 'pending',
+  },
+  promptDetailedAt: { type: Date, default: null },
+  promptDetailErrorCode: { type: String, default: '', maxlength: 120 },
+}, { _id: false, strict: 'throw' });
+
+const storyboardSchema = new mongoose.Schema({
+  status: { type: String, enum: ['empty', 'draft', 'confirmed', 'stale'], default: 'empty' },
+  revision: integer(0, 0), editVersion: integer(0, 0),
+  sourceScriptRevision: {
+    type: Number, default: null, min: 1,
+    validate: value => value === null || Number.isSafeInteger(value),
+  },
+  sourceReferencePlanRevision: {
+    type: Number, default: null, min: 1,
+    validate: value => value === null || Number.isSafeInteger(value),
+  },
+  sourceVoiceoverRevision: {
+    type: Number, default: null, min: 1,
+    validate: value => value === null || Number.isSafeInteger(value),
+  },
+  instructions: { type: String, default: '', maxlength: 4000 },
+  frames: {
+    type: [storyboardFrameSchema], default: [],
+    validate: value => value.length <= 200 &&
+      new Set(value.map(frame => frame.id)).size === value.length &&
+      value.every((frame, index) => frame.order === index + 1),
+  },
+  updatedAt: { type: Date, default: null }, confirmedAt: { type: Date, default: null },
+}, { _id: false, strict: 'throw' });
+
 const projectSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -131,8 +210,10 @@ const projectSchema = new mongoose.Schema({
     default: ""
   },
   script: { type: scriptSchema, default: undefined },
+  voiceover: { type: voiceoverSchema, default: undefined },
   visualBible: { type: visualBibleSchema, default: undefined },
   referencePlan: { type: referencePlanSchema, default: undefined },
+  storyboard: { type: storyboardSchema, default: undefined },
   scriptPath: {
     type: String,
     default: ""

@@ -281,9 +281,9 @@ function ScriptEditor({ projectId }) {
             </div>
             {result.status === "confirmed" && !dirty && !busy && (
               <div className="flex flex-wrap gap-3">
-                <Link to={`/projects/${projectId}/references`}
-                  className="inline-block px-4 py-2 bg-fuchsia-700 hover:bg-fuchsia-600 rounded-xl">
-                  Работа с референсами
+                <Link to={`/projects/${projectId}/audio`}
+                  className="inline-block px-4 py-2 bg-indigo-700 hover:bg-indigo-600 rounded-xl">
+                  Перейти к озвучке
                 </Link>
                 <Link to={`/projects/${projectId}/visual-bible`}
                   className="inline-block px-4 py-2 bg-purple-700 hover:bg-purple-600 rounded-xl">

@@ -27,6 +27,8 @@ export default function Settings() {
     visualReferencePrompt: "",
     referenceAnalysisPrompt: "",
     referenceDetailPrompt: "",
+    storyboardPrompt: "",
+    storyboardDetailPrompt: "",
   });
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -64,6 +66,8 @@ export default function Settings() {
         visualReferencePrompt: response.data.prompts.visualReferencePrompt ?? "",
         referenceAnalysisPrompt: response.data.prompts.referenceAnalysisPrompt ?? "",
         referenceDetailPrompt: response.data.prompts.referenceDetailPrompt ?? "",
+        storyboardPrompt: response.data.prompts.storyboardPrompt ?? "",
+        storyboardDetailPrompt: response.data.prompts.storyboardDetailPrompt ?? "",
       }));
     } catch (e) {
       console.error("Ошибка загрузки настроек:", e);
@@ -101,6 +105,8 @@ export default function Settings() {
           visualReferencePrompt: prompts.visualReferencePrompt,
           referenceAnalysisPrompt: prompts.referenceAnalysisPrompt,
           referenceDetailPrompt: prompts.referenceDetailPrompt,
+          storyboardPrompt: prompts.storyboardPrompt,
+          storyboardDetailPrompt: prompts.storyboardDetailPrompt,
         },
       });
 
@@ -246,6 +252,23 @@ export default function Settings() {
 
           <section className="space-y-4 pb-6 border-b border-slate-800">
             <h2 className="text-xl font-bold text-white">
+              <label htmlFor="audioPrompt">Адаптация текста для озвучки</label>
+            </h2>
+            <p id="audioPromptHelp" className="text-xs text-slate-400">
+              ИИ обязан сохранить количество и порядок блоков сценария. Placeholders: {"{{PROJECT_TITLE}}"}, {"{{SCRIPT_BLOCKS}}"}, {"{{SCRIPT}}"}, {"{{INSTRUCTIONS}}"}.
+            </p>
+            <textarea
+              id="audioPrompt"
+              aria-describedby="audioPromptHelp"
+              value={prompts.audio}
+              onChange={(e) => setPrompts((prev) => ({ ...prev, audio: e.target.value }))}
+              className="w-full h-80 bg-slate-950 border border-slate-800 rounded-xl p-4 text-sm text-white focus:border-purple-500 transition-all outline-none resize-y"
+              placeholder="Инструкции по адаптации сценарных блоков для ElevenLabs..."
+            />
+          </section>
+
+          <section className="space-y-4 pb-6 border-b border-slate-800">
+            <h2 className="text-xl font-bold text-white">
               <label htmlFor="visualBiblePrompt">Системный промпт Visual Bible</label>
             </h2>
             <p id="visualBiblePromptHelp" className="text-xs text-slate-400">
@@ -283,7 +306,7 @@ export default function Settings() {
           <section className="space-y-4 pb-6 border-b border-slate-800">
             <h2 className="text-xl font-bold text-white"><label htmlFor="referenceAnalysisPrompt">Анализ сценария для референсов</label></h2>
             <p id="referenceAnalysisPromptHelp" className="text-xs text-slate-400">
-              Управляет тем, как ИИ выбирает необходимое количество героев, локаций, предметов и других референсов. Placeholders: {"{{PROJECT_TITLE}}"}, {"{{SCRIPT}}"}, {"{{CURRENT_REFERENCES}}"}, {"{{INSTRUCTIONS}}"}.
+              Управляет тем, как ИИ выбирает необходимое количество героев, локаций, предметов и других референсов. Placeholders: {"{{PROJECT_TITLE}}"}, {"{{SCRIPT}}"}, {"{{VOICEOVER}}"}, {"{{CURRENT_REFERENCES}}"}, {"{{INSTRUCTIONS}}"}.
             </p>
             <textarea id="referenceAnalysisPrompt" aria-describedby="referenceAnalysisPromptHelp"
               value={prompts.referenceAnalysisPrompt}
@@ -302,6 +325,30 @@ export default function Settings() {
               onChange={(e) => setPrompts((prev) => ({ ...prev, referenceDetailPrompt: e.target.value }))}
               className="w-full h-80 bg-slate-950 border border-slate-800 rounded-xl p-4 text-sm text-white focus:border-purple-500 transition-all outline-none resize-y"
               placeholder="Инструкции для подробного Flow prompt..." />
+          </section>
+
+          <section className="space-y-4 pb-6 border-b border-slate-800">
+            <h2 className="text-xl font-bold text-white"><label htmlFor="storyboardPrompt">Генерация раскадровки</label></h2>
+            <p id="storyboardPromptHelp" className="text-xs text-slate-400">
+              Управляет разделением утверждённого текста озвучки на кадры и выбором референсов. Placeholders: {"{{PROJECT_TITLE}}"}, {"{{SCRIPT}}"}, {"{{VOICEOVER_BLOCKS}}"}, {"{{REFERENCES}}"}, {"{{CURRENT_STORYBOARD}}"}, {"{{INSTRUCTIONS}}"}.
+            </p>
+            <textarea id="storyboardPrompt" aria-describedby="storyboardPromptHelp"
+              value={prompts.storyboardPrompt}
+              onChange={(e) => setPrompts((prev) => ({ ...prev, storyboardPrompt: e.target.value }))}
+              className="w-full h-80 bg-slate-950 border border-slate-800 rounded-xl p-4 text-sm text-white focus:border-purple-500 transition-all outline-none resize-y"
+              placeholder="Инструкции для генерации раскадровки..." />
+          </section>
+
+          <section className="space-y-4 pb-6 border-b border-slate-800">
+            <h2 className="text-xl font-bold text-white"><label htmlFor="storyboardDetailPrompt">Детализация prompt кадра</label></h2>
+            <p id="storyboardDetailPromptHelp" className="text-xs text-slate-400">
+              Используется для одиночной и массовой детализации промтов кадров. Placeholders: {"{{PROJECT_TITLE}}"}, {"{{FRAME}}"}, {"{{REFERENCES}}"}, {"{{CURRENT_PROMPT}}"}, {"{{INSTRUCTION}}"}.
+            </p>
+            <textarea id="storyboardDetailPrompt" aria-describedby="storyboardDetailPromptHelp"
+              value={prompts.storyboardDetailPrompt}
+              onChange={(e) => setPrompts((prev) => ({ ...prev, storyboardDetailPrompt: e.target.value }))}
+              className="w-full h-80 bg-slate-950 border border-slate-800 rounded-xl p-4 text-sm text-white focus:border-purple-500 transition-all outline-none resize-y"
+              placeholder="Инструкции для подробного prompt одного кадра..." />
           </section>
 
           {/* Кнопка сохранения */}

@@ -115,7 +115,7 @@ export default function ProjectWorkspace() {
             </div>
           </Link>
 
-          {project.script?.status === "confirmed" && <Link
+          {project.voiceover?.status === "confirmed" && <Link
             to={`/projects/${projectId}/references`}
             className="group p-8 bg-slate-900/80 hover:bg-slate-900 border border-fuchsia-500/20 hover:border-fuchsia-500/60 rounded-2xl transition-all shadow-xl flex flex-col justify-between"
           >
@@ -147,7 +147,7 @@ export default function ProjectWorkspace() {
             </div>
           </Link>
 
-          <Link
+          {project.script?.status === "confirmed" && <Link
             to={`/projects/${projectId}/audio`}
             className="group p-8 bg-slate-900/80 hover:bg-slate-900 border border-indigo-500/20 hover:border-indigo-500/60 rounded-2xl transition-all shadow-xl flex flex-col justify-between"
           >
@@ -165,9 +165,9 @@ export default function ProjectWorkspace() {
             <div className="mt-6 flex items-center text-indigo-400 font-semibold text-sm group-hover:translate-x-1 transition-transform">
               Перейти &rarr;
             </div>
-          </Link>
+          </Link>}
 
-          <Link
+          {project.voiceover?.status === "confirmed" && project.referencePlan?.status === "confirmed" && <Link
             to={`/projects/${projectId}/image`}
             className="group p-8 bg-slate-900/80 hover:bg-slate-900 border border-purple-500/20 hover:border-purple-500/60 rounded-2xl transition-all shadow-xl flex flex-col justify-between"
           >
@@ -185,7 +185,7 @@ export default function ProjectWorkspace() {
             <div className="mt-6 flex items-center text-purple-400 font-semibold text-sm group-hover:translate-x-1 transition-transform">
               Перейти &rarr;
             </div>
-          </Link>
+          </Link>}
         </div>
       </div>
     </div>

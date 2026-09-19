@@ -67,6 +67,7 @@ export default function References() {
   const dirty = plan && JSON.stringify({ instructions, items }) !== baseline;
   const confirmed = plan?.status === "confirmed";
   const scriptReady = data?.scriptStatus === "confirmed";
+  const voiceoverReady = data?.voiceoverStatus === "confirmed";
 
   useEffect(() => {
     if (!dirty) return undefined;
@@ -146,12 +147,14 @@ export default function References() {
       <nav className="flex flex-wrap gap-4 text-sm text-fuchsia-300">
         <Link to={`/projects/${projectId}`}>← К проекту</Link>
         <Link to={`/projects/${projectId}/script`}>К сценарию</Link>
+        <Link to={`/projects/${projectId}/audio`}>К озвучке</Link>
       </nav>
       <div><h1 className="text-3xl font-extrabold">Работа с референсами</h1>
         <p className="text-slate-400 mt-2">ИИ предлагает только значимые визуальные опоры. Финальный выбор остаётся за вами.</p></div>
       {error && <div role="alert" className="p-4 rounded-xl border border-red-500/30 bg-red-500/10">{error}</div>}
       {message && <div role="status" className="p-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-300">{message}</div>}
       {!scriptReady && <div className="p-4 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-300">Сначала подтвердите сценарий.</div>}
+      {scriptReady && !voiceoverReady && <div className="p-4 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-300">Сначала адаптируйте и утвердите текст в разделе «Озвучка».</div>}
       {plan && <>
         <section className={panel}>
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -164,10 +167,11 @@ export default function References() {
               placeholder="Например: сделай акцент на исторических локациях; не добавляй второстепенных персонажей"
               className="w-full min-h-28 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
           <div className="flex flex-wrap gap-3">
-            <button type="button" className={button} disabled={Boolean(pending) || !scriptReady}
+            <button type="button" className={button} disabled={Boolean(pending) || !scriptReady || !voiceoverReady}
               onClick={analyze}>{pending === "analyze" ? "ИИ анализирует…" : items.length ? "Повторить анализ" : "Анализировать сценарий"}</button>
             {items.length > 0 && <button type="button" className={`${button} bg-slate-700 hover:bg-slate-600`} disabled={Boolean(pending) || !dirty} onClick={save}>Сохранить изменения</button>}
             {items.length > 0 && <button type="button" className={`${button} bg-emerald-700 hover:bg-emerald-600`} disabled={Boolean(pending) || dirty || plan.status !== "draft" || !items.some(item => item.selected)} onClick={confirm}>Утвердить набор</button>}
+            {confirmed && !dirty && <Link to={`/projects/${projectId}/image`} className={`${button} bg-purple-700 hover:bg-purple-600`}>Перейти к раскадровке</Link>}
           </div>
         </section>
 

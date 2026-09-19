@@ -100,6 +100,9 @@ export const DEFAULT_REFERENCE_ANALYSIS_PROMPT = `Ты — режиссёр ра
 СЦЕНАРИЙ:
 {{SCRIPT}}
 
+УТВЕРЖДЁННЫЙ ТЕКСТ ДЛЯ ОЗВУЧКИ:
+{{VOICEOVER}}
+
 ТЕКУЩИЙ СПИСОК (при повторном анализе):
 {{CURRENT_REFERENCES}}
 
@@ -126,6 +129,71 @@ export const DEFAULT_REFERENCE_DETAIL_PROMPT = `Подготовь подроб�
 {{INSTRUCTION}}
 
 Сам выбери важные визуальные характеристики в зависимости от типа референса. Для персонажа подробно опиши устойчивую внешность, одежду и характерные детали; для локации — пространство, архитектуру, материалы, эпоху и свет; для предмета — форму, масштаб, материал и отличительные признаки. Сохрани факты сценария и не добавляй противоречий. Требуй одно чистое изображение без текста, подписей, UI, водяных знаков, рамок и коллажа, пригодное как ingredient/reference в Google Flow. Верни только готовый prompt без Markdown и комментариев.`;
+
+export const DEFAULT_AUDIO_ADAPTATION_PROMPT = `Ты адаптируешь утверждённый сценарий для озвучки диктором.
+
+Проект: {{PROJECT_TITLE}}
+Блоки сценария:
+{{SCRIPT_BLOCKS}}
+
+Дополнительные инструкции пользователя:
+{{INSTRUCTIONS}}
+
+Для каждого входного блока подготовь живой, плавный текст для чтения вслух. Убери заголовок блока, метки ДИКТОР/ВІЗУАЛ, таймкоды и визуальные указания. Сохрани язык, смысл, факты и порядок исходного текста. Можно расставлять поддерживаемые ElevenLabs паузы и audio tags, если они улучшают звучание.
+
+Критически важно: не объединяй, не удаляй, не добавляй и не переставляй блоки. Для каждого входного id верни ровно один результат с тем же id.
+
+Верни только JSON вида {"blocks":[{"id":"script_block_1","adaptedText":"..."}]}, без Markdown и пояснений.`;
+
+export const DEFAULT_STORYBOARD_PROMPT = `Ты — режиссёр раскадровки YouTube-видео.
+Раздели утверждённый текст для озвучки проекта «{{PROJECT_TITLE}}» на визуально осмысленные кадры. Сам выбери количество кадров по содержанию и темпу истории.
+
+ИСХОДНЫЙ СЦЕНАРИЙ — КОНТЕКСТ ДЛЯ ВИЗУАЛИЗАЦИИ:
+{{SCRIPT}}
+
+УТВЕРЖДЁННЫЕ БЛОКИ ОЗВУЧКИ — ЕДИНСТВЕННЫЙ ИСТОЧНИК ТЕКСТА КАДРОВ:
+{{VOICEOVER_BLOCKS}}
+
+УТВЕРЖДЁННЫЕ РЕФЕРЕНСЫ:
+{{REFERENCES}}
+
+ТЕКУЩАЯ РАСКАДРОВКА (при повторной генерации):
+{{CURRENT_STORYBOARD}}
+
+ДОПОЛНИТЕЛЬНЫЕ ИНСТРУКЦИИ:
+{{INSTRUCTIONS}}
+
+Для каждого кадра верни:
+- id — только если сохраняешь существующий кадр;
+- sourceVoiceoverBlockId — id блока озвучки, которому принадлежит кадр;
+- scriptText — точный непрерывный фрагмент adaptedText этого блока без пересказа, исправлений и сокращений;
+- visualDescription — что должно происходить в кадре, на русском;
+- prompt — самостоятельный подробный prompt на английском для будущей генерации одного изображения;
+- referenceIds — массив только из id утверждённых референсов, которые действительно видны или важны в этом кадре.
+
+Не добавляй референс только потому, что он существует. Не придумывай referenceId. Сохраняй визуальную целостность повторяющихся героев, локаций и объектов. Каждый кадр должен описывать одно изображение, без коллажа, текста, UI и водяных знаков.
+Сохрани исходный порядок блоков. Внутри каждого блока используй весь adaptedText ровно один раз: без пропусков, повторов и перестановок.
+Верни только JSON вида {"frames":[...]}, без Markdown и пояснений.`;
+
+export const DEFAULT_STORYBOARD_DETAIL_PROMPT = `Ты — режиссёр, оператор и prompt-инженер генерации изображений.
+Подготовь подробный финальный prompt на английском языке для одного кадра раскадровки проекта «{{PROJECT_TITLE}}».
+
+КАДР:
+{{FRAME}}
+
+ВЫБРАННЫЕ РЕФЕРЕНСЫ:
+{{REFERENCES}}
+
+ТЕКУЩИЙ PROMPT:
+{{CURRENT_PROMPT}}
+
+ДОПОЛНИТЕЛЬНАЯ ИНСТРУКЦИЯ:
+{{INSTRUCTION}}
+
+Опиши одно цельное изображение, непосредственно соответствующее тексту и визуальному описанию кадра. Подробно задай субъект, действие, окружение, эпоху, композицию, план, ракурс камеры, объектив, глубину резкости, освещение, цвет, атмосферу, материалы и важные фоновые детали.
+Используй выбранные референсы для сохранения внешности персонажей, локаций и предметов. Не противоречь данным референсов и не придумывай новые узнаваемые особенности для уже определённых сущностей.
+Не создавай коллаж, последовательность кадров, разделённый экран, текст, подписи, субтитры, логотипы, интерфейс или водяные знаки.
+Верни только готовый prompt без Markdown, заголовков, JSON и комментариев.`;
 
 // Схема для отдельного профиля провайдера
 const profileSchema = new mongoose.Schema({
@@ -161,8 +229,10 @@ const profileSchema = new mongoose.Schema({
 
   audioSettings: {
     voiceId: { type: String }, // ID голоса из ElevenLabs
+    modelId: { type: String, default: "eleven_v3" },
     speed: { type: Number, default: 1.0 },
     stability: { type: Number, default: 0.5 },
+    similarityBoost: { type: Number, default: 0.75 },
     speakerBoost: { type: Boolean, default: true },
   },
 });
@@ -202,13 +272,15 @@ const settingsSchema = new mongoose.Schema(
       theme: { type: String, default: "" },
       script: { type: String, default: "" },
       cover: { type: String, default: "" },
-      audio: { type: String, default: "" },
+      audio: { type: String, default: DEFAULT_AUDIO_ADAPTATION_PROMPT },
       timelineDavinci: { type: String, default: "" },
       visualBiblePrompt: { type: String, default: DEFAULT_VISUAL_BIBLE_PROMPT },
       visualBibleEditPrompt: { type: String, default: "" },
       visualReferencePrompt: { type: String, default: "" },
       referenceAnalysisPrompt: { type: String, default: "" },
       referenceDetailPrompt: { type: String, default: "" },
+      storyboardPrompt: { type: String, default: "" },
+      storyboardDetailPrompt: { type: String, default: "" },
     },
 
     driveCredentials: { type: driveCredentialsSchema, default: null, select: false },

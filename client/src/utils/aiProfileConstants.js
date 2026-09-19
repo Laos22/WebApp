@@ -29,6 +29,16 @@ export const IMAGE_FORMATS = ["png", "webp", "jpeg"];
 export const IMAGE_QUALITIES = ["standard", "hd"];
 export const IMAGE_ASPECT_RATIOS = ["16:9", "1:1", "9:16"];
 
+export const ELEVENLABS_MODELS = [
+  { value: "eleven_v3", label: "Eleven v3 — выразительная", characterLimit: 5000 },
+  { value: "eleven_multilingual_v2", label: "Multilingual v2 — длинная озвучка", characterLimit: 10000 },
+  { value: "eleven_flash_v2_5", label: "Flash v2.5 — быстрая", characterLimit: 40000 },
+  { value: "eleven_flash_v2", label: "Flash v2 — быстрая", characterLimit: 30000 },
+];
+
+export const getElevenLabsCharacterLimit = (modelId) =>
+  ELEVENLABS_MODELS.find(model => model.value === modelId)?.characterLimit ?? null;
+
 // Человекочитаемые лейблы для отображения на карточках
 export const TYPE_LABELS = {
   text: "Текст",
@@ -66,8 +76,10 @@ export const getEmptyProfile = () => ({
   },
   audioSettings: {
     voiceId: "",
+    modelId: "eleven_v3",
     speed: 1.0,
     stability: 0.5,
+    similarityBoost: 0.75,
     speakerBoost: true,
   },
 });

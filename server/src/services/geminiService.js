@@ -1,13 +1,44 @@
 // server/src/services/geminiService.js
 import { GoogleGenAI } from "@google/genai";
 import { getDecryptedApiKey } from "./aiProfileResolver.js";
-import { DEFAULT_VISUAL_BIBLE_PROMPT, DEFAULT_VISUAL_BIBLE_EDIT_PROMPT, DEFAULT_REFERENCE_ANALYSIS_PROMPT, DEFAULT_REFERENCE_DETAIL_PROMPT } from "../models/Settings.js";
+import { DEFAULT_VISUAL_BIBLE_PROMPT, DEFAULT_VISUAL_BIBLE_EDIT_PROMPT, DEFAULT_REFERENCE_ANALYSIS_PROMPT, DEFAULT_REFERENCE_DETAIL_PROMPT, DEFAULT_STORYBOARD_PROMPT, DEFAULT_STORYBOARD_DETAIL_PROMPT, DEFAULT_AUDIO_ADAPTATION_PROMPT } from "../models/Settings.js";
 
 function modelText(response) {
   const text = typeof response.text === "function" ? response.text()
     : response.text ?? response.candidates?.[0]?.content?.parts?.[0]?.text;
   if (typeof text !== "string" || !text.trim()) throw new Error("Missing model text");
   return text.trim();
+}
+
+export function buildVoiceoverAdaptationPrompt(project, sourceBlocks, instructions, template) {
+  const source = typeof template === 'string' && template.trim()
+    ? template : DEFAULT_AUDIO_ADAPTATION_PROMPT;
+  const blocks = sourceBlocks.map(block => ({
+    id: block.sourceId, title: block.sourceTitle, text: block.sourceText,
+  }));
+  return source.split('{{PROJECT_TITLE}}').join(project.title || '')
+    .split('{{SCRIPT_BLOCKS}}').join(JSON.stringify(blocks))
+    .split('{{SCRIPT}}').join(project.script?.content || '')
+    .split('{{INSTRUCTIONS}}').join(instructions || 'Нет дополнительных инструкций.');
+}
+
+export async function generateVoiceoverAdaptation(project, sourceBlocks, instructions, template, profile) {
+  try {
+    const { apiKey, model } = resolveTextConfig(profile, 'adapt-voiceover');
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await ai.models.generateContent({
+      model,
+      contents: [{ role: 'user', parts: [{
+        text: buildVoiceoverAdaptationPrompt(project, sourceBlocks, instructions, template),
+      }] }],
+      config: { responseMimeType: 'application/json' },
+    });
+    return modelText(response);
+  } catch (cause) {
+    const error = new Error('Не удалось адаптировать текст для озвучки');
+    error.code = cause.code || 'AUDIO_ADAPTATION_FAILED';
+    throw error;
+  }
 }
 
 export function buildReferenceAnalysisPrompt(project, currentReferences, instructions, template) {
@@ -19,6 +50,7 @@ export function buildReferenceAnalysisPrompt(project, currentReferences, instruc
   }));
   return source.split('{{PROJECT_TITLE}}').join(project.title || '')
     .split('{{SCRIPT}}').join(project.script?.content || '')
+    .split('{{VOICEOVER}}').join(JSON.stringify((project.voiceover?.blocks || []).map(block => block.adaptedText)))
     .split('{{CURRENT_REFERENCES}}').join(JSON.stringify(visibleReferences))
     .split('{{INSTRUCTIONS}}').join(instructions || 'Нет дополнительных инструкций.');
 }
@@ -66,6 +98,91 @@ export async function detailReferencePrompt(project, reference, instruction, tem
   } catch {
     const error = new Error('Не удалось детализировать prompt');
     error.code = 'REFERENCE_DETAIL_FAILED';
+    throw error;
+  }
+}
+
+export function buildStoryboardPrompt(project, references, currentFrames, instructions, template) {
+  const source = typeof template === 'string' && template.trim() ? template : DEFAULT_STORYBOARD_PROMPT;
+  const visibleReferences = references.map(reference => ({
+    id: reference.id, name: reference.name, type: reference.type,
+    description: reference.description, prompt: reference.prompt,
+  }));
+  const visibleFrames = currentFrames.map(frame => ({
+    id: frame.id, sourceVoiceoverBlockId: frame.sourceVoiceoverBlockId, scriptText: frame.scriptText,
+    visualDescription: frame.visualDescription, prompt: frame.prompt,
+    referenceIds: frame.referenceIds,
+  }));
+  const prompt = source.split('{{PROJECT_TITLE}}').join(project.title || '')
+    .split('{{SCRIPT}}').join(project.script?.content || '')
+    .split('{{VOICEOVER_BLOCKS}}').join(JSON.stringify((project.voiceover?.blocks || []).map(block => ({
+      id: block.id, order: block.order, adaptedText: block.adaptedText,
+    }))))
+    .split('{{REFERENCES}}').join(JSON.stringify(visibleReferences))
+    .split('{{CURRENT_STORYBOARD}}').join(JSON.stringify(visibleFrames))
+    .split('{{INSTRUCTIONS}}').join(instructions || 'Нет дополнительных инструкций.');
+  if (prompt.length > 196608) {
+    const error = new Error('Storyboard input too long');
+    error.code = 'STORYBOARD_INPUT_TOO_LONG';
+    throw error;
+  }
+  return prompt;
+}
+
+export async function generateStoryboard(project, references, currentFrames, instructions, template, profile) {
+  try {
+    const { apiKey, model } = resolveTextConfig(profile, 'generate-storyboard');
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await ai.models.generateContent({
+      model,
+      contents: [{ role: 'user', parts: [{
+        text: buildStoryboardPrompt(project, references, currentFrames, instructions, template),
+      }] }],
+      config: { responseMimeType: 'application/json' },
+    });
+    return modelText(response);
+  } catch (cause) {
+    if (cause.code === 'STORYBOARD_INPUT_TOO_LONG') throw cause;
+    const error = new Error('Не удалось создать раскадровку');
+    error.code = 'STORYBOARD_GENERATION_FAILED';
+    throw error;
+  }
+}
+
+export function buildStoryboardDetailPrompt(project, frame, references, instruction, template) {
+  const source = typeof template === 'string' && template.trim()
+    ? template : DEFAULT_STORYBOARD_DETAIL_PROMPT;
+  const selectedIds = new Set(frame.referenceIds || []);
+  const selectedReferences = references.filter(reference => selectedIds.has(reference.id)).map(reference => ({
+    id: reference.id, name: reference.name, type: reference.type,
+    description: reference.description, prompt: reference.prompt,
+  }));
+  return source.split('{{PROJECT_TITLE}}').join(project.title || '')
+    .split('{{FRAME}}').join(JSON.stringify({
+      id: frame.id, order: frame.order, scriptText: frame.scriptText,
+      visualDescription: frame.visualDescription,
+    }))
+    .split('{{REFERENCES}}').join(JSON.stringify(selectedReferences))
+    .split('{{CURRENT_PROMPT}}').join(frame.prompt || '')
+    .split('{{INSTRUCTION}}').join(instruction || 'Нет дополнительной инструкции.');
+}
+
+export async function detailStoryboardFramePrompt(project, frame, references, instruction, template, profile) {
+  try {
+    const { apiKey, model } = resolveTextConfig(profile, 'detail-storyboard-frame-prompt');
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await ai.models.generateContent({
+      model,
+      contents: [{ role: 'user', parts: [{
+        text: buildStoryboardDetailPrompt(project, frame, references, instruction, template),
+      }] }],
+    });
+    const text = modelText(response);
+    if (text.length > 12000) throw new Error('Prompt too long');
+    return text;
+  } catch {
+    const error = new Error('Не удалось детализировать prompt кадра');
+    error.code = 'STORYBOARD_DETAIL_FAILED';
     throw error;
   }
 }

@@ -282,5 +282,19 @@ export function markVisualBibleStaleUpdate() {
       editVersion: { $add: [{ $ifNull: ['$referencePlan.editVersion', 0] }, 1] },
     }] },
     { $cond: [{ $eq: [{ $type: '$referencePlan' }, 'missing'] }, '$$REMOVE', '$referencePlan'] },
+  ] }, voiceover: { $cond: [
+    { $in: ['$voiceover.status', ['draft', 'confirmed', 'stale']] },
+    { $mergeObjects: ['$voiceover', {
+      status: 'stale', confirmedAt: null, updatedAt: '$$NOW',
+      editVersion: { $add: [{ $ifNull: ['$voiceover.editVersion', 0] }, 1] },
+    }] },
+    { $cond: [{ $eq: [{ $type: '$voiceover' }, 'missing'] }, '$$REMOVE', '$voiceover'] },
+  ] }, storyboard: { $cond: [
+    { $in: ['$storyboard.status', ['draft', 'confirmed', 'stale']] },
+    { $mergeObjects: ['$storyboard', {
+      status: 'stale', confirmedAt: null, updatedAt: '$$NOW',
+      editVersion: { $add: [{ $ifNull: ['$storyboard.editVersion', 0] }, 1] },
+    }] },
+    { $cond: [{ $eq: [{ $type: '$storyboard' }, 'missing'] }, '$$REMOVE', '$storyboard'] },
   ] } } };
 }
