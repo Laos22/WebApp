@@ -160,12 +160,12 @@ export async function importStoryboardFlowPackage(projectId, archive, sourceStor
   return response.json();
 }
 
-export async function importStoryboardFlowFrameImage(projectId, frameId, image, sourceStoryboardRevision) {
+export async function importStoryboardFlowFrameImage(projectId, frameId, image, sourceStoryboardRevision, compact = false) {
   const form = new FormData();
   form.append("image", image);
   form.append("sourceStoryboardRevision", String(sourceStoryboardRevision));
   const response = await flowFileRequest(
-    `${SERVER_URL}/api/projects/${projectId}/storyboard/frames/${encodeURIComponent(frameId)}/import-flow-image`,
+    `${SERVER_URL}/api/projects/${projectId}/storyboard/frames/${encodeURIComponent(frameId)}/import-flow-image${compact ? "?compact=1" : ""}`,
     { method: "POST", body: form },
   );
   return response.json();

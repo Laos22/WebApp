@@ -96,8 +96,12 @@ function parseVisualReferenceUpload(req, res, next) {
 function parseFlowArchiveUpload(req, res, next) {
   flowArchiveUpload.single("archive")(req, res, error => {
     if (!error) return next();
-    return res.status(error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE" ? 413 : 400)
-      .json({ error: "Некорректный архив результатов Flow" });
+    const tooLarge = error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE";
+    return res.status(tooLarge ? 413 : 400).json(tooLarge ? {
+      error: `Архив превышает серверный лимит ${configuredFlowArchiveMb} МБ. Используйте последовательный импорт изображений.`,
+      code: "FLOW_ARCHIVE_TOO_LARGE",
+      maxArchiveMb: configuredFlowArchiveMb,
+    } : { error: "Некорректный архив результатов Flow" });
   });
 }
 
@@ -1639,6 +1643,9 @@ router.post('/:id/storyboard/frames/:frameId/import-flow-image', ensureAuthentic
       return res.status(409).json({ error: 'Раскадровка изменилась. Обновите страницу.' });
     }
     await saveFlowStoryboardImage({ project, userId: req.user._id, storyboard, frame, buffer: req.file.buffer });
+    if (req.query.compact === '1') {
+      return res.json({ success: true, frameId: frame.id, status: 'ready' });
+    }
     return res.json(await storyboardResponse(project, req.user._id));
   } catch (error) {
     if (['INVALID_IMAGE_FILE', 'INVALID_STORAGE_KEY'].includes(error.code)) {

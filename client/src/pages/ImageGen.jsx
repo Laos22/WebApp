@@ -4,7 +4,7 @@ import {
   confirmStoryboard, detailStoryboardFramePrompt, generateStoryboard,
   exportStoryboardFlowPackage, generateStoryboardFrameImage, getStoryboard, getStoryboardFrameImageUrl,
   getStoryboardFramePreviewUrl,
-  importStoryboardFlowFrameImage, importStoryboardFlowPackage,
+  importStoryboardFlowFrameImage,
   resetStoryboardImages, resetStoryboardPromptDetails, saveStoryboard,
 } from "../services/api";
 import { fetchProfiles } from "../services/profileService";
@@ -14,8 +14,24 @@ const button = "px-4 py-2.5 rounded-xl bg-purple-700 hover:bg-purple-600 disable
 const statuses = { empty: "Не создана", draft: "Черновик", confirmed: "Утверждена", stale: "Устарела" };
 const DETAIL_REQUEST_INTERVAL_MS = 4_000;
 const DETAIL_RATE_LIMIT_RETRIES = 4;
+const MAX_FLOW_ENTRIES = 1_000;
+const MAX_FLOW_IMAGE_BYTES = 15 * 1024 * 1024;
+const FLOW_FRAME_ID_PATTERN = /frame_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i;
+const FLOW_IMAGE_EXTENSION_PATTERN = /\.(png|jpe?g|webp)$/i;
 
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+
+function flowFrameIdFromFilename(value) {
+  if (typeof value !== "string" || value.includes("\\") || value.startsWith("/") ||
+      value.split("/").includes("..") || !FLOW_IMAGE_EXTENSION_PATTERN.test(value)) return "";
+  return value.split("/").pop()?.match(FLOW_FRAME_ID_PATTERN)?.[0] || "";
+}
+
+function flowImageMimeType(filename) {
+  if (/\.png$/i.test(filename)) return "image/png";
+  if (/\.webp$/i.test(filename)) return "image/webp";
+  return "image/jpeg";
+}
 
 function Drawer({ title, onClose, children, wide = false }) {
   return <div className="fixed inset-0 z-[70] flex items-end md:items-center justify-center bg-black/75 backdrop-blur-sm md:p-6" onMouseDown={onClose}>
@@ -67,6 +83,7 @@ export default function ImageGen() {
   const [imageProfiles, setImageProfiles] = useState([]);
   const [imageProfileId, setImageProfileId] = useState("");
   const [imageProgress, setImageProgress] = useState(null);
+  const [flowImportProgress, setFlowImportProgress] = useState(null);
   const [imageMethod, setImageMethod] = useState("api");
   const [currentFrameIndex, setCurrentFrameIndex] = useState(0);
   const [openPanel, setOpenPanel] = useState("");
@@ -79,6 +96,7 @@ export default function ImageGen() {
   const mounted = useRef(true);
   const stopDetail = useRef(false);
   const stopImages = useRef(false);
+  const stopFlowImport = useRef(false);
 
   const applyData = (result) => {
     setData(result);
@@ -101,7 +119,7 @@ export default function ImageGen() {
       }
     }).catch(err => { if (active) setError(readableError(err)); })
       .finally(() => { if (active) setPending(""); });
-    return () => { active = false; mounted.current = false; stopDetail.current = true; stopImages.current = true; };
+    return () => { active = false; mounted.current = false; stopDetail.current = true; stopImages.current = true; stopFlowImport.current = true; };
   }, [projectId]);
 
   const storyboard = data?.storyboard;
@@ -355,15 +373,82 @@ export default function ImageGen() {
     const archive = event.target.files?.[0];
     event.target.value = "";
     if (!archive || pending) return;
+    stopFlowImport.current = false;
     setPending("flow-import"); setError(""); setMessage("");
+    setFlowImportProgress({ done: 0, total: 0, imported: 0, replaced: 0, errors: 0 });
+    let zipReader;
     try {
-      const result = await importStoryboardFlowPackage(projectId, archive, storyboard.revision);
-      applyData(result);
-      const summary = result.importSummary;
-      const warning = summary.warnings?.length ? ` ${summary.warnings.join(" ")}` : "";
-      setMessage(`Импорт Flow завершён: добавлено ${summary.imported}; заменено ${summary.replaced}; ошибок ${summary.errors}; неизвестных файлов ${summary.unknown}.${warning}`);
+      const { BlobReader, BlobWriter, ZipReader } = await import("@zip.js/zip.js");
+      zipReader = new ZipReader(new BlobReader(archive), { strictness: "balanced" });
+      const entries = await zipReader.getEntries();
+      if (entries.length > MAX_FLOW_ENTRIES) throw new Error(`В архиве слишком много файлов: ${entries.length}. Максимум ${MAX_FLOW_ENTRIES}.`);
+
+      const frameOrder = new Map(storyboard.frames.map((frame, index) => [frame.id, index]));
+      const selected = new Map();
+      let unknown = 0;
+      let duplicates = 0;
+      for (const entry of entries) {
+        if (entry.directory) continue;
+        const frameId = flowFrameIdFromFilename(entry.filename);
+        if (!frameId) continue;
+        if (!frameOrder.has(frameId)) { unknown += 1; continue; }
+        if (selected.has(frameId)) { duplicates += 1; continue; }
+        selected.set(frameId, entry);
+      }
+      const candidates = [...selected.entries()]
+        .sort(([left], [right]) => frameOrder.get(left) - frameOrder.get(right));
+      if (!candidates.length) throw new Error("В архиве не найдены изображения с frameId в имени файла.");
+
+      const originallyReady = new Set(storyboard.frames
+        .filter(frame => frame.image?.status === "ready" && frame.image?.hasImage)
+        .map(frame => frame.id));
+      const summary = { imported: 0, replaced: 0, errors: 0, unknown, duplicates };
+      setFlowImportProgress({ done: 0, total: candidates.length, ...summary });
+
+      for (let index = 0; index < candidates.length; index += 1) {
+        if (stopFlowImport.current) break;
+        const [frameId, entry] = candidates[index];
+        try {
+          if (entry.uncompressedSize > MAX_FLOW_IMAGE_BYTES) throw new Error("IMAGE_TOO_LARGE");
+          const image = await entry.getData(new BlobWriter(flowImageMimeType(entry.filename)), {
+            checkSignature: true,
+          });
+          if (!image || image.size > MAX_FLOW_IMAGE_BYTES) throw new Error("IMAGE_TOO_LARGE");
+
+          let lastError;
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            try {
+              await importStoryboardFlowFrameImage(projectId, frameId, image, storyboard.revision, true);
+              lastError = null;
+              break;
+            } catch (uploadError) {
+              lastError = uploadError;
+              if ([400, 401, 403, 409, 413].includes(uploadError?.status) || attempt === 2) throw uploadError;
+              await wait(2_000 * (attempt + 1));
+            }
+          }
+          if (lastError) throw lastError;
+          if (originallyReady.has(frameId)) summary.replaced += 1;
+          else summary.imported += 1;
+        } catch (entryError) {
+          if ([401, 403, 409].includes(entryError?.status)) throw entryError;
+          summary.errors += 1;
+        }
+        if (mounted.current) {
+          setFlowImportProgress({ done: index + 1, total: candidates.length, ...summary });
+          setMessage(`Импорт Flow: ${index + 1}/${candidates.length}. Добавлено ${summary.imported}, заменено ${summary.replaced}, ошибок ${summary.errors}.`);
+        }
+      }
+
+      const refreshed = await getStoryboard(projectId);
+      if (mounted.current) applyData(refreshed);
+      const stopped = stopFlowImport.current ? " Импорт остановлен, уже загруженные файлы сохранены." : "";
+      setMessage(`Импорт Flow завершён: добавлено ${summary.imported}; заменено ${summary.replaced}; ошибок ${summary.errors}; неизвестных файлов ${summary.unknown}; дубликатов ${summary.duplicates}.${stopped}`);
     } catch (err) { setError(readableError(err)); }
-    finally { setPending(""); }
+    finally {
+      if (zipReader) await zipReader.close().catch(() => {});
+      setPending("");
+    }
   };
 
   const importFlowFrame = async (frameId, event) => {
@@ -595,12 +680,14 @@ export default function ImageGen() {
         {imageProgress && <p className="text-sm text-cyan-300">Обработано в этом запуске: {imageProgress.done}/{imageProgress.total}</p>}
       </>}
       {imageMethod === "flow" && <div className="space-y-4 border border-blue-800/60 bg-blue-950/20 rounded-xl p-4">
-        <p className="text-sm text-slate-300">Экспорт включает незавершённые кадры. Импортировать можно любое количество готовых результатов.</p>
+        <p className="text-sm text-slate-300">Экспорт включает незавершённые кадры. Большие архивы распаковываются в браузере, а изображения загружаются последовательно без общего серверного лимита ZIP.</p>
         <div className="grid sm:grid-cols-2 gap-2">
           <button type="button" className={`${button} bg-blue-700 hover:bg-blue-600`} disabled={Boolean(pending) || dirty || storyboard.status !== "confirmed" || imageStats.pending === 0} onClick={() => exportFlow()}>{pending === "flow-export" ? "Подготовка ZIP…" : `Экспортировать (${imageStats.pending})`}</button>
           <a href="https://flow.google.com/" target="_blank" rel="noreferrer" className={`${button} bg-slate-700 hover:bg-slate-600 text-center`}>Открыть Google Flow</a>
           <label className={`${button} bg-emerald-700 hover:bg-emerald-600 cursor-pointer text-center sm:col-span-2 ${pending || dirty || storyboard.status !== "confirmed" ? "opacity-50 pointer-events-none" : ""}`}>{pending === "flow-import" ? "Импорт ZIP…" : "Импортировать результаты Flow"}<input type="file" accept=".zip,application/zip" className="hidden" onChange={importFlowArchive} /></label>
+          {pending === "flow-import" && <button type="button" className={`${button} bg-red-800 hover:bg-red-700 sm:col-span-2`} onClick={() => { stopFlowImport.current = true; }}>Остановить после текущего файла</button>}
         </div>
+        {flowImportProgress && <p className="text-sm text-cyan-300">Импортировано в этом запуске: {flowImportProgress.done}/{flowImportProgress.total} · добавлено {flowImportProgress.imported} · заменено {flowImportProgress.replaced} · ошибок {flowImportProgress.errors}</p>}
       </div>}
       <p className="text-sm text-slate-400">Готово {imageStats.ready}/{imageStats.total}{imageStats.failed > 0 ? ` · ошибок ${imageStats.failed}` : ""}{imageStats.generating > 0 ? ` · генерируется ${imageStats.generating}` : ""}</p>
     </Drawer>}
