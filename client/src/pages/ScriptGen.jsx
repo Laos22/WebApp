@@ -4,7 +4,7 @@ import axios from "axios";
 
 import { getProject, generateProjectScript, saveProjectScript, confirmProjectScript, editProjectScript } from "../services/api";
 
-const API_URL = import.meta.env.VITE_SERVER_URL;
+const API_URL = String(import.meta.env.VITE_SERVER_URL || "").replace(/\/$/, "");
 
 export default function ScriptGen() {
   const { projectId } = useParams();

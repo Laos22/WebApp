@@ -8,7 +8,7 @@ import axios from "axios";
  * Бэкенд шифрует apiKey и отдаёт его расшифрованным только владельцу,
  * поэтому все запросы идут с withCredentials (сессионные куки).
  */
-const SERVER_URL = import.meta.env.VITE_SERVER_URL;
+const SERVER_URL = String(import.meta.env.VITE_SERVER_URL || "").replace(/\/$/, "");
 const PROFILES_URL = `${SERVER_URL}/api/settings/profiles`;
 
 // Общий инстанс: единая точка настройки заголовков/куки для профилей

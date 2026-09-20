@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: aihub-webapp
+    runtime: node
+    region: frankfurt
+    plan: free
+    branch: feature/webapp-script-persistence
+    buildCommand: npm ci --prefix server && npm ci --prefix client && npm run build --prefix client
+    startCommand: npm start --prefix server
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: AUTH_MODE
+        value: google
+      - key: STORAGE_PROVIDER
+        value: google_drive
+      - key: VITE_AUTH_MODE
+        value: google
+      - key: VITE_CLIENT_URL
+        sync: false
+      - key: VITE_SERVER_URL
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_ALLOWED_EMAILS
+        sync: false
+      - key: SESSION_COOKIE_SAME_SITE
+        value: lax
+      - key: MAX_FLOW_ARCHIVE_MB
+        value: 50

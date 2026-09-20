@@ -8,6 +8,8 @@ import passport from "passport";
 import passportGoogle from "passport-google-oauth20";
 import { GoogleGenAI } from "@google/genai";
 import mongoose from "mongoose";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import connectDB from "./src/config/database.js";
 import authRoutes from "./src/routes/authRoutes.js";
 import configRoutes from "./src/routes/configRoutes.js";
@@ -19,6 +21,7 @@ import { saveDriveTokens } from "./src/services/driveTokenService.js";
 import {
   authMode,
   clientOrigins,
+  googleAllowedEmails,
   isGoogleAuth,
   isGoogleDriveStorage,
   storageProvider,
@@ -26,6 +29,9 @@ import {
 } from "./src/config/runtimeConfig.js";
 
 const GoogleStrategy = passportGoogle.Strategy;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const clientDistPath = path.resolve(__dirname, "../client/dist");
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -34,6 +40,7 @@ const sessionSecret = process.env.SESSION_SECRET;
 const sessionMaxAge = 1000 * 60 * 60 * 24 * 7;
 const runtime = validateRuntimeConfig();
 const allowedOrigins = clientOrigins();
+const allowedGoogleEmails = googleAllowedEmails();
 
 if (!sessionSecret || sessionSecret.trim().length < 32) {
   console.error("Ошибка конфигурации: SESSION_SECRET должен содержать минимум 32 символа. Запуск остановлен.");
@@ -107,9 +114,13 @@ if (isGoogleAuth || isGoogleDriveStorage) passport.use(
     },
     async (req, accessToken, refreshToken, profile, done) => {
       try {
+        const email = String(profile.emails?.[0]?.value || "").trim().toLowerCase();
+        if (!email || (allowedGoogleEmails.length > 0 && !allowedGoogleEmails.includes(email))) {
+          console.warn("OAUTH_EMAIL_NOT_ALLOWED");
+          return done(new Error("Google account is not allowed"), null);
+        }
         console.log("👤 Google Profile получен:", {
           id: profile.id,
-          email: profile.emails?.[0]?.value,
           displayName: profile.displayName,
           photo: profile.photos?.[0]?.value,
           accessToken: !!accessToken,
@@ -123,7 +134,7 @@ if (isGoogleAuth || isGoogleDriveStorage) passport.use(
           console.log("📝 Создаем нового пользователя...");
           user = new User({
             googleId: profile.id,
-            email: profile.emails[0].value,
+            email,
             displayName: profile.displayName,
             picture:
               profile.photos && profile.photos[0]
@@ -250,6 +261,20 @@ app.get("/api/health", (req, res) => {
     storageProvider,
   });
 });
+
+// Render runs the API and the built React client as one web service. Keeping
+// both on one origin avoids cross-site cookie issues in browsers and on phones.
+if (isProduction) {
+  app.use(express.static(clientDistPath, { index: false }));
+  app.use((req, res, next) => {
+    if (req.method !== "GET" || req.path.startsWith("/api/") || req.path.startsWith("/auth/")) {
+      return next();
+    }
+    return res.sendFile(path.join(clientDistPath, "index.html"), error => {
+      if (error) next(error);
+    });
+  });
+}
 
 const server = app.listen(PORT, () => {
   console.log(`Server is running on ${process.env.VITE_SERVER_URL}`);

@@ -1,7 +1,7 @@
 // client/src/hooks/useGenerateTopic.js
 import { useState } from "react";
 
-const API_URL = import.meta.env.VITE_SERVER_URL;
+const API_URL = String(import.meta.env.VITE_SERVER_URL || "").replace(/\/$/, "");
 
 export function useGenerateTopic() {
   const [isLoading, setIsLoading] = useState(false);

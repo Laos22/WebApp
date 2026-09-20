@@ -32,7 +32,7 @@ export async function generateContent(payload) {
 
 // Project workflow requests use the same server and session as the existing pages.
 async function projectRequest(projectId, suffix = "", method = "GET", body) {
-  const response = await fetch(`${import.meta.env.VITE_SERVER_URL}/api/projects/${projectId}${suffix}`, {
+  const response = await fetch(`${SERVER_URL}/api/projects/${projectId}${suffix}`, {
     method,
     credentials: "include",
     headers: { "Content-Type": "application/json" },
@@ -72,7 +72,7 @@ export const confirmVoiceover = (projectId, payload) =>
 export const generateVoiceoverBlock = (projectId, blockId, payload) =>
   projectRequest(projectId, `/voiceover/blocks/${encodeURIComponent(blockId)}/generate`, "POST", payload);
 export const getVoiceoverAudioUrl = (projectId, blockId, generatedAt) =>
-  `${import.meta.env.VITE_SERVER_URL}/api/projects/${projectId}/voiceover/blocks/${encodeURIComponent(blockId)}/audio?v=${encodeURIComponent(generatedAt || "0")}`;
+  `${SERVER_URL}/api/projects/${projectId}/voiceover/blocks/${encodeURIComponent(blockId)}/audio?v=${encodeURIComponent(generatedAt || "0")}`;
 export const getReferencePlan = (projectId) => projectRequest(projectId, "/reference-plan");
 export const analyzeReferencePlan = (projectId, payload) =>
   projectRequest(projectId, "/reference-plan/analyze", "POST", payload);
@@ -88,7 +88,7 @@ export async function uploadVisualReference(projectId, referenceId, { file, prom
   form.append("image", file);
   form.append("prompt", prompt);
   form.append("sourceReferenceVersion", String(sourceReferenceVersion));
-  const response = await fetch(`${import.meta.env.VITE_SERVER_URL}/api/projects/${projectId}/visual-references/${encodeURIComponent(referenceId)}/upload`, {
+  const response = await fetch(`${SERVER_URL}/api/projects/${projectId}/visual-references/${encodeURIComponent(referenceId)}/upload`, {
     method: "POST", credentials: "include", body: form,
   });
   const data = await response.json().catch(() => ({}));
@@ -104,7 +104,7 @@ export async function uploadVisualReference(projectId, referenceId, { file, prom
 export const deleteVisualReference = (projectId, referenceId) =>
   projectRequest(projectId, `/visual-references/${encodeURIComponent(referenceId)}`, "DELETE");
 export const getVisualReferenceImageUrl = (projectId, imageId, updatedAt) =>
-  `${import.meta.env.VITE_SERVER_URL}/api/projects/${projectId}/visual-references/${encodeURIComponent(imageId)}/image?v=${encodeURIComponent(updatedAt || "0")}`;
+  `${SERVER_URL}/api/projects/${projectId}/visual-references/${encodeURIComponent(imageId)}/image?v=${encodeURIComponent(updatedAt || "0")}`;
 export const getStoryboard = (projectId) => projectRequest(projectId, "/storyboard");
 export const generateStoryboard = (projectId, payload) =>
   projectRequest(projectId, "/storyboard/generate", "POST", payload);
@@ -121,7 +121,7 @@ export const generateStoryboardFrameImage = (projectId, frameId, payload) =>
 export const resetStoryboardImages = (projectId, payload) =>
   projectRequest(projectId, "/storyboard/images/reset", "POST", payload);
 export const getStoryboardFrameImageUrl = (projectId, frameId, updatedAt, download = false) =>
-  `${import.meta.env.VITE_SERVER_URL}/api/projects/${projectId}/storyboard/frames/${encodeURIComponent(frameId)}/image?v=${encodeURIComponent(updatedAt || "0")}${download ? "&download=1" : ""}`;
+  `${SERVER_URL}/api/projects/${projectId}/storyboard/frames/${encodeURIComponent(frameId)}/image?v=${encodeURIComponent(updatedAt || "0")}${download ? "&download=1" : ""}`;
 
 async function flowFileRequest(url, options = {}) {
   const response = await fetch(url, { credentials: "include", ...options });
@@ -139,7 +139,7 @@ export async function exportStoryboardFlowPackage(projectId, sourceStoryboardRev
   const params = new URLSearchParams({ sourceStoryboardRevision: String(sourceStoryboardRevision) });
   if (frameId) params.set("frameId", frameId);
   const response = await flowFileRequest(
-    `${import.meta.env.VITE_SERVER_URL}/api/projects/${projectId}/storyboard/flow/export?${params}`,
+    `${SERVER_URL}/api/projects/${projectId}/storyboard/flow/export?${params}`,
   );
   const disposition = response.headers.get("Content-Disposition") || "";
   const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "flow-storyboard.zip";
@@ -151,7 +151,7 @@ export async function importStoryboardFlowPackage(projectId, archive, sourceStor
   form.append("archive", archive);
   form.append("sourceStoryboardRevision", String(sourceStoryboardRevision));
   const response = await flowFileRequest(
-    `${import.meta.env.VITE_SERVER_URL}/api/projects/${projectId}/storyboard/flow/import`,
+    `${SERVER_URL}/api/projects/${projectId}/storyboard/flow/import`,
     { method: "POST", body: form },
   );
   return response.json();
@@ -162,14 +162,14 @@ export async function importStoryboardFlowFrameImage(projectId, frameId, image, 
   form.append("image", image);
   form.append("sourceStoryboardRevision", String(sourceStoryboardRevision));
   const response = await flowFileRequest(
-    `${import.meta.env.VITE_SERVER_URL}/api/projects/${projectId}/storyboard/frames/${encodeURIComponent(frameId)}/import-flow-image`,
+    `${SERVER_URL}/api/projects/${projectId}/storyboard/frames/${encodeURIComponent(frameId)}/import-flow-image`,
     { method: "POST", body: form },
   );
   return response.json();
 }
 
 export async function editProjectScript(id, currentScript, instruction, signal) {
-  const response = await fetch(`${import.meta.env.VITE_SERVER_URL}/api/projects/${id}/edit-script`, {
+  const response = await fetch(`${SERVER_URL}/api/projects/${id}/edit-script`, {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },

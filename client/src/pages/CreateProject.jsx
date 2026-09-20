@@ -4,7 +4,7 @@ import { useNavigate, Link } from "react-router-dom";
 import { useGenerateTopic } from "../hooks/useGenerateTopic";
 import axios from "axios";
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL;
+const SERVER_URL = String(import.meta.env.VITE_SERVER_URL || "").replace(/\/$/, "");
 
 export default function CreateProject() {
   const navigate = useNavigate();

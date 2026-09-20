@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import axios from "axios";
 
-const API_URL = import.meta.env.VITE_SERVER_URL;
+const API_URL = String(import.meta.env.VITE_SERVER_URL || "").replace(/\/$/, "");
 
 export default function Projects() {
   const [projects, setProjects] = useState([]);

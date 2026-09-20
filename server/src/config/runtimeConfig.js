@@ -40,6 +40,13 @@ export function clientOrigins() {
     .filter(Boolean);
 }
 
+export function googleAllowedEmails() {
+  return String(process.env.GOOGLE_ALLOWED_EMAILS || "")
+    .split(",")
+    .map(value => value.trim().toLowerCase())
+    .filter(Boolean);
+}
+
 export function validateRuntimeConfig() {
   const production = process.env.NODE_ENV === "production";
   required("MONGODB_URI");
@@ -68,4 +75,3 @@ export function validateRuntimeConfig() {
 
   return { authMode, storageProvider, production };
 }
-
