@@ -3,9 +3,9 @@ import axios from "axios";
 
 const AuthContext = createContext(null);
 
-// Базовый URL бэкенда из переменных окружения или fallback на localhost:5001
-const API_URL = import.meta.env.VITE_SERVER_URL;
-console.log("🔗 API_URL:", API_URL);
+const API_URL = String(import.meta.env.VITE_SERVER_URL || "").replace(/\/$/, "");
+const AUTH_MODE = import.meta.env.VITE_AUTH_MODE ||
+  (import.meta.env.VITE_BYPASS_AUTH === "true" ? "developer" : "google");
 // Настраиваем axios для передачи куки (сессий)
 axios.defaults.withCredentials = true;
 
@@ -15,7 +15,7 @@ export function AuthProvider({ children }) {
 
   const checkAuth = async () => {
     // Режим разработки: обходим проверку на сервере
-    if (import.meta.env.VITE_BYPASS_AUTH === "true") {
+    if (AUTH_MODE === "developer") {
       setUser({
         _id: "dev-user-id",
         email: "dev@local.host",

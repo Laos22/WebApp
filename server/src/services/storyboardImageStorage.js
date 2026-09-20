@@ -5,6 +5,9 @@ import { detectImageFormat } from "./visualReferenceStorage.js";
 import {
   ensureProjectWorkspace, isProjectStorageKey, projectStorageKey, resolveProjectStorageKey,
 } from "./projectStorage.js";
+import {
+  deleteProjectAsset, projectUsesDrive, readProjectAsset, saveProjectAsset,
+} from "./projectStorageGateway.js";
 
 const UPLOADS_ROOT = path.resolve(process.cwd(), "uploads");
 const IMAGES_ROOT = path.join(UPLOADS_ROOT, "storyboard-images");
@@ -49,9 +52,20 @@ export function storyboardFrameFileBase(project, frame) {
   return `frame_${blockOrder}_${frameInBlock}`;
 }
 
-export async function saveStoryboardImageFile({ projectId, frameId, projectPath, fileBaseName, buffer }) {
+export async function saveStoryboardImageFile({ projectId, frameId, projectPath, project, userId, fileBaseName, buffer }) {
   if (!Buffer.isBuffer(buffer) || buffer.length > 15 * 1024 * 1024) throw storageError("INVALID_IMAGE_FILE");
   const format = detectImageFormat(buffer);
+  if (projectUsesDrive(project)) {
+    if (!/^frame_\d+_\d+$/.test(fileBaseName || "")) throw storageError("INVALID_STORAGE_KEY");
+    const filename = `${fileBaseName}.${format.extension}`;
+    const stored = await saveProjectAsset({
+      project, userId, directory: "images", filename, mimeType: format.mimeType, buffer,
+    });
+    return {
+      storageKey: stored.storageKey, mimeType: format.mimeType, byteSize: buffer.length,
+      filename, _remote: true, _userId: userId,
+    };
+  }
   let directory;
   let filename;
   let storageKey;
@@ -102,6 +116,10 @@ export async function commitStoryboardImageFile(storedFile) {
 }
 
 export async function rollbackStoryboardImageFile(storedFile) {
+  if (storedFile?._remote) {
+    await deleteProjectAsset({ storageKey: storedFile.storageKey, userId: storedFile._userId });
+    return;
+  }
   if (!storedFile?._targetPath) return;
   await fs.unlink(storedFile._targetPath).catch(error => {
     if (error.code !== "ENOENT") throw storageError("STORYBOARD_IMAGE_STORAGE_FAILED");
@@ -113,8 +131,10 @@ export async function rollbackStoryboardImageFile(storedFile) {
   }
 }
 
-export async function readStoryboardImageFile(storageKey, projectPath = "") {
+export async function readStoryboardImageFile(storageKey, projectPath = "", userId = null) {
   try {
+    const remote = await readProjectAsset({ storageKey, userId });
+    if (remote) return remote;
     const absolute = isProjectStorageKey(storageKey)
       ? resolveProjectStorageKey(projectPath, storageKey, "images")
       : resolveStoryboardImageStorageKey(storageKey);
@@ -126,9 +146,10 @@ export async function readStoryboardImageFile(storageKey, projectPath = "") {
   }
 }
 
-export async function deleteStoryboardImageFile(storageKey, projectPath = "") {
+export async function deleteStoryboardImageFile(storageKey, projectPath = "", userId = null) {
   if (!storageKey) return;
   try {
+    if (await deleteProjectAsset({ storageKey, userId })) return;
     const absolute = isProjectStorageKey(storageKey)
       ? resolveProjectStorageKey(projectPath, storageKey, "images")
       : resolveStoryboardImageStorageKey(storageKey);

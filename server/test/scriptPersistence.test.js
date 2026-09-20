@@ -46,11 +46,13 @@ function setup({ owner = true, failWrite = false, failMirror = false } = {}) {
   const router = Object.fromEntries(['get', 'post', 'put', 'delete'].map(method => [method,
     (path, ...handlers) => routes.set(`${method} ${path}`, handlers.at(-1))]));
   vm.runInNewContext(source, {
+    process: { env: {} },
     express: { Router: () => router }, ensureAuthenticated() {}, Project,
     multer: Object.assign(() => ({ single: () => (_req, _res, next) => next() }), {
       memoryStorage: () => ({}), MulterError: class MulterError extends Error {},
     }),
     MAX_VISUAL_REFERENCE_BYTES: 15 * 1024 * 1024,
+    projectUsesDrive: () => false,
     markVisualBibleStaleUpdate: () => ({ $set: {} }),
     Settings: { findOne: async () => ({ prompts: { script: 'unchanged prompt' } }) },
     resolveProfile: () => 'profile',

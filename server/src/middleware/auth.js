@@ -1,20 +1,25 @@
 // server/src/middleware/auth.js
-import User from '../models/User.js'; // Добавим импорт модели
+import User from '../models/User.js';
+import { isDeveloperAuth } from '../config/runtimeConfig.js';
+
+export async function getOrCreateDeveloperUser() {
+  const googleId = String(process.env.DEVELOPER_USER_ID || 'dev-user-id').trim();
+  let user = await User.findOne({ googleId });
+  if (!user) {
+    user = await User.create({
+      googleId,
+      email: String(process.env.DEVELOPER_USER_EMAIL || 'dev@local.host').trim(),
+      displayName: 'Developer',
+      picture: '',
+    });
+  }
+  return user;
+}
 
 export const ensureAuthenticated = async (req, res, next) => {
-  if (process.env.BYPASS_AUTH === 'true') {
+  if (isDeveloperAuth) {
     try {
-      // Ищем или создаем тестового пользователя в БД
-      let user = await User.findOne({ googleId: 'dev-user-id' });
-      if (!user) {
-        user = await User.create({
-          googleId: 'dev-user-id',
-          email: 'dev@local.host',
-          displayName: 'Developer',
-          picture: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=200&auto=format&fit=crop'
-        });
-      }
-      req.user = user;
+      req.user = await getOrCreateDeveloperUser();
       return next();
     } catch (error) {
       console.error('Auth bypass error:', error);
@@ -30,19 +35,9 @@ export const ensureAuthenticated = async (req, res, next) => {
 };
 
 export const ensureOwner = async (req, res, next) => {
-  if (process.env.BYPASS_AUTH === 'true') {
+  if (isDeveloperAuth) {
     try {
-      // Используем того же тестового пользователя
-      let user = await User.findOne({ googleId: 'dev-user-id' });
-      if (!user) {
-        user = await User.create({
-          googleId: 'dev-user-id',
-          email: 'dev@local.host',
-          displayName: 'Developer',
-          picture: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=200&auto=format&fit=crop'
-        });
-      }
-      req.user = user;
+      req.user = await getOrCreateDeveloperUser();
       return next();
     } catch (error) {
       return res.status(500).json({ error: 'Auth bypass error' });

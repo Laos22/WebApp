@@ -4,6 +4,9 @@ import { randomUUID } from 'node:crypto';
 import {
   ensureProjectWorkspace, isProjectStorageKey, projectStorageKey, resolveProjectStorageKey,
 } from './projectStorage.js';
+import {
+  deleteProjectAsset, projectUsesDrive, readProjectAsset, saveProjectAsset,
+} from './projectStorageGateway.js';
 
 const ROOT = path.join(process.cwd(), 'uploads', 'voiceover');
 const projectPattern = /^[a-f\d]{24}$/i;
@@ -14,7 +17,15 @@ function safe(value, pattern) {
   return value;
 }
 
-export async function saveVoiceoverAudio({ projectId, blockId, blockOrder, projectPath, buffer }) {
+export async function saveVoiceoverAudio({ projectId, blockId, blockOrder, projectPath, project, userId, buffer }) {
+  if (projectUsesDrive(project)) {
+    if (!Number.isSafeInteger(blockOrder) || blockOrder < 1) throw new Error('Invalid audio block order');
+    const filename = `audio_block_${blockOrder}.mp3`;
+    const stored = await saveProjectAsset({
+      project, userId, directory: 'audio', filename, mimeType: 'audio/mpeg', buffer,
+    });
+    return { storageKey: stored.storageKey, byteSize: buffer.length, filename };
+  }
   let directory;
   let filename;
   let storageKey;
@@ -43,7 +54,9 @@ export async function saveVoiceoverAudio({ projectId, blockId, blockOrder, proje
   return { storageKey, byteSize: buffer.length, filename };
 }
 
-export async function readVoiceoverAudio(storageKey, projectPath = '') {
+export async function readVoiceoverAudio(storageKey, projectPath = '', userId = null) {
+  const remote = await readProjectAsset({ storageKey, userId });
+  if (remote) return remote;
   let absolute;
   if (isProjectStorageKey(storageKey)) {
     absolute = resolveProjectStorageKey(projectPath, storageKey, 'audio');
@@ -56,8 +69,9 @@ export async function readVoiceoverAudio(storageKey, projectPath = '') {
   return fs.readFile(absolute);
 }
 
-export async function deleteVoiceoverAudio(storageKey, projectPath = '') {
+export async function deleteVoiceoverAudio(storageKey, projectPath = '', userId = null) {
   if (!storageKey) return;
+  if (await deleteProjectAsset({ storageKey, userId })) return;
   let absolute;
   if (isProjectStorageKey(storageKey)) {
     absolute = resolveProjectStorageKey(projectPath, storageKey, 'audio');

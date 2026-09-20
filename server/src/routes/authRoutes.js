@@ -1,7 +1,14 @@
 import express from "express";
 import passport from "passport";
+import { ensureAuthenticated } from "../middleware/auth.js";
 
 const router = express.Router();
+const sessionCookieName = "aihub.sid";
+const sessionCookieOptions = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: process.env.SESSION_COOKIE_SAME_SITE || "lax",
+};
 
 /**
  * Начало OAuth процесса
@@ -40,11 +47,11 @@ router.post("/logout", (req, res, next) => {
           .status(500)
           .json({ success: false, error: "Ошибка при выходе из системы" });
       }
-      res.clearCookie("connect.sid");
+      res.clearCookie(sessionCookieName, sessionCookieOptions);
       res.json({ success: true });
     });
   } else {
-    res.clearCookie("connect.sid");
+    res.clearCookie(sessionCookieName, sessionCookieOptions);
     res.json({ success: true });
   }
 });
@@ -52,20 +59,16 @@ router.post("/logout", (req, res, next) => {
 /**
  * Проверка статуса авторизации
  */
-router.get("/status", (req, res) => {
-  if (req.isAuthenticated()) {
-    res.json({
-      authenticated: true,
-      user: {
-        id: req.user._id,
-        email: req.user.email,
-        name: req.user.displayName,
-        picture: req.user.picture,
-      },
-    });
-  } else {
-    res.json({ authenticated: false });
-  }
+router.get("/status", ensureAuthenticated, (req, res) => {
+  res.json({
+    authenticated: true,
+    user: {
+      id: req.user._id,
+      email: req.user.email,
+      name: req.user.displayName,
+      picture: req.user.picture,
+    },
+  });
 });
 
 export default router;

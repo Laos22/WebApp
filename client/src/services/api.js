@@ -1,4 +1,5 @@
-const API_BASE_URL = "http://localhost:5001/api";
+const SERVER_URL = String(import.meta.env.VITE_SERVER_URL || "").replace(/\/$/, "");
+const API_BASE_URL = `${SERVER_URL}/api`;
 
 /**
  * Универсальная функция для отправки запроса генерации на бэкенд
@@ -9,6 +10,7 @@ export async function generateContent(payload) {
   try {
     const response = await fetch(`${API_BASE_URL}/generate`, {
       method: "POST",
+      credentials: "include",
       headers: {
         "Content-Type": "application/json",
       },

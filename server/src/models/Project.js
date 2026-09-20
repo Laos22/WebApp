@@ -174,6 +174,20 @@ const storyboardSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: null }, confirmedAt: { type: Date, default: null },
 }, { _id: false, strict: 'throw' });
 
+const projectStorageSchema = new mongoose.Schema({
+  provider: { type: String, enum: ["local", "google_drive"], default: "local" },
+  driveRootFolderId: { type: String, default: "", maxlength: 300 },
+  driveFolderIds: {
+    audio: { type: String, default: "", maxlength: 300 },
+    images: { type: String, default: "", maxlength: 300 },
+    video: { type: String, default: "", maxlength: 300 },
+    cover: { type: String, default: "", maxlength: 300 },
+    script: { type: String, default: "", maxlength: 300 },
+    references: { type: String, default: "", maxlength: 300 },
+    packages: { type: String, default: "", maxlength: 300 },
+  },
+}, { _id: false, strict: "throw" });
+
 const projectSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -209,6 +223,7 @@ const projectSchema = new mongoose.Schema({
     type: String,
     default: ""
   },
+  storage: { type: projectStorageSchema, default: () => ({ provider: "local" }) },
   script: { type: scriptSchema, default: undefined },
   voiceover: { type: voiceoverSchema, default: undefined },
   visualBible: { type: visualBibleSchema, default: undefined },
@@ -226,6 +241,14 @@ const projectSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   }
+});
+
+projectSchema.set("toJSON", {
+  transform(_document, result) {
+    delete result.projectPath;
+    if (result.storage) result.storage = { provider: result.storage.provider || "local" };
+    return result;
+  },
 });
 
 const Project = mongoose.model('Project', projectSchema);

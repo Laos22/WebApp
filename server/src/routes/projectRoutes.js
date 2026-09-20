@@ -51,7 +51,14 @@ import {
   saveStoryboardImageFile, readStoryboardImageFile, deleteStoryboardImageFile, storyboardFrameFileBase,
   commitStoryboardImageFile, rollbackStoryboardImageFile,
 } from "../services/storyboardImageStorage.js";
-import { createProjectWorkspace } from "../services/projectStorage.js";
+import {
+  deleteProjectWorkspace,
+  initializeProjectStorage,
+  projectUsesDrive,
+  updateProjectState,
+  writeProjectState,
+  writeProjectTextFile,
+} from "../services/projectStorageGateway.js";
 import {
   buildFlowManifest, flowFrameBaseName, flowPromptsText, flowReferenceFileName,
   frameIdFromFlowImagePath,
@@ -60,13 +67,18 @@ import path from "path";
 import fs from "fs";
 
 const router = express.Router();
+const configuredFlowArchiveMb = Number(process.env.MAX_FLOW_ARCHIVE_MB || 100);
+const maxFlowArchiveBytes = Math.min(
+  250,
+  Number.isFinite(configuredFlowArchiveMb) && configuredFlowArchiveMb > 0 ? configuredFlowArchiveMb : 100,
+) * 1024 * 1024;
 const visualReferenceUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_VISUAL_REFERENCE_BYTES, files: 1, fields: 3, parts: 4 },
 });
 const flowArchiveUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 600 * 1024 * 1024, files: 1, fields: 3, parts: 4 },
+  limits: { fileSize: maxFlowArchiveBytes, files: 1, fields: 3, parts: 4 },
 });
 const flowFrameImageUpload = multer({
   storage: multer.memoryStorage(),
@@ -189,17 +201,14 @@ router.delete("/:id", ensureAuthenticated, async (req, res) => {
     const storyboardImages = await StoryboardImage.find({ projectId: project._id, userId: req.user._id })
       .select("+storageKey");
 
-    // Удаление папки с диска
-    if (project.projectPath && fs.existsSync(project.projectPath)) {
-      fs.rmSync(project.projectPath, { recursive: true, force: true });
-    }
+    await deleteProjectWorkspace({ project, userId: req.user._id });
 
     await project.deleteOne();
     await VisualReference.deleteMany({ projectId: project._id, userId: req.user._id });
     await StoryboardImage.deleteMany({ projectId: project._id, userId: req.user._id });
-    await Promise.all(references.map(reference => deleteVisualReferenceFile(reference.storageKey, project.projectPath)
+    await Promise.all(references.map(reference => deleteVisualReferenceFile(reference.storageKey, project.projectPath, req.user._id)
       .catch(() => console.error("VISUAL_REFERENCE_PROJECT_DELETE_FAILED"))));
-    await Promise.all(storyboardImages.map(image => deleteStoryboardImageFile(image.storageKey, project.projectPath)
+    await Promise.all(storyboardImages.map(image => deleteStoryboardImageFile(image.storageKey, project.projectPath, req.user._id)
       .catch(() => console.error("STORYBOARD_IMAGE_PROJECT_DELETE_FAILED"))));
     res.json({ success: true, message: "Проект удален" });
   } catch (error) {
@@ -225,22 +234,21 @@ router.post("/create-from-topic", ensureAuthenticated, async (req, res) => {
       shortTitle: short_title,
       keywords: keywords || "",
     });
-    const projectDirectory = await createProjectWorkspace({
+    const initializedStorage = await initializeProjectStorage({
       title: short_title || topic,
       projectId: project._id.toString(),
+      userId: req.user._id,
     });
-    project.projectPath = projectDirectory;
+    project.projectPath = initializedStorage.projectPath;
+    project.storage = initializedStorage.storage;
     await project.save();
-    fs.writeFileSync(
-      path.join(projectDirectory, "project_state.json"),
-      JSON.stringify({ short_title, topic, description }, null, 2),
-    );
+    await writeProjectState({ project, userId: req.user._id, state: { short_title, topic, description } });
 
     res.json({
       success: true,
       projectId: project._id,
       shortTitle: short_title,
-      projectPath: projectDirectory,
+      storageProvider: project.storage.provider,
       message: "Проект успешно создан",
     });
   } catch (error) {
@@ -284,19 +292,7 @@ router.post("/:id/generate-cover", ensureAuthenticated, async (req, res) => {
       textProfile,
     );
 
-    // Сохраняем данные в project_state.json
-    const projectStateFile = path.join(
-      project.projectPath,
-      "project_state.json",
-    );
-    let projectState = {};
-
-    if (fs.existsSync(projectStateFile)) {
-      projectState = JSON.parse(fs.readFileSync(projectStateFile, "utf-8"));
-    }
-
-    projectState.coverData = coverData;
-    fs.writeFileSync(projectStateFile, JSON.stringify(projectState, null, 2));
+    await updateProjectState({ project, userId: req.user._id, patch: { coverData } });
 
     res.json({
       success: true,
@@ -363,7 +359,7 @@ router.post("/:id/generate-script", ensureAuthenticated, async (req, res) => {
       { new: true, updatePipeline: true },
     );
     if (!saved) return res.status(404).json({ error: "Проект не найден" });
-    const warning = mirrorScript(saved);
+    const warning = await mirrorScript(saved, req.user._id);
     res.json({ success: true, script: saved.script.content, savedScript: saved.script, warning });
 
   } catch (error) {
@@ -395,19 +391,26 @@ router.post("/:id/edit-script", ensureAuthenticated, async (req, res) => {
 });
 
 // MongoDB is authoritative; the legacy file is a best-effort compatibility copy.
-function mirrorScript(project) {
+async function mirrorScript(project, userId) {
   try {
-    if (!project.projectPath) throw new Error("Missing project path");
-    const file = path.join(project.projectPath, "project_state.json");
-    const state = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf-8")) : {};
-    state.generatedScript = project.script.content;
-    fs.mkdirSync(project.projectPath, { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(state, null, 2));
-    fs.mkdirSync(path.join(project.projectPath, "script"), { recursive: true });
-    fs.writeFileSync(path.join(project.projectPath, "script", "script.txt"), project.script.content, "utf-8");
+    if (!projectUsesDrive(project)) {
+      if (!project.projectPath) throw new Error("Missing project path");
+      const file = path.join(project.projectPath, "project_state.json");
+      const state = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf-8")) : {};
+      state.generatedScript = project.script.content;
+      fs.mkdirSync(project.projectPath, { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(state, null, 2));
+      fs.mkdirSync(path.join(project.projectPath, "script"), { recursive: true });
+      fs.writeFileSync(path.join(project.projectPath, "script", "script.txt"), project.script.content, "utf-8");
+      return undefined;
+    }
+    await updateProjectState({ project, userId, patch: { generatedScript: project.script.content } });
+    await writeProjectTextFile({
+      project, userId, directory: "script", filename: "script.txt", content: project.script.content,
+    });
     return undefined;
   } catch {
-    return "Сценарий сохранён в MongoDB, но локальную копию обновить не удалось.";
+    return "Сценарий сохранён в MongoDB, но копию в хранилище обновить не удалось.";
   }
 }
 
@@ -432,7 +435,7 @@ router.put("/:id/script", ensureAuthenticated, async (req, res) => {
       { new: true, updatePipeline: true },
     );
     if (!saved) return res.status(409).json({ error: "Сценарий изменился. Перезагрузите страницу перед сохранением." });
-    const warning = mirrorScript(saved);
+    const warning = await mirrorScript(saved, req.user._id);
     res.json({ success: true, script: saved.script, warning });
   } catch {
     res.status(500).json({ error: "Не удалось сохранить сценарий в MongoDB" });
@@ -453,7 +456,7 @@ router.post("/:id/script/confirm", ensureAuthenticated, async (req, res) => {
       { new: true, runValidators: true },
     );
     if (!saved) return res.status(409).json({ error: "Сценарий изменился или уже подтверждён. Перезагрузите страницу." });
-    const warning = mirrorScript(saved);
+    const warning = await mirrorScript(saved, req.user._id);
     res.json({ success: true, script: saved.script, warning });
   } catch {
     res.status(500).json({ error: "Не удалось подтвердить сценарий в MongoDB" });
@@ -622,7 +625,7 @@ router.post('/:id/voiceover/blocks/:blockId/generate', ensureAuthenticated, asyn
     const audio = await synthesizeElevenLabs(block.adaptedText, profile);
     const stored = await saveVoiceoverAudio({
       projectId: project._id.toString(), blockId: block.id, blockOrder: block.order,
-      projectPath: project.projectPath, buffer: audio,
+      projectPath: project.projectPath, project, userId: req.user._id, buffer: audio,
     });
     const saved = await Project.findOneAndUpdate({
       ...owner, 'voiceover.editVersion': expectedEditVersion,
@@ -641,7 +644,7 @@ router.post('/:id/voiceover/blocks/:blockId/generate', ensureAuthenticated, asyn
     });
     if (!saved) return res.status(409).json({ error: 'Блок изменился во время генерации. Повторите запрос.' });
     if (block.audioStorageKey && block.audioStorageKey !== stored.storageKey) {
-      deleteVoiceoverAudio(block.audioStorageKey, project.projectPath)
+      deleteVoiceoverAudio(block.audioStorageKey, project.projectPath, req.user._id)
         .catch(() => console.error('VOICEOVER_OLD_FILE_DELETE_FAILED'));
     }
     return res.json(voiceoverResponse(saved));
@@ -665,7 +668,7 @@ router.get('/:id/voiceover/blocks/:blockId/audio', ensureAuthenticated, async (r
     if (!project) return res.status(404).json({ error: 'Проект не найден' });
     const block = (project.voiceover?.blocks || []).find(item => item.id === req.params.blockId);
     if (!block?.audioStorageKey || block.audioStatus !== 'ready') return res.status(404).json({ error: 'Аудио не найдено' });
-    const audio = await readVoiceoverAudio(block.audioStorageKey, project.projectPath);
+    const audio = await readVoiceoverAudio(block.audioStorageKey, project.projectPath, req.user._id);
     res.set('Content-Type', block.audioMimeType || 'audio/mpeg');
     res.set('Content-Length', String(audio.length));
     res.set('Content-Disposition', `inline; filename="audio_block_${block.order}.mp3"`);
@@ -848,7 +851,7 @@ async function removeOrphanReferenceAssets(project, userId, retainedIds) {
   }).select('+storageKey');
   if (!orphans.length) return;
   await VisualReference.deleteMany({ _id: { $in: orphans.map(item => item._id) }, projectId: project._id, userId });
-  await Promise.all(orphans.map(item => deleteVisualReferenceFile(item.storageKey, project.projectPath)
+  await Promise.all(orphans.map(item => deleteVisualReferenceFile(item.storageKey, project.projectPath, userId)
     .catch(() => console.error('VISUAL_REFERENCE_ORPHAN_DELETE_FAILED'))));
 }
 
@@ -1408,7 +1411,7 @@ async function saveFlowStoryboardImage({ project, userId, storyboard, frame, buf
   try {
     storedFile = await saveStoryboardImageFile({
       projectId: project._id.toString(), frameId: frame.id, projectPath: project.projectPath,
-      fileBaseName: storyboardFrameFileBase(project, frame), buffer,
+      project, userId, fileBaseName: storyboardFrameFileBase(project, frame), buffer,
     });
     const stillCurrent = await Project.exists({
       _id: project._id, userId, 'storyboard.status': 'confirmed',
@@ -1439,7 +1442,7 @@ async function saveFlowStoryboardImage({ project, userId, storyboard, frame, buf
     await commitStoryboardImageFile(storedFile);
     fileCommitted = true;
     if (previous?.storageKey && previous.storageKey !== storedFile.storageKey) {
-      deleteStoryboardImageFile(previous.storageKey, project.projectPath).catch(() => console.error('STORYBOARD_IMAGE_OLD_FILE_DELETE_FAILED'));
+      deleteStoryboardImageFile(previous.storageKey, project.projectPath, userId).catch(() => console.error('STORYBOARD_IMAGE_OLD_FILE_DELETE_FAILED'));
     }
     return storedFile;
   } catch (error) {
@@ -1491,7 +1494,7 @@ router.get('/:id/storyboard/flow/export', ensureAuthenticated, async (req, res) 
         return {
           id: item.id, name: item.name, type: item.type, mimeType: asset.mimeType,
           fileName: flowReferenceFileName(item, asset.mimeType),
-          buffer: await readVisualReferenceFile(asset.storageKey, project.projectPath),
+          buffer: await readVisualReferenceFile(asset.storageKey, project.projectPath, req.user._id),
         };
       } catch { return null; }
     }))).filter(Boolean);
@@ -1702,7 +1705,7 @@ router.post('/:id/storyboard/frames/:frameId/generate-image', ensureAuthenticate
       try {
         return {
           name: item.name, type: item.type, mimeType: asset.mimeType,
-          buffer: await readVisualReferenceFile(asset.storageKey, project.projectPath),
+          buffer: await readVisualReferenceFile(asset.storageKey, project.projectPath, req.user._id),
         };
       } catch {
         return null;
@@ -1712,6 +1715,7 @@ router.post('/:id/storyboard/frames/:frameId/generate-image', ensureAuthenticate
     const generated = await generateGoogleStoryboardImage({ frame, references, profile });
     generatedFile = await saveStoryboardImageFile({
       projectId: project._id.toString(), frameId: frame.id, projectPath: project.projectPath,
+      project, userId: req.user._id,
       fileBaseName: storyboardFrameFileBase(project, frame), buffer: generated.buffer,
     });
     const stillCurrent = await Project.exists({
@@ -1738,7 +1742,7 @@ router.post('/:id/storyboard/frames/:frameId/generate-image', ensureAuthenticate
     await commitStoryboardImageFile(generatedFile);
     generatedFileCommitted = true;
     if (previousStorageKey && previousStorageKey !== generatedFile.storageKey) {
-      deleteStoryboardImageFile(previousStorageKey, project.projectPath).catch(() => console.error('STORYBOARD_IMAGE_OLD_FILE_DELETE_FAILED'));
+      deleteStoryboardImageFile(previousStorageKey, project.projectPath, req.user._id).catch(() => console.error('STORYBOARD_IMAGE_OLD_FILE_DELETE_FAILED'));
     }
     return res.json(await storyboardResponse(project, req.user._id));
   } catch (error) {
@@ -1770,7 +1774,7 @@ router.get('/:id/storyboard/frames/:frameId/image', ensureAuthenticated, async (
       } },
     });
     if (!projectCurrent) return res.status(404).json({ error: 'Изображение кадра устарело' });
-    const buffer = await readStoryboardImageFile(image.storageKey, projectCurrent.projectPath);
+    const buffer = await readStoryboardImageFile(image.storageKey, projectCurrent.projectPath, req.user._id);
     res.set('Content-Type', image.mimeType);
     res.set('Cache-Control', 'private, no-store');
     if (req.query.download === '1') {
@@ -1810,7 +1814,7 @@ router.post('/:id/visual-references/:referenceId/upload', ensureAuthenticated, p
     }
     storedFile = await saveVisualReferenceFile({
       projectId: project._id.toString(), projectPath: project.projectPath,
-      referenceId: req.params.referenceId, buffer: req.file.buffer,
+      project, userId: req.user._id, referenceId: req.params.referenceId, buffer: req.file.buffer,
     });
     const currentProject = await Project.exists({
       _id: project._id, userId: req.user._id,
@@ -1818,7 +1822,7 @@ router.post('/:id/visual-references/:referenceId/upload', ensureAuthenticated, p
       'referencePlan.items': { $elemMatch: { id: req.params.referenceId, selected: true, version: sourceReferenceVersion, prompt } },
     });
     if (!currentProject) {
-      await deleteVisualReferenceFile(storedFile.storageKey, project.projectPath).catch(() => {});
+      await deleteVisualReferenceFile(storedFile.storageKey, project.projectPath, req.user._id).catch(() => {});
       storedFile = null;
       return res.status(409).json({ error: "Референс изменился. Утвердите план и повторите загрузку." });
     }
@@ -1835,11 +1839,11 @@ router.post('/:id/visual-references/:referenceId/upload', ensureAuthenticated, p
       ).select("+storageKey");
       committed = true;
     } catch {
-      await deleteVisualReferenceFile(storedFile.storageKey, project.projectPath).catch(() => {});
+      await deleteVisualReferenceFile(storedFile.storageKey, project.projectPath, req.user._id).catch(() => {});
       return res.status(500).json({ error: "Не удалось сохранить референс" });
     }
     if (replaced?.storageKey && replaced.storageKey !== storedFile.storageKey) {
-      deleteVisualReferenceFile(replaced.storageKey, project.projectPath).catch(() => console.error("VISUAL_REFERENCE_OLD_FILE_DELETE_FAILED"));
+      deleteVisualReferenceFile(replaced.storageKey, project.projectPath, req.user._id).catch(() => console.error("VISUAL_REFERENCE_OLD_FILE_DELETE_FAILED"));
     }
     const reference = await VisualReference.findOne({
       projectId: project._id, userId: req.user._id, referenceId: req.params.referenceId,
@@ -1847,7 +1851,7 @@ router.post('/:id/visual-references/:referenceId/upload', ensureAuthenticated, p
     if (!reference) return res.status(500).json({ error: "Не удалось сохранить референс" });
     return res.json({ success: true, reference: visualReferenceMetadata(reference, item) });
   } catch (error) {
-    if (storedFile && !committed) await deleteVisualReferenceFile(storedFile.storageKey, referenceProjectPath).catch(() => {});
+    if (storedFile && !committed) await deleteVisualReferenceFile(storedFile.storageKey, referenceProjectPath, req.user?._id).catch(() => {});
     if (["INVALID_IMAGE_FILE", "INVALID_STORAGE_KEY"].includes(error.code)) {
       return res.status(400).json({ error: "Поддерживаются только PNG, JPEG и WebP изображения" });
     }
@@ -1867,7 +1871,7 @@ router.get('/:id/visual-references/:referenceId/image', ensureAuthenticated, asy
     if (!project) return res.status(404).json({ error: "Проект не найден" });
     let image;
     try {
-      image = await readVisualReferenceFile(reference.storageKey, project.projectPath);
+      image = await readVisualReferenceFile(reference.storageKey, project.projectPath, req.user._id);
     } catch (error) {
       if (["VISUAL_REFERENCE_FILE_NOT_FOUND", "INVALID_STORAGE_KEY"].includes(error.code)) {
         return res.status(404).json({ error: "Файл референса не найден" });
@@ -1893,7 +1897,7 @@ router.delete('/:id/visual-references/:referenceId', ensureAuthenticated, async 
       _id: req.params.referenceId, projectId: req.params.id, userId: req.user._id,
     }).select("+storageKey");
     if (!reference) return res.status(404).json({ error: "Референс не найден" });
-    deleteVisualReferenceFile(reference.storageKey, project.projectPath).catch(() => console.error("VISUAL_REFERENCE_FILE_DELETE_FAILED"));
+    deleteVisualReferenceFile(reference.storageKey, project.projectPath, req.user._id).catch(() => console.error("VISUAL_REFERENCE_FILE_DELETE_FAILED"));
     return res.json({ success: true });
   } catch {
     return res.status(500).json({ error: "Не удалось удалить референс" });

@@ -16,6 +16,14 @@ import { ensureAuthenticated } from "./src/middleware/auth.js";
 import User from "./src/models/User.js";
 import Settings from "./src/models/Settings.js";
 import { saveDriveTokens } from "./src/services/driveTokenService.js";
+import {
+  authMode,
+  clientOrigins,
+  isGoogleAuth,
+  isGoogleDriveStorage,
+  storageProvider,
+  validateRuntimeConfig,
+} from "./src/config/runtimeConfig.js";
 
 const GoogleStrategy = passportGoogle.Strategy;
 
@@ -24,6 +32,8 @@ const PORT = process.env.PORT || 5001;
 const isProduction = process.env.NODE_ENV === "production";
 const sessionSecret = process.env.SESSION_SECRET;
 const sessionMaxAge = 1000 * 60 * 60 * 24 * 7;
+const runtime = validateRuntimeConfig();
+const allowedOrigins = clientOrigins();
 
 if (!sessionSecret || sessionSecret.trim().length < 32) {
   console.error("Ошибка конфигурации: SESSION_SECRET должен содержать минимум 32 символа. Запуск остановлен.");
@@ -39,23 +49,26 @@ if (isProduction) {
 morgan.token("safe-url", (req) => req.path);
 app.use(morgan(":method :safe-url :status :response-time :res[content-length] - :remote-addr :remote-user :date[iso8601]"));
 
-// Добавим дебаг-логгер для отслеживания всех путей
-app.use((req, res, next) => {
-  console.log(`[DEBUG] ${req.method} ${req.path}`);
-  next();
-});
+if (!isProduction) {
+  app.use((req, res, next) => {
+    console.log(`[DEBUG] ${req.method} ${req.path}`);
+    next();
+  });
+}
 
 // Подключаем базу данных
 await connectDB();
 
 // Middleware
-(console.log("CORS origin:", process.env.VITE_CLIENT_URL),
-  app.use(
-    cors({
-      origin: process.env.VITE_CLIENT_URL,
-      credentials: true,
-    }),
-  ));
+console.log("CORS origins:", allowedOrigins.join(", "));
+app.disable("x-powered-by");
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin.replace(/\/$/, ""))) return callback(null, true);
+    return callback(new Error("CORS_ORIGIN_NOT_ALLOWED"));
+  },
+  credentials: true,
+}));
 app.use(express.json());
 
 // Сессии
@@ -68,10 +81,11 @@ app.use(
     }),
     resave: false,
     saveUninitialized: false,
+    name: "aihub.sid",
     cookie: {
       httpOnly: true,
       secure: isProduction,
-      sameSite: isProduction ? "none" : "lax",
+      sameSite: process.env.SESSION_COOKIE_SAME_SITE || "lax",
       maxAge: sessionMaxAge, // 7 дней
     },
   }),
@@ -82,13 +96,14 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 // Настройка Google Strategy
-passport.use(
+if (isGoogleAuth || isGoogleDriveStorage) passport.use(
   new GoogleStrategy(
     {
       clientID: process.env.GOOGLE_CLIENT_ID,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET,
       callbackURL: `${process.env.VITE_SERVER_URL}/auth/callback`,
       passReqToCallback: true,
+      state: true,
     },
     async (req, accessToken, refreshToken, profile, done) => {
       try {
@@ -228,11 +243,17 @@ app.post("/api/generate", ensureAuthenticated, async (req, res) => {
 });
 
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", message: "AI Backend is running" });
+  res.json({
+    status: "ok",
+    message: "AI Backend is running",
+    authMode,
+    storageProvider,
+  });
 });
 
 const server = app.listen(PORT, () => {
   console.log(`Server is running on ${process.env.VITE_SERVER_URL}`);
+  console.log(`Runtime: auth=${runtime.authMode}, storage=${runtime.storageProvider}`);
   console.log("🔐 Google OAuth Config:");
   console.log(
     `   CLIENT_ID: ${process.env.GOOGLE_CLIENT_ID ? "✓ Set" : "✗ Missing"}`,

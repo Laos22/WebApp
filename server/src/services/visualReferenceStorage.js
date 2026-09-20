@@ -4,6 +4,9 @@ import { randomUUID } from "node:crypto";
 import {
   ensureProjectWorkspace, isProjectStorageKey, projectStorageKey, resolveProjectStorageKey,
 } from "./projectStorage.js";
+import {
+  deleteProjectAsset, projectUsesDrive, readProjectAsset, saveProjectAsset,
+} from "./projectStorageGateway.js";
 
 export const MAX_VISUAL_REFERENCE_BYTES = 15 * 1024 * 1024;
 const UPLOADS_ROOT = path.resolve(process.cwd(), "uploads");
@@ -51,9 +54,16 @@ export function resolveVisualReferenceStorageKey(storageKey) {
   return absolutePath;
 }
 
-export async function saveVisualReferenceFile({ projectId, projectPath, referenceId, buffer }) {
+export async function saveVisualReferenceFile({ projectId, projectPath, project, userId, referenceId, buffer }) {
   const safeReferenceId = safeSegment(referenceId, referenceIdPattern);
   const format = detectImageFormat(buffer);
+  if (projectUsesDrive(project)) {
+    const filename = `${safeReferenceId}.${format.extension}`;
+    const stored = await saveProjectAsset({
+      project, userId, directory: "references", filename, mimeType: format.mimeType, buffer,
+    });
+    return { storageKey: stored.storageKey, mimeType: format.mimeType, byteSize: buffer.length, filename };
+  }
   let directory;
   let filename;
   let storageKey;
@@ -86,8 +96,10 @@ export async function saveVisualReferenceFile({ projectId, projectPath, referenc
   };
 }
 
-export async function readVisualReferenceFile(storageKey, projectPath = "") {
+export async function readVisualReferenceFile(storageKey, projectPath = "", userId = null) {
   try {
+    const remote = await readProjectAsset({ storageKey, userId });
+    if (remote) return remote;
     const absolute = isProjectStorageKey(storageKey)
       ? resolveProjectStorageKey(projectPath, storageKey, "references")
       : resolveVisualReferenceStorageKey(storageKey);
@@ -99,8 +111,9 @@ export async function readVisualReferenceFile(storageKey, projectPath = "") {
   }
 }
 
-export async function deleteVisualReferenceFile(storageKey, projectPath = "") {
+export async function deleteVisualReferenceFile(storageKey, projectPath = "", userId = null) {
   try {
+    if (await deleteProjectAsset({ storageKey, userId })) return;
     const absolute = isProjectStorageKey(storageKey)
       ? resolveProjectStorageKey(projectPath, storageKey, "references")
       : resolveVisualReferenceStorageKey(storageKey);

@@ -1,0 +1,19 @@
+[Unit]
+Description=AI Hub Node.js backend
+After=network.target
+
+[Service]
+Type=simple
+User=aihub
+Group=aihub
+WorkingDirectory=/opt/ai-hub/server
+EnvironmentFile=/etc/ai-hub/server.env
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+

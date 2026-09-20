@@ -8,8 +8,9 @@ import ProfileCard from "../components/ProfileCard";
 import ProfileFormModal from "../components/ProfileFormModal";
 import { getEmptyProfile } from "../utils/aiProfileConstants";
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL;
-console.log("🔗 SERVER_URL:", SERVER_URL);
+const SERVER_URL = String(import.meta.env.VITE_SERVER_URL || "").replace(/\/$/, "");
+const AUTH_MODE = import.meta.env.VITE_AUTH_MODE ||
+  (import.meta.env.VITE_BYPASS_AUTH === "true" ? "developer" : "google");
 
 // Настраиваем axios для передачи куки
 axios.defaults.withCredentials = true;
@@ -33,6 +34,7 @@ export default function Settings() {
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [savedMessage, setSavedMessage] = useState("");
+  const [driveConnected, setDriveConnected] = useState(false);
 
   // AI-профили: список и CRUD инкапсулированы в хуке.
   // Грузим только для авторизованного пользователя.
@@ -69,6 +71,7 @@ export default function Settings() {
         storyboardPrompt: response.data.prompts.storyboardPrompt ?? "",
         storyboardDetailPrompt: response.data.prompts.storyboardDetailPrompt ?? "",
       }));
+      setDriveConnected(Boolean(response.data.driveConnected));
     } catch (e) {
       console.error("Ошибка загрузки настроек:", e);
       setSavedMessage("✗ Ошибка загрузки настроек");
@@ -204,6 +207,29 @@ export default function Settings() {
             {savedMessage}
           </div>
         )}
+
+        <section className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 md:p-6 shadow-xl">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-bold text-white">Google Drive</h2>
+              <p className={`text-sm mt-1 ${driveConnected ? "text-emerald-400" : "text-amber-300"}`}>
+                {driveConnected
+                  ? "Подключён. Файлы новых проектов могут сохраняться в вашем Drive."
+                  : AUTH_MODE === "developer"
+                    ? "В режиме Developer используется локальное хранилище."
+                    : "Не подключён. Переподключите Google-аккаунт и разрешите доступ к Drive."}
+              </p>
+            </div>
+            {AUTH_MODE === "google" && (
+              <a
+                href={`${SERVER_URL}/auth/google`}
+                className="inline-flex justify-center px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-sm font-semibold transition-colors"
+              >
+                {driveConnected ? "Переподключить Drive" : "Подключить Drive"}
+              </a>
+            )}
+          </div>
+        </section>
 
         <form
           onSubmit={handleSaveSettings}
