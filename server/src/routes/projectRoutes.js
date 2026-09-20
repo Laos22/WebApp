@@ -49,7 +49,7 @@ import { saveVoiceoverAudio, readVoiceoverAudio, deleteVoiceoverAudio } from "..
 import { generateGoogleStoryboardImage } from "../services/googleImageService.js";
 import {
   saveStoryboardImageFile, readStoryboardImageFile, deleteStoryboardImageFile, storyboardFrameFileBase,
-  commitStoryboardImageFile, rollbackStoryboardImageFile,
+  commitStoryboardImageFile, rollbackStoryboardImageFile, createStoryboardImagePreview,
 } from "../services/storyboardImageStorage.js";
 import {
   deleteProjectWorkspace,
@@ -1781,10 +1781,15 @@ router.get('/:id/storyboard/frames/:frameId/image', ensureAuthenticated, async (
       } },
     });
     if (!projectCurrent) return res.status(404).json({ error: 'Изображение кадра устарело' });
-    const buffer = await readStoryboardImageFile(image.storageKey, projectCurrent.projectPath, req.user._id);
-    res.set('Content-Type', image.mimeType);
-    res.set('Cache-Control', 'private, no-store');
-    if (req.query.download === '1') {
+    const original = await readStoryboardImageFile(image.storageKey, projectCurrent.projectPath, req.user._id);
+    const download = req.query.download === '1';
+    const preview = req.query.preview === '1' && !download;
+    const buffer = preview ? await createStoryboardImagePreview(original) : original;
+    res.set('Content-Type', preview ? 'image/webp' : image.mimeType);
+    res.set('Cache-Control', download
+      ? 'private, no-store'
+      : 'private, max-age=31536000, immutable');
+    if (download) {
       const extension = image.mimeType === 'image/png' ? 'png' : image.mimeType === 'image/webp' ? 'webp' : 'jpg';
       const frame = projectCurrent.storyboard.frames.find(item => item.id === image.frameId);
       const filename = frame ? storyboardFrameFileBase(projectCurrent, frame) : `frame_${image.frameId}`;
@@ -1794,6 +1799,9 @@ router.get('/:id/storyboard/frames/:frameId/image', ensureAuthenticated, async (
   } catch (error) {
     if (['STORYBOARD_IMAGE_FILE_NOT_FOUND', 'INVALID_STORAGE_KEY'].includes(error.code)) {
       return res.status(404).json({ error: 'Файл изображения не найден' });
+    }
+    if (error.code === 'STORYBOARD_IMAGE_PREVIEW_FAILED') {
+      return res.status(422).json({ error: 'Не удалось подготовить превью изображения' });
     }
     return res.status(500).json({ error: 'Не удалось загрузить изображение кадра' });
   }

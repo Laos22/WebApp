@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import sharp from "sharp";
 import { detectImageFormat } from "./visualReferenceStorage.js";
 import {
   ensureProjectWorkspace, isProjectStorageKey, projectStorageKey, resolveProjectStorageKey,
@@ -13,6 +14,8 @@ const UPLOADS_ROOT = path.resolve(process.cwd(), "uploads");
 const IMAGES_ROOT = path.join(UPLOADS_ROOT, "storyboard-images");
 const projectIdPattern = /^[a-f\d]{24}$/i;
 const frameIdPattern = /^frame_[0-9a-f-]{8,72}$/i;
+const STORYBOARD_PREVIEW_MAX_EDGE = 1280;
+const STORYBOARD_PREVIEW_QUALITY = 82;
 
 function storageError(code) {
   const error = new Error(code);
@@ -143,6 +146,26 @@ export async function readStoryboardImageFile(storageKey, projectPath = "", user
     if (error.code === "ENOENT") throw storageError("STORYBOARD_IMAGE_FILE_NOT_FOUND");
     if (error.code === "INVALID_STORAGE_KEY") throw error;
     throw storageError("STORYBOARD_IMAGE_STORAGE_FAILED");
+  }
+}
+
+export async function createStoryboardImagePreview(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0 || buffer.length > 15 * 1024 * 1024) {
+    throw storageError("INVALID_IMAGE_FILE");
+  }
+  try {
+    return await sharp(buffer, { failOn: "error", limitInputPixels: 50_000_000 })
+      .rotate()
+      .resize({
+        width: STORYBOARD_PREVIEW_MAX_EDGE,
+        height: STORYBOARD_PREVIEW_MAX_EDGE,
+        fit: "inside",
+        withoutEnlargement: true,
+      })
+      .webp({ quality: STORYBOARD_PREVIEW_QUALITY, effort: 4 })
+      .toBuffer();
+  } catch {
+    throw storageError("STORYBOARD_IMAGE_PREVIEW_FAILED");
   }
 }
 

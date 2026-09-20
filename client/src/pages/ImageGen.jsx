@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import {
   confirmStoryboard, detailStoryboardFramePrompt, generateStoryboard,
   exportStoryboardFlowPackage, generateStoryboardFrameImage, getStoryboard, getStoryboardFrameImageUrl,
+  getStoryboardFramePreviewUrl,
   importStoryboardFlowFrameImage, importStoryboardFlowPackage,
   resetStoryboardImages, resetStoryboardPromptDetails, saveStoryboard,
 } from "../services/api";
@@ -73,6 +74,8 @@ export default function ImageGen() {
   const [pending, setPending] = useState("load");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [imageLoading, setImageLoading] = useState(false);
+  const [imageLoadError, setImageLoadError] = useState(false);
   const mounted = useRef(true);
   const stopDetail = useRef(false);
   const stopImages = useRef(false);
@@ -414,6 +417,24 @@ export default function ImageGen() {
   const activeImage = activeStoredFrame?.image || { status: "pending", hasImage: false };
   const activeImageStatus = activeFrame && pending === `image:${activeFrame.id}` ? "generating" : activeImage.status;
   const imageStatusLabel = activeImageStatus === "ready" ? "Готово" : activeImageStatus === "error" ? "Ошибка" : activeImageStatus === "generating" ? "Генерируется" : "Ожидает";
+  const activePreviewUrl = activeFrame?.id && activeImage.hasImage
+    ? getStoryboardFramePreviewUrl(projectId, activeFrame.id, activeImage.updatedAt)
+    : "";
+
+  useEffect(() => {
+    setImageLoading(Boolean(activePreviewUrl));
+    setImageLoadError(false);
+  }, [activePreviewUrl]);
+
+  const preloadNextFrame = () => {
+    const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (connection?.saveData || /(?:^|-)2g$/i.test(connection?.effectiveType || "")) return;
+    const nextFrame = storyboard?.frames?.[currentFrameIndex + 1];
+    if (!nextFrame?.image?.hasImage) return;
+    const preload = new Image();
+    preload.decoding = "async";
+    preload.src = getStoryboardFramePreviewUrl(projectId, nextFrame.id, nextFrame.image.updatedAt);
+  };
 
   if (!data && pending === "load") return <div className="text-white p-8">Загрузка изображений…</div>;
 
@@ -476,8 +497,19 @@ export default function ImageGen() {
           </header>
 
           <div className="grid lg:grid-cols-[minmax(0,1.65fr)_minmax(280px,.75fr)]">
-            <div className="bg-black/40 min-h-52 lg:min-h-[55vh] flex items-center justify-center">
-              {activeImage.hasImage ? <img src={getStoryboardFrameImageUrl(projectId, activeFrame.id, activeImage.updatedAt)} alt={`Кадр ${currentFrameIndex + 1}`} className="w-full max-h-[55vh] object-contain" />
+            <div className="relative bg-black/40 min-h-52 lg:min-h-[55vh] flex items-center justify-center overflow-hidden">
+              {activeImage.hasImage ? <>
+                {imageLoading && <div role="status" className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-slate-950/70 text-slate-300">
+                  <span className="w-9 h-9 rounded-full border-4 border-slate-700 border-t-purple-400 animate-spin" />
+                  <span className="text-sm">Загрузка изображения…</span>
+                </div>}
+                {imageLoadError && <div role="alert" className="absolute inset-0 flex items-center justify-center p-6 bg-red-950/40 text-red-200 text-center">Не удалось загрузить изображение. Обновите страницу или войдите через Google заново.</div>}
+                <img key={activePreviewUrl} src={activePreviewUrl} alt={`Кадр ${currentFrameIndex + 1}`}
+                  loading="eager" decoding="async" fetchPriority="high"
+                  onLoad={() => { setImageLoading(false); setImageLoadError(false); preloadNextFrame(); }}
+                  onError={() => { setImageLoading(false); setImageLoadError(true); }}
+                  className={`w-full max-h-[55vh] object-contain transition-opacity duration-200 ${imageLoading || imageLoadError ? "opacity-0" : "opacity-100"}`} />
+              </>
                 : <div className="aspect-video w-full flex flex-col items-center justify-center gap-2 text-slate-500 p-6 text-center"><span className="text-4xl">▧</span><p>Изображение ещё не создано</p></div>}
             </div>
             <div className="p-4 md:p-5 flex flex-col gap-4">

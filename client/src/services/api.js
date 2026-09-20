@@ -123,6 +123,8 @@ export const resetStoryboardImages = (projectId, payload) =>
   projectRequest(projectId, "/storyboard/images/reset", "POST", payload);
 export const getStoryboardFrameImageUrl = (projectId, frameId, updatedAt, download = false) =>
   `${SERVER_URL}/api/projects/${projectId}/storyboard/frames/${encodeURIComponent(frameId)}/image?v=${encodeURIComponent(updatedAt || "0")}${download ? "&download=1" : ""}`;
+export const getStoryboardFramePreviewUrl = (projectId, frameId, updatedAt) =>
+  `${SERVER_URL}/api/projects/${projectId}/storyboard/frames/${encodeURIComponent(frameId)}/image?v=${encodeURIComponent(updatedAt || "0")}&preview=1`;
 
 async function flowFileRequest(url, options = {}) {
   const response = await fetch(url, { credentials: "include", ...options });
