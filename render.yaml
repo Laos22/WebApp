@@ -5,7 +5,7 @@ services:
     region: frankfurt
     plan: free
     branch: feature/webapp-script-persistence
-    buildCommand: npm ci --prefix server && npm ci --prefix client && npm run build --prefix client
+    buildCommand: npm ci --prefix server && npm ci --include=dev --prefix client && npm run build --prefix client
     startCommand: npm start --prefix server
     healthCheckPath: /api/health
     envVars:
