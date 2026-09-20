@@ -10,6 +10,30 @@ function modelText(response) {
   return text.trim();
 }
 
+function providerStatus(error) {
+  return Number(error?.status || error?.code || error?.response?.status || error?.error?.code) || 0;
+}
+
+export function isGeminiRateLimitError(error) {
+  if (providerStatus(error) === 429) return true;
+  return /(?:\b429\b|resource_exhausted|rate.?limit|quota)/i.test(String(error?.message || ""));
+}
+
+export function geminiRetryAfterMs(error, fallback = 60_000) {
+  const header = error?.response?.headers?.get?.("retry-after")
+    ?? error?.response?.headers?.["retry-after"];
+  const headerSeconds = Number(header);
+  if (Number.isFinite(headerSeconds) && headerSeconds > 0) {
+    return Math.min(300_000, Math.max(5_000, Math.ceil(headerSeconds * 1000)));
+  }
+  const match = String(error?.message || "").match(/retry(?:\s+in|\s+after)?\s*([\d.]+)\s*s/i);
+  const messageSeconds = Number(match?.[1]);
+  if (Number.isFinite(messageSeconds) && messageSeconds > 0) {
+    return Math.min(300_000, Math.max(5_000, Math.ceil(messageSeconds * 1000)));
+  }
+  return fallback;
+}
+
 export function buildVoiceoverAdaptationPrompt(project, sourceBlocks, instructions, template) {
   const source = typeof template === 'string' && template.trim()
     ? template : DEFAULT_AUDIO_ADAPTATION_PROMPT;
@@ -180,9 +204,14 @@ export async function detailStoryboardFramePrompt(project, frame, references, in
     const text = modelText(response);
     if (text.length > 12000) throw new Error('Prompt too long');
     return text;
-  } catch {
+  } catch (cause) {
     const error = new Error('Не удалось детализировать prompt кадра');
-    error.code = 'STORYBOARD_DETAIL_FAILED';
+    error.code = isGeminiRateLimitError(cause)
+      ? 'STORYBOARD_DETAIL_RATE_LIMIT'
+      : 'STORYBOARD_DETAIL_FAILED';
+    if (error.code === 'STORYBOARD_DETAIL_RATE_LIMIT') {
+      error.retryAfterMs = geminiRetryAfterMs(cause);
+    }
     throw error;
   }
 }

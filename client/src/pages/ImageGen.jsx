@@ -11,6 +11,10 @@ import { fetchProfiles } from "../services/profileService";
 const panel = "bg-slate-900/80 border border-slate-800 rounded-2xl p-5 md:p-6 space-y-4";
 const button = "px-4 py-2.5 rounded-xl bg-purple-700 hover:bg-purple-600 disabled:opacity-50 disabled:cursor-not-allowed";
 const statuses = { empty: "Не создана", draft: "Черновик", confirmed: "Утверждена", stale: "Устарела" };
+const DETAIL_REQUEST_INTERVAL_MS = 4_000;
+const DETAIL_RATE_LIMIT_RETRIES = 4;
+
+const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
 function Drawer({ title, onClose, children, wide = false }) {
   return <div className="fixed inset-0 z-[70] flex items-end md:items-center justify-center bg-black/75 backdrop-blur-sm md:p-6" onMouseDown={onClose}>
@@ -42,6 +46,7 @@ function readableError(error) {
   if (error?.code === "STORYBOARD_TEXT_COVERAGE_MISMATCH") return "ИИ изменил текст озвучки при разделении на кадры. Попробуйте создать раскадровку заново.";
   if (error?.code === "STORYBOARD_FRAME_WORD_LIMIT_MISMATCH") return "Количество созданных кадров не позволяет распределить текст по 5–15 слов. Повторите генерацию.";
   if (error?.code === "STORYBOARD_DETAIL_FAILED") return "ИИ не смог детализировать prompt кадра. Повторите запрос.";
+  if (error?.code === "STORYBOARD_DETAIL_RATE_LIMIT") return "Gemini временно ограничил запросы. Нажмите «Продолжить детализацию» позже.";
   if (error?.code === "INVALID_IMAGE_PROFILE") return "Выберите профиль изображения Google Studio.";
   if (error?.code === "IMAGE_PROVIDER_AUTH_FAILED") return "Google Studio отклонил API-ключ или доступ к выбранной модели.";
   if (error?.code === "IMAGE_PROVIDER_RATE_LIMIT") return "Google Studio временно ограничил запросы. Позже нажмите «Продолжить генерацию».";
@@ -213,11 +218,36 @@ export default function ImageGen() {
       setDetailProgress({ done: 0, total: targets.length });
       for (let index = 0; index < targets.length; index += 1) {
         if (stopDetail.current) break;
-        current = await detailOne(targets[index], current);
+        let rateLimitAttempt = 0;
+        while (!stopDetail.current) {
+          try {
+            current = await detailOne(targets[index], current);
+            break;
+          } catch (err) {
+            if (err?.code !== "STORYBOARD_DETAIL_RATE_LIMIT" ||
+                rateLimitAttempt >= DETAIL_RATE_LIMIT_RETRIES) throw err;
+            rateLimitAttempt += 1;
+            const cooldown = Math.min(300_000, Math.max(
+              15_000,
+              Number(err.retryAfterMs) || 60_000,
+            ));
+            const deadline = Date.now() + cooldown;
+            while (!stopDetail.current && Date.now() < deadline) {
+              const seconds = Math.max(1, Math.ceil((deadline - Date.now()) / 1000));
+              if (mounted.current) setMessage(
+                `Лимит Gemini. Повтор кадра ${index + 1} через ${seconds} сек. Готовый прогресс сохранён.`,
+              );
+              await wait(Math.min(1_000, Math.max(0, deadline - Date.now())));
+            }
+          }
+        }
+        if (stopDetail.current) break;
         if (mounted.current) {
           applyData(current);
           setDetailProgress({ done: index + 1, total: targets.length });
+          setMessage(`Детализировано ${index + 1} из ${targets.length}.`);
         }
+        if (index < targets.length - 1) await wait(DETAIL_REQUEST_INTERVAL_MS);
       }
       if (mounted.current) setMessage(stopDetail.current
         ? "Массовая детализация остановлена. Готовые промты сохранены."

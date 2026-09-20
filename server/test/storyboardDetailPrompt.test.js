@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 
 process.env.ENCRYPTION_KEY ||= 'test-encryption-key-that-is-longer-than-32-characters';
 
-const { buildStoryboardDetailPrompt } = await import('../src/services/geminiService.js');
+const {
+  buildStoryboardDetailPrompt, geminiRetryAfterMs, isGeminiRateLimitError,
+} = await import('../src/services/geminiService.js');
 
 test('storyboard detail prompt includes frame and only selected references', () => {
   const project = { title: 'Тестовый проект' };
@@ -26,4 +28,12 @@ test('storyboard detail prompt includes frame and only selected references', () 
   assert.doesNotMatch(result, /ref_unused/);
   assert.match(result, /Current prompt/);
   assert.match(result, /Больше деталей света/);
+});
+
+test('recognizes Gemini rate limits and uses provider retry hints', () => {
+  assert.equal(isGeminiRateLimitError({ status: 429 }), true);
+  assert.equal(isGeminiRateLimitError({ message: 'RESOURCE_EXHAUSTED: quota exceeded' }), true);
+  assert.equal(isGeminiRateLimitError({ status: 500, message: 'Internal error' }), false);
+  assert.equal(geminiRetryAfterMs({ message: 'Please retry in 23.5s' }), 23_500);
+  assert.equal(geminiRetryAfterMs({ response: { headers: { get: () => '12' } } }), 12_000);
 });

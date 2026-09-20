@@ -44,6 +44,7 @@ async function projectRequest(projectId, suffix = "", method = "GET", body) {
     error.status = response.status;
     error.code = data.code;
     error.fields = data.fields;
+    error.retryAfterMs = data.retryAfterMs;
     throw error;
   }
   return data;

@@ -39,12 +39,34 @@ export const createDriveClient = async (userId) => {
     process.env.GOOGLE_CLIENT_SECRET,
     `${process.env.VITE_SERVER_URL}/auth/callback`,
   );
+  oauth2Client.setCredentials(tokens);
+
+  const expiresSoon = !tokens.expiry_date || tokens.expiry_date <= Date.now() + 60_000;
+  if (expiresSoon) {
+    if (!tokens.refresh_token) throw new Error("DRIVE_REAUTH_REQUIRED");
+    try {
+      const result = await oauth2Client.getAccessToken();
+      if (!result?.token) throw new Error("DRIVE_REFRESH_FAILED");
+      await saveDriveTokens({
+        userId,
+        incomingTokens: {
+          access_token: oauth2Client.credentials.access_token || result.token,
+          refresh_token: oauth2Client.credentials.refresh_token || tokens.refresh_token,
+          expiry_date: oauth2Client.credentials.expiry_date || Date.now() + 60 * 60 * 1000,
+        },
+      });
+    } catch (error) {
+      if (error?.message === "DRIVE_REAUTH_REQUIRED") throw error;
+      console.error("DRIVE_REFRESH_FAILED");
+      throw new Error("DRIVE_REAUTH_REQUIRED");
+    }
+  }
+
   oauth2Client.on("tokens", (incomingTokens) => {
     void saveDriveTokens({ userId, incomingTokens }).catch(() => {
       console.error("DRIVE_REFRESH_SAVE_FAILED");
     });
   });
-  oauth2Client.setCredentials(tokens);
   return { oauth2Client };
 };
 

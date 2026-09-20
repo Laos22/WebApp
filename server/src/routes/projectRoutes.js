@@ -1266,7 +1266,7 @@ router.post('/:id/storyboard/frames/:frameId/detail-prompt', ensureAuthenticated
     if (!saved) return res.status(409).json({ error: 'Кадр изменился во время детализации. Повторите запрос.' });
     return res.json(await storyboardResponse(saved, req.user._id));
   } catch (error) {
-    if (error.code === 'STORYBOARD_DETAIL_FAILED') {
+    if (['STORYBOARD_DETAIL_FAILED', 'STORYBOARD_DETAIL_RATE_LIMIT'].includes(error.code)) {
       if (failureContext) {
         await Project.findOneAndUpdate({
           ...failureContext.owner, 'storyboard.editVersion': failureContext.editVersion,
@@ -1277,7 +1277,14 @@ router.post('/:id/storyboard/frames/:frameId/detail-prompt', ensureAuthenticated
           'storyboard.frames.$[frame].promptDetailedAt': null,
         } }, { arrayFilters: [{ 'frame.id': failureContext.frameId }] }).catch(() => {});
       }
-      return res.status(502).json({ error: 'ИИ не смог детализировать prompt кадра', code: error.code });
+      const limited = error.code === 'STORYBOARD_DETAIL_RATE_LIMIT';
+      return res.status(limited ? 429 : 502).json({
+        error: limited
+          ? 'Достигнут временный лимит Gemini. Детализация продолжится после паузы.'
+          : 'ИИ не смог детализировать prompt кадра',
+        code: error.code,
+        ...(limited ? { retryAfterMs: error.retryAfterMs || 60_000 } : {}),
+      });
     }
     return res.status(500).json({ error: 'Не удалось детализировать prompt кадра' });
   }

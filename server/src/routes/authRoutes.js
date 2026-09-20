@@ -10,16 +10,20 @@ const sessionCookieOptions = {
   sameSite: process.env.SESSION_COOKIE_SAME_SITE || "lax",
 };
 
+export const googleAuthorizationOptions = Object.freeze({
+  scope: ["profile", "email", "https://www.googleapis.com/auth/drive.file"],
+  // passport-google-oauth20 expects camelCase here and converts it to
+  // Google's access_type query parameter.
+  accessType: "offline",
+  prompt: "consent",
+});
+
 /**
  * Начало OAuth процесса
  */
 router.get(
   "/google",
-  passport.authenticate("google", {
-    scope: ["profile", "email", "https://www.googleapis.com/auth/drive.file"],
-    access_type: "offline",
-    prompt: "consent",
-  }),
+  passport.authenticate("google", googleAuthorizationOptions),
 );
 
 /**
