@@ -46,9 +46,27 @@ export async function saveDavinciStill({ project, userId, buffer, extension, mim
   const filename = davinciStillFilename(buffer, extension);
   if (project.storage?.provider === 'google_drive') {
     const write = remoteWrite || (await import('./driveSync.js')).upsertDriveFileByName;
-    await write({ userId, parentId: project.storage.driveFolderIds?.images, name: filename, mimeType, buffer });
+    await write({ userId, parentId: project.storage.driveFolderIds?.images, name: filename, mimeType, buffer, reuseExisting: true });
   } else {
     await ensurePortableLocalFile(project.projectPath, 'images', filename, buffer);
   }
   return filename;
+}
+
+export async function prepareDavinciImages(frames, prepare, onProgress = () => {}) {
+  let next = 0;
+  let completed = 0;
+  let failure;
+  const results = new Map();
+  await Promise.all(Array.from({ length: Math.min(4, frames.length) }, async () => {
+    while (!failure && next < frames.length) {
+      const frame = frames[next++];
+      try {
+        results.set(frame.id, await prepare(frame));
+        onProgress(++completed, frames.length);
+      } catch (error) { failure = error; }
+    }
+  }));
+  if (failure) throw failure;
+  return results;
 }

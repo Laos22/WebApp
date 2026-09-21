@@ -1,3 +1,4 @@
+import { checkDriveFile } from '../services/driveSync.js';
 import { normalizeMediaRoot } from '../../../shared/davinciMediaPaths.js';
 import { validateAudioTrim, audioTrimSeconds } from '../../../shared/davinciAudioTrim.js';
 // server/src/routes/projectRoutes.js
@@ -67,7 +68,7 @@ import {
   frameIdFromFlowImagePath,
 } from "../services/flowPackageService.js";
 import { createDavinciXml, imageExtension } from "../services/davinciXmlService.js";
-import { ensurePortableLocalFile, ensureDavinciLocalWorkspace, saveDavinciStill } from "../services/davinciMediaStorage.js";
+import { ensurePortableLocalFile, ensureDavinciLocalWorkspace, saveDavinciStill, prepareDavinciImages } from "../services/davinciMediaStorage.js";
 import { measureMp3Duration, inspectAudioBlock } from "../services/audioDuration.js";
 import { safeProjectFolderName } from "../services/projectStorage.js";
 import path from "path";
@@ -2162,8 +2163,12 @@ async function davinciProjectState(project, userId) {
     try {
       if (image?.status !== 'ready' || !image.storageKey || !storyboardImageMatchesFrame(image, frame)) throw new Error();
       imageExtension(image.mimeType);
-      const buffer = await readStoryboardImageFile(image.storageKey, project.projectPath, userId);
-      if (!buffer.length) throw new Error();
+      if (projectUsesDrive(project)) {
+        await checkDriveFile({ userId, storageKey: image.storageKey });
+      } else {
+        const buffer = await readStoryboardImageFile(image.storageKey, project.projectPath, userId);
+        if (!buffer.length) throw new Error();
+      }
       readyImages.push(frame);
     } catch {
       warnings.push(`Кадр ${frame.order}: изображение отсутствует, недоступно, устарело или имеет неподдерживаемый формат.`);
@@ -2247,13 +2252,13 @@ router.post('/:id/davinci/export', ensureAuthenticated, async (req, res) => {
     const project = await Project.findOne({ _id: req.params.id, userId: req.user._id })
       .select('+voiceover.blocks.audioStorageKey');
     if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    if (pathMode === 'absolute' && !mediaRootPath.trim() && (projectUsesDrive(project) || process.env.NODE_ENV === 'production')) {
+      return res.status(400).json({ error: 'Укажите путь к папке проекта на компьютере с DaVinci Resolve.', code: 'DAVINCI_MEDIA_ROOT_REQUIRED' });
+    }
     stage = 'check-media';
     const state = await davinciProjectState(project, req.user._id);
     if (!state.summary.canExport) {
       return res.status(409).json({ error: 'Для экспорта нужны актуальная раскадровка и все готовые изображения и MP3.' });
-    }
-    if (pathMode === 'absolute' && !mediaRootPath.trim() && (projectUsesDrive(project) || process.env.NODE_ENV === 'production')) {
-      return res.status(400).json({ error: 'Укажите путь к папке проекта на компьютере с DaVinci Resolve.', code: 'DAVINCI_MEDIA_ROOT_REQUIRED' });
     }
     stage = 'validate-audio-trim';
     // Validate trims before creating export copies.
@@ -2270,14 +2275,13 @@ router.post('/:id/davinci/export', ensureAuthenticated, async (req, res) => {
     });
     const resolvedMediaRoot = pathMode === 'relative' ? '' : normalizeMediaRoot(mediaRootPath.trim() || project.projectPath);
     stage = 'prepare-still-images';
-    const imageFiles = new Map();
-    for (const frame of state.storyboard.frames) {
+    const imageFiles = await prepareDavinciImages(state.storyboard.frames, async frame => {
       const image = state.imageByFrame.get(frame.id);
       const buffer = await readStoryboardImageFile(image.storageKey, project.projectPath, req.user._id);
       const filename = await saveDavinciStill({ project, userId: req.user._id, buffer,
         extension: imageExtension(image.mimeType), mimeType: image.mimeType });
-      imageFiles.set(frame.id, filename);
-    }
+      return filename;
+    }, (completed, total) => console.info('[DaVinci export]', { stage, completed, total }));
     stage = 'generate-xml';
     const xml = createDavinciXml({ projectName: project.shortTitle || project.title,
       frames: state.storyboard.frames, voiceoverBlocks: state.blocks, imageFiles,

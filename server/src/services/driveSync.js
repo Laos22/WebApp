@@ -27,7 +27,7 @@ function driveSafeName(value, fallback = "project") {
 
 async function driveForUser(userId) {
   const { oauth2Client } = await createDriveClient(userId);
-  return google.drive({ version: "v3", auth: oauth2Client });
+  return google.drive({ version: "v3", auth: oauth2Client, timeout: 30_000, retry: false });
 }
 
 /** Load the owner's credentials into memory only; callers must await this factory. */
@@ -179,7 +179,7 @@ export async function createDriveFile({ userId, parentId, name, mimeType, buffer
   return { ...created.data, storageKey: driveStorageKey(created.data.id) };
 }
 
-export async function upsertDriveFileByName({ userId, parentId, name, mimeType, buffer }) {
+export async function upsertDriveFileByName({ userId, parentId, name, mimeType, buffer, reuseExisting = false }) {
   if (!Buffer.isBuffer(buffer) || !parentId) throw new Error("DRIVE_FILE_INPUT_INVALID");
   const drive = await driveForUser(userId);
   const safeName = driveSafeName(name, "file");
@@ -190,6 +190,7 @@ export async function upsertDriveFileByName({ userId, parentId, name, mimeType, 
     pageSize: 1,
   });
   const existingId = found.data.files?.[0]?.id;
+  if (existingId && reuseExisting) return { id: existingId, storageKey: driveStorageKey(existingId) };
   const result = existingId
     ? await drive.files.update({
       fileId: existingId,
@@ -225,6 +226,14 @@ export async function readDriveFile({ userId, storageKey }) {
   const drive = await driveForUser(userId);
   const response = await drive.files.get({ fileId, alt: "media" }, { responseType: "arraybuffer" });
   return Buffer.from(response.data);
+}
+
+export async function checkDriveFile({ userId, storageKey }) {
+  const fileId = driveFileIdFromStorageKey(storageKey);
+  if (!fileId) throw new Error('INVALID_DRIVE_FILE_ID');
+  const drive = await driveForUser(userId);
+  const { data } = await drive.files.get({ fileId, fields: 'id,size,trashed' });
+  if (data.trashed || !(Number(data.size) > 0)) throw new Error('DRIVE_FILE_UNAVAILABLE');
 }
 
 export async function trashDriveFile({ userId, storageKey }) {

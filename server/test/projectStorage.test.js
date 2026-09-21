@@ -125,6 +125,6 @@ test('Drive still copies use the images folder and preserve original bytes', asy
   const project = { storage: { provider: 'google_drive', driveFolderIds: { images: 'images-folder' } } };
   const input = { project, userId: 'owner', buffer, extension: 'png', mimeType: 'image/png', remoteWrite: async value => writes.push(value) };
   const filename = await saveDavinciStill(input);
-  assert.deepEqual(writes, [{ userId: 'owner', parentId: 'images-folder', name: filename, mimeType: 'image/png', buffer }]);
+  assert.deepEqual(writes, [{ userId: 'owner', parentId: 'images-folder', name: filename, mimeType: 'image/png', buffer, reuseExisting: true }]);
   assert.equal(project.projectPath, undefined);
 });
