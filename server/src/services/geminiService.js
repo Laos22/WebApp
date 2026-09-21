@@ -600,3 +600,13 @@ export async function editScript(currentScript, instruction, profile) {
   if (!cleaned || cleaned.length > 20000) throw new Error("Invalid edited script length");
   return cleaned;
 }
+
+// Single bounded request; the client owns pacing and resumable orchestration.
+export async function generateVideoPlanText(prompt, profile, json = false) {
+  const { apiKey, model } = resolveTextConfig(profile, 'video-plan');
+  const ai = new GoogleGenAI({ apiKey });
+  const result = await ai.models.generateContent({ model, contents: prompt,
+    config: { ...(json ? { responseMimeType: 'application/json' } : {}),
+      httpOptions: { timeout: 90000 }, maxOutputTokens: 12000 } });
+  return modelText(result);
+}

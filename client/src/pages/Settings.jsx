@@ -30,6 +30,7 @@ export default function Settings() {
     referenceDetailPrompt: "",
     storyboardPrompt: "",
     storyboardDetailPrompt: "",
+    videoPlanAnalysisPrompt: "",
     videoPromptPreparationPrompt: "",
   });
   const [isLoading, setIsLoading] = useState(false);
@@ -71,6 +72,7 @@ export default function Settings() {
         referenceDetailPrompt: response.data.prompts.referenceDetailPrompt ?? "",
         storyboardPrompt: response.data.prompts.storyboardPrompt ?? "",
         storyboardDetailPrompt: response.data.prompts.storyboardDetailPrompt ?? "",
+        videoPlanAnalysisPrompt: response.data.prompts.videoPlanAnalysisPrompt ?? "",
         videoPromptPreparationPrompt: response.data.prompts.videoPromptPreparationPrompt ?? "",
       }));
       setDriveConnected(Boolean(response.data.driveConnected));
@@ -112,6 +114,7 @@ export default function Settings() {
           referenceDetailPrompt: prompts.referenceDetailPrompt,
           storyboardPrompt: prompts.storyboardPrompt,
           storyboardDetailPrompt: prompts.storyboardDetailPrompt,
+          videoPlanAnalysisPrompt: prompts.videoPlanAnalysisPrompt,
           videoPromptPreparationPrompt: prompts.videoPromptPreparationPrompt,
         },
       });
@@ -381,9 +384,14 @@ export default function Settings() {
           </section>
 
           <section className="space-y-4 pb-6 border-b border-slate-800">
-            <h2 className="text-xl font-bold text-white"><label htmlFor="videoPromptPreparationPrompt">Подготовка видеопромтов</label></h2>
+            <label htmlFor="videoPlanAnalysisPrompt" className="block text-xl font-bold text-white">Анализ кадров для видео</label>
+            <p className="text-sm text-slate-400">{'{{PROJECT_TITLE}}, {{VOICEOVER_BLOCK}}, {{FRAMES}}, {{REFERENCES}}, {{INSTRUCTIONS}}'}</p>
+            <textarea id="videoPlanAnalysisPrompt" value={prompts.videoPlanAnalysisPrompt}
+              onChange={e => setPrompts(prev => ({ ...prev, videoPlanAnalysisPrompt: e.target.value }))}
+              className="w-full min-h-48 rounded-xl bg-slate-900 p-4 text-white" />
+            <h2 className="text-xl font-bold text-white"><label htmlFor="videoPromptPreparationPrompt">Подготовка промта для видео</label></h2>
             <p id="videoPromptHelp" className="text-xs text-slate-400">
-              Заготовка для будущей генерации. ИИ пока не вызывается. Placeholders: {"{{PROJECT_TITLE}}, {{FRAME}}, {{FRAME_DURATION}}, {{IMAGE_PROMPT}}, {{REFERENCES}}, {{CURRENT_VIDEO_PROMPT}}, {{INSTRUCTIONS}}"}.
+              Используется ИИ для подготовки английского промта движения одного кадра. Placeholders: {"{{PROJECT_TITLE}}, {{FRAME}}, {{FRAME_DURATION}}, {{IMAGE_PROMPT}}, {{REFERENCES}}, {{CURRENT_VIDEO_PROMPT}}, {{INSTRUCTIONS}}"}.
             </p>
             <textarea id="videoPromptPreparationPrompt" aria-describedby="videoPromptHelp"
               value={prompts.videoPromptPreparationPrompt}

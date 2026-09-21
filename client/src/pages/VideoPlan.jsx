@@ -1,10 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { getVideoPlan, saveVideoPlanFrame, videoPreviewUrl } from '../services/api';
+import { getVideoPlan, saveVideoPlanFrame, videoPreviewUrl, videoPlanAction, saveVideoInstructions } from '../services/api';
+
+import { pendingVideoFrames, runVideoQueue } from '../services/videoPlanQueue';
 
 const button = 'rounded-xl bg-purple-700 px-4 py-3 text-white disabled:opacity-40';
 export default function VideoPlan() {
   const { projectId } = useParams();
+  const stop = useRef(false);
+  const [instructions, setInstructions] = useState('');
+  const [progress, setProgress] = useState('');
   const [data, setData] = useState(null);
   const [index, setIndex] = useState(0);
   const [drafts, setDrafts] = useState({});
@@ -16,20 +21,20 @@ export default function VideoPlan() {
   useEffect(() => {
     let active = true;
     setData(null); setDrafts({}); setIndex(0); setError(''); setConflict(false); setMessage('');
-    getVideoPlan(projectId).then(result => { if (active) setData(result); })
+    getVideoPlan(projectId).then(result => { if (active) { setData(result); setInstructions(result.videoPlan.instructions); } })
       .catch(err => { if (active) setError(err.message); });
-    return () => { active = false; };
+    return () => { active = false; stop.current = true; };
   }, [projectId, reload]);
   const frame = data?.frames[index];
   const saved = data?.videoPlan.frames.find(item => item.frameId === frame?.frameId);
   const draft = frame && (drafts[frame.frameId] || saved);
   const dirty = draft && (draft.selected !== saved.selected || draft.videoPrompt !== saved.videoPrompt);
   useEffect(() => {
-    if (!Object.keys(drafts).length) return;
+    if (!Object.keys(drafts).length && instructions === data?.videoPlan.instructions && !busy) return;
     const warn = event => { event.preventDefault(); event.returnValue = ''; };
     window.addEventListener('beforeunload', warn);
     return () => window.removeEventListener('beforeunload', warn);
-  }, [drafts]);
+  }, [drafts, instructions, data, busy]);
   function edit(patch) {
     setDrafts(previous => ({ ...previous, [frame.frameId]: { ...draft, ...patch } }));
     setMessage('');
@@ -56,8 +61,36 @@ export default function VideoPlan() {
     } catch (err) { setError(err.message); }
     finally { setBusy(false); }
   }
+  const unsaved = Object.keys(drafts).length > 0 || (data && instructions !== data.videoPlan.instructions);
+  async function operation(action, mode) {
+    if (action === 'reset' && !window.confirm('Сбросить статус промтов выбранных кадров и подготовить их заново?')) return;
+    setBusy(true); stop.current = false; setError(''); setMessage(''); setProgress('');
+    let current = data;
+    const accept = result => { current = result; setData(result); };
+    const request = (kind, extra = {}) => videoPlanAction(projectId, kind,
+      { expectedEditVersion: current.videoPlan.editVersion, ...extra });
+    try {
+      if (action === 'instructions') {
+        accept(await saveVideoInstructions(projectId, instructions, current.videoPlan.editVersion));
+        setInstructions(current.videoPlan.instructions);
+      } else if (action === 'confirm') accept(await request('confirm'));
+      else {
+        if (action === 'reset') accept(await request('reset'));
+        const analyzing = action === 'analyze';
+        const items = analyzing ? current.analysisChunks.map((_, i) => i)
+          : mode === 'single' ? [frame.frameId] : pendingVideoFrames(current.videoPlan, action !== 'all');
+        setProgress(`0 / ${items.length}`);
+        await runVideoQueue({ items, stopped: () => stop.current, onResult: accept, onProgress: setProgress,
+          request: item => request(analyzing ? 'analyze' : 'prepare', analyzing ? { chunkIndex: item } : { frameId: item }) });
+      }
+      setMessage(stop.current ? 'Остановлено. Готовые результаты сохранены.' : 'Готово. Результаты сохранены.');
+    } catch (err) { setError(err.message || 'Не удалось выполнить запрос. Повторите позже.'); setConflict(err.status === 409); }
+    finally { setBusy(false); }
+  }
+  const readyCount = data?.videoPlan.frames.filter(f => f.selected && f.promptStatus === 'ready' && f.videoPrompt.trim()).length || 0;
+  const selectedCount = data?.videoPlan.frames.filter(f => f.selected).length || 0;
   return <div className="mx-auto max-w-5xl p-4 sm:p-8 text-slate-200 space-y-6">
-    <Link className="text-purple-300" to={`/projects/${projectId}`}>← К проекту</Link>
+    <Link onClick={event => { if ((unsaved || busy) && !window.confirm("Есть несохранённые правки или выполняется запрос. Покинуть страницу?")) event.preventDefault(); }} className="text-purple-300" to={`/projects/${projectId}`}>← К проекту</Link>
     <h1 className="text-2xl sm:text-3xl font-bold">Работа с видео</h1>
     {data && <p className="break-words">{data.projectTitle}</p>}
     <p className="text-sm text-slate-400">Подготовьте промт и выберите кадры для видео. Генерация видео появится позже.</p>
@@ -67,6 +100,35 @@ export default function VideoPlan() {
     </div>}
     {message && <p role="status" className="text-green-300">{message}</p>}
     {!data && !error && <p role="status">Загрузка…</p>}
+    {data && <>
+      <div className="sticky top-0 z-10 rounded-xl bg-slate-900 p-3 shadow-lg" role="status">
+        {({ empty: 'Пустой план', draft: 'Черновик', confirmed: 'Утверждён', stale: 'Устарел' })[data.videoPlan.status]} · Готово {readyCount} / {selectedCount}
+        {progress && <p>{progress}</p>}
+        {busy && <button className={button} onClick={() => { stop.current = true; }}>Остановить после текущего запроса</button>}
+      </div>
+      <label className="block">Общие инструкции
+        <textarea value={instructions} maxLength={4000} disabled={busy} onChange={e => setInstructions(e.target.value)}
+          placeholder="Используй медленные движения камеры. Не анимируй архивные фотографии."
+          className="mt-2 w-full rounded-xl bg-slate-900 p-3" />
+      </label>
+      <button className={button} disabled={busy || conflict || instructions === data.videoPlan.instructions}
+        onClick={() => operation('instructions')}>Сохранить инструкции</button>
+      <button className={button} disabled={busy || instructions === data.videoPlan.instructions}
+        onClick={() => setInstructions(data.videoPlan.instructions)}>Отменить правки инструкций</button>
+      <div className="flex flex-wrap gap-2">
+        <button className={button} disabled={busy || unsaved || conflict} onClick={() => operation('analyze')}>Анализировать кадры</button>
+        <button className={button} disabled={busy || unsaved || conflict || !selectedCount} onClick={() => operation('all')}>Подготовить все промты</button>
+        <button className={button} disabled={busy || unsaved || conflict || readyCount === selectedCount} onClick={() => operation('continue')}>Продолжить подготовку</button>
+      </div>
+      <details><summary className="cursor-pointer py-2">Дополнительные действия</summary>
+        <div className="flex flex-wrap gap-2">
+          <button className={button} disabled={busy || unsaved || conflict || !selectedCount} onClick={() => operation('reset')}>Начать заново</button>
+          <button className={button} disabled={busy || unsaved || conflict || !selectedCount || readyCount !== selectedCount || data.videoPlan.status === 'stale'}
+            onClick={() => operation('confirm')}>Утвердить видеоплан</button>
+        </div>
+      </details>
+      {unsaved && <p className="text-amber-300">Сохраните или отмените правки перед запуском ИИ.</p>}
+    </>}
     {data?.videoPlan.status === 'stale' && <p className="text-amber-300">Раскадровка изменилась. Проверьте промты кадров.</p>}
     {data && !frame && <p>В раскадровке пока нет кадров.</p>}
     {frame && <>
@@ -95,6 +157,14 @@ export default function VideoPlan() {
             onChange={event => edit({ videoPrompt: event.target.value })}
             className="w-full min-h-64 rounded-xl border border-slate-700 bg-slate-900 p-4 resize-y" />
           <button className={`${button} w-full`} disabled={busy || !dirty || conflict} onClick={save}>{busy ? 'Сохранение…' : 'Сохранить кадр'}</button>
+          <div className="flex flex-wrap gap-2">
+            <button className={button} disabled={busy || !drafts[frame.frameId]} onClick={() => setDrafts(previous => {
+              const next = { ...previous }; delete next[frame.frameId]; return next;
+            })}>Отменить правки кадра</button>
+            {saved.selected && <button className={button} disabled={busy || unsaved || conflict || !frame.hasImage}
+              onClick={() => operation('prepare', 'single')}>{saved.promptStatus === 'ready' ? 'Перегенерировать prompt' : 'Подготовить prompt'}</button>}
+          </div>
+          <p className="text-sm text-slate-400">Промт: {saved.promptStatus === 'ready' ? 'готов' : 'ожидает подготовки'}</p>
           {dirty && <p className="text-sm text-amber-300">Есть несохранённые изменения. При переключении кадров они остаются на этой странице.</p>}
         </div>
       </div>

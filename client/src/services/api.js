@@ -209,3 +209,7 @@ export const getVideoPlan = projectId => projectRequest(projectId, "/video-plan"
 export const saveVideoPlanFrame = (projectId, frame, expectedEditVersion) =>
   projectRequest(projectId, "/video-plan", "PATCH", { expectedEditVersion, frames: [frame] });
 export const videoPreviewUrl = relativeUrl => relativeUrl ? `${SERVER_URL}${relativeUrl}` : "";
+export const videoPlanAction = (projectId, action, body) =>
+  projectRequest(projectId, `/video-plan/${action}`, 'POST', body);
+export const saveVideoInstructions = (projectId, instructions, expectedEditVersion) =>
+  projectRequest(projectId, '/video-plan', 'PATCH', { instructions, expectedEditVersion, frames: [] });

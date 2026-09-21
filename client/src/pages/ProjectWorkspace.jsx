@@ -2,19 +2,22 @@ import { useState, useEffect } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import axios from "axios";
 
-import { getProject } from "../services/api";
+import { getProject, getVideoPlan } from "../services/api";
 
 const API_URL = String(import.meta.env.VITE_SERVER_URL || "").replace(/\/$/, "");
 
 export default function ProjectWorkspace() {
   const { projectId } = useParams();
   const navigate = useNavigate();
+  const [videoAvailable, setVideoAvailable] = useState(false);
   const [project, setProject] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showDetails, setShowDetails] = useState(false);
 
   useEffect(() => {
     let active = true;
+    setVideoAvailable(false);
+    getVideoPlan(projectId).then(data => { if (active) setVideoAvailable(data.frames.some(f => f.hasImage)); }).catch(() => {});
     getProject(projectId).then(data => {
       if (active) setProject(data.project);
     }).catch(err => {
@@ -95,6 +98,11 @@ export default function ProjectWorkspace() {
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {project.storyboard?.status === 'confirmed' && videoAvailable && <Link
+            to={`/projects/${projectId}/video`} className="p-8 bg-slate-900 rounded-2xl border border-purple-500/40">
+            <h2 className="text-2xl font-bold mb-2">Работа с видео</h2>
+            <p className="text-slate-400 text-sm">Анализ кадров, выбор движения и подготовка видеопромтов.</p>
+          </Link>}
           <Link
             to={`/projects/${projectId}/script`}
             className="group p-8 bg-slate-900/80 hover:bg-slate-900 border border-emerald-500/20 hover:border-emerald-500/60 rounded-2xl transition-all shadow-xl flex flex-col justify-between"

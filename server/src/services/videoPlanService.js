@@ -5,7 +5,7 @@ import { storyboardImageMatchesFrame } from './storyboardService.js';
 const plain = value => value?.toObject ? value.toObject() : value;
 function storyboardFingerprint(project) {
   return createHash('sha256').update(JSON.stringify((project.storyboard?.frames || []).map(frame =>
-    [frame.id, frame.sourceVoiceoverBlockId, frame.scriptText, frame.prompt, [...(frame.referenceIds || [])].sort()]
+    [frame.id, frame.sourceVoiceoverBlockId, frame.scriptText, frame.visualDescription, frame.prompt, [...(frame.referenceIds || [])].sort()]
   ))).digest('hex');
 }
 export function normalizeVideoPlan(project) {
