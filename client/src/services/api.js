@@ -38,7 +38,17 @@ async function projectRequest(projectId, suffix = "", method = "GET", body) {
     headers: { "Content-Type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  const data = await response.json();
+  const responseText = await response.text();
+  let data;
+  try {
+    data = responseText ? JSON.parse(responseText) : {};
+  } catch {
+    const error = new Error(response.ok
+      ? "Сервер вернул некорректный ответ. Повторите запрос."
+      : `Сервер не смог обработать запрос (HTTP ${response.status}).`);
+    error.status = response.status;
+    throw error;
+  }
   if (!response.ok || !data.success) {
     const error = new Error(data.error || "Ошибка запроса проекта");
     error.status = response.status;

@@ -123,6 +123,20 @@ export function validateStoryboardFrames(input, currentFrames, allowedReferenceI
   return normalizeFrames(input, currentFrames, allowedReferenceIds, voiceoverBlocks, false);
 }
 
+// Mongoose storyboard subdocuments contain internal fields (order and prompt
+// detail state) that are not accepted as editable input. Keep only the fields
+// a user is allowed to send back when validating a single-frame update.
+export function storyboardEditableFrame(frame = {}) {
+  return {
+    ...(frame.id ? { id: frame.id } : {}),
+    sourceVoiceoverBlockId: frame.sourceVoiceoverBlockId || '',
+    scriptText: frame.scriptText || '',
+    visualDescription: frame.visualDescription || '',
+    prompt: frame.prompt || '',
+    referenceIds: Array.from(frame.referenceIds || []),
+  };
+}
+
 export function storyboardIsCurrent(project, storyboard = normalizeStoryboard(project)) {
   const plan = project?.referencePlan;
   const voiceover = project?.voiceover;

@@ -37,7 +37,7 @@ import {
   normalizeReferencePlan, parseReferenceAnalysis, validateReferenceItems,
 } from "../services/referencePlanService.js";
 import {
-  normalizeStoryboard, parseGeneratedStoryboard, storyboardIsCurrent,
+  normalizeStoryboard, parseGeneratedStoryboard, storyboardEditableFrame, storyboardIsCurrent,
   storyboardImageMatchesFrame, validateStoryboardFrames,
 } from "../services/storyboardService.js";
 import {
@@ -1355,9 +1355,9 @@ router.patch('/:id/storyboard/frames/:frameId', ensureAuthenticated, async (req,
     const voiceoverBlocks = (project.voiceover?.blocks || []).map(block => ({
       id: block.id, order: block.order, adaptedText: block.adaptedText,
     }));
-    const candidateFrames = storyboard.frames.map((frame, index) => index === frameIndex
-      ? { ...body.frame, id: frame.id }
-      : frame);
+    const candidateFrames = storyboard.frames.map((frame, index) => storyboardEditableFrame(
+      index === frameIndex ? { ...body.frame, id: frame.id } : frame,
+    ));
     let frames;
     try {
       frames = validateStoryboardFrames(candidateFrames, storyboard.frames, allowedReferenceIds, voiceoverBlocks);

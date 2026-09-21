@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  normalizeStoryboard, parseGeneratedStoryboard, storyboardIsCurrent,
+  normalizeStoryboard, parseGeneratedStoryboard, storyboardEditableFrame, storyboardIsCurrent,
   storyboardImageMatchesFrame, validateStoryboardFrames,
 } from '../src/services/storyboardService.js';
 
@@ -127,4 +127,23 @@ test('frame image becomes stale only when its generation inputs change', () => {
   assert.equal(storyboardImageMatchesFrame(image, {
     prompt: 'Original prompt', referenceIds: [],
   }), false);
+});
+
+test('single-frame validation strips stored internal fields', () => {
+  const editable = storyboardEditableFrame({
+    id: 'frame_11111111-1111-4111-8111-111111111111',
+    order: 7,
+    sourceVoiceoverBlockId: voiceBlock.id,
+    scriptText: voiceBlock.adaptedText,
+    visualDescription: 'Описание',
+    prompt: 'Prompt',
+    referenceIds: [referenceId],
+    promptDetailStatus: 'ready',
+    promptDetailedAt: new Date(),
+    promptDetailErrorCode: '',
+  });
+  assert.deepEqual(Object.keys(editable), [
+    'id', 'sourceVoiceoverBlockId', 'scriptText', 'visualDescription', 'prompt', 'referenceIds',
+  ]);
+  assert.deepEqual(editable.referenceIds, [referenceId]);
 });

@@ -76,7 +76,9 @@ app.use(cors({
   },
   credentials: true,
 }));
-app.use(express.json());
+// A storyboard can contain up to 200 detailed prompts. Express defaults to
+// 100 KB, which is too small for a legitimate full-board save.
+app.use(express.json({ limit: "12mb" }));
 
 // Сессии
 app.use(
@@ -260,6 +262,21 @@ app.get("/api/health", (req, res) => {
     authMode,
     storageProvider,
   });
+});
+
+// Body-parser errors otherwise become an HTML page, which the React client
+// cannot interpret as an API response.
+app.use((error, req, res, next) => {
+  if (error?.type === "entity.too.large") {
+    return res.status(413).json({
+      error: "Раскадровка слишком большая для сохранения одним запросом.",
+      code: "JSON_BODY_TOO_LARGE",
+    });
+  }
+  if (error instanceof SyntaxError && error?.status === 400 && Object.hasOwn(error, "body")) {
+    return res.status(400).json({ error: "Некорректный JSON в запросе", code: "INVALID_JSON_BODY" });
+  }
+  return next(error);
 });
 
 // Render runs the API and the built React client as one web service. Keeping
