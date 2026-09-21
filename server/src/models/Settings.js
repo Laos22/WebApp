@@ -1,3 +1,12 @@
+export const DEFAULT_VIDEO_PROMPT_PREPARATION_PROMPT = `Подготовь английский промт анимации одного исходного изображения для проекта {{PROJECT_TITLE}}.
+Кадр: {{FRAME}}
+Целевая длительность в секундах: {{FRAME_DURATION}}
+Промт исходного изображения: {{IMAGE_PROMPT}}
+Референсы: {{REFERENCES}}
+Текущий видеопромт: {{CURRENT_VIDEO_PROMPT}}
+Инструкции пользователя: {{INSTRUCTIONS}}
+Опиши выполнимое за указанное время действие, движение камеры и темп. Сохраняй композицию, внешность персонажей, предметы и визуальный стиль исходного изображения. Не добавляй текст, звук или новые сцены. Верни только готовый видеопромт.`;
+
 import mongoose from "mongoose";
 
 // Единый дефолтный системный промпт.
@@ -281,6 +290,7 @@ const settingsSchema = new mongoose.Schema(
       referenceDetailPrompt: { type: String, default: "" },
       storyboardPrompt: { type: String, default: "" },
       storyboardDetailPrompt: { type: String, default: "" },
+      videoPromptPreparationPrompt: { type: String, default: DEFAULT_VIDEO_PROMPT_PREPARATION_PROMPT },
     },
 
     driveCredentials: { type: driveCredentialsSchema, default: null, select: false },

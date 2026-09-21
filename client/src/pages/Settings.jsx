@@ -30,6 +30,7 @@ export default function Settings() {
     referenceDetailPrompt: "",
     storyboardPrompt: "",
     storyboardDetailPrompt: "",
+    videoPromptPreparationPrompt: "",
   });
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -70,6 +71,7 @@ export default function Settings() {
         referenceDetailPrompt: response.data.prompts.referenceDetailPrompt ?? "",
         storyboardPrompt: response.data.prompts.storyboardPrompt ?? "",
         storyboardDetailPrompt: response.data.prompts.storyboardDetailPrompt ?? "",
+        videoPromptPreparationPrompt: response.data.prompts.videoPromptPreparationPrompt ?? "",
       }));
       setDriveConnected(Boolean(response.data.driveConnected));
     } catch (e) {
@@ -110,6 +112,7 @@ export default function Settings() {
           referenceDetailPrompt: prompts.referenceDetailPrompt,
           storyboardPrompt: prompts.storyboardPrompt,
           storyboardDetailPrompt: prompts.storyboardDetailPrompt,
+          videoPromptPreparationPrompt: prompts.videoPromptPreparationPrompt,
         },
       });
 
@@ -375,6 +378,17 @@ export default function Settings() {
               onChange={(e) => setPrompts((prev) => ({ ...prev, storyboardDetailPrompt: e.target.value }))}
               className="w-full h-80 bg-slate-950 border border-slate-800 rounded-xl p-4 text-sm text-white focus:border-purple-500 transition-all outline-none resize-y"
               placeholder="Инструкции для подробного prompt одного кадра..." />
+          </section>
+
+          <section className="space-y-4 pb-6 border-b border-slate-800">
+            <h2 className="text-xl font-bold text-white"><label htmlFor="videoPromptPreparationPrompt">Подготовка видеопромтов</label></h2>
+            <p id="videoPromptHelp" className="text-xs text-slate-400">
+              Заготовка для будущей генерации. ИИ пока не вызывается. Placeholders: {"{{PROJECT_TITLE}}, {{FRAME}}, {{FRAME_DURATION}}, {{IMAGE_PROMPT}}, {{REFERENCES}}, {{CURRENT_VIDEO_PROMPT}}, {{INSTRUCTIONS}}"}.
+            </p>
+            <textarea id="videoPromptPreparationPrompt" aria-describedby="videoPromptHelp"
+              value={prompts.videoPromptPreparationPrompt}
+              onChange={e => setPrompts(prev => ({ ...prev, videoPromptPreparationPrompt: e.target.value }))}
+              className="w-full h-80 bg-slate-950 border border-slate-800 rounded-xl p-4 text-sm text-white resize-y" />
           </section>
 
           {/* Кнопка сохранения */}

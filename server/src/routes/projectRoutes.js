@@ -1,3 +1,4 @@
+import StoryboardVideo from '../models/StoryboardVideo.js';
 import { checkDriveFile } from '../services/driveSync.js';
 import { normalizeMediaRoot } from '../../../shared/davinciMediaPaths.js';
 import { validateAudioTrim, audioTrimSeconds } from '../../../shared/davinciAudioTrim.js';
@@ -218,6 +219,7 @@ router.delete("/:id", ensureAuthenticated, async (req, res) => {
     await project.deleteOne();
     await VisualReference.deleteMany({ projectId: project._id, userId: req.user._id });
     await StoryboardImage.deleteMany({ projectId: project._id, userId: req.user._id });
+    await StoryboardVideo.deleteMany({ projectId: project._id, userId: req.user._id });
     await Promise.all(references.map(reference => deleteVisualReferenceFile(reference.storageKey, project.projectPath, req.user._id)
       .catch(() => console.error("VISUAL_REFERENCE_PROJECT_DELETE_FAILED"))));
     await Promise.all(storyboardImages.map(image => deleteStoryboardImageFile(image.storageKey, project.projectPath, req.user._id)

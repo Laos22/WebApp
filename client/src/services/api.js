@@ -204,3 +204,8 @@ export async function editProjectScript(id, currentScript, instruction, signal) 
   if (typeof data.content !== "string" || !data.content.trim()) throw new Error("ИИ вернул пустой сценарий");
   return data.content;
 }
+
+export const getVideoPlan = projectId => projectRequest(projectId, "/video-plan");
+export const saveVideoPlanFrame = (projectId, frame, expectedEditVersion) =>
+  projectRequest(projectId, "/video-plan", "PATCH", { expectedEditVersion, frames: [frame] });
+export const videoPreviewUrl = relativeUrl => relativeUrl ? `${SERVER_URL}${relativeUrl}` : "";

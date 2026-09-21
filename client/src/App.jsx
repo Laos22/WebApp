@@ -18,6 +18,7 @@ import VisualBible from "./pages/VisualBible";
 import References from "./pages/References";
 import CoverGen from "./pages/CoverGen";
 import Settings from "./pages/Settings";
+import VideoPlan from "./pages/VideoPlan";
 import DavinciExport from "./pages/DavinciExport";
 
 function AppContent() {
@@ -95,6 +96,7 @@ function AppContent() {
               </ProtectedRoute>
             }
           />
+          <Route path="/projects/:projectId/video" element={<ProtectedRoute><VideoPlan /></ProtectedRoute>} />
           <Route
             path="/projects/:projectId/davinci"
             element={<ProtectedRoute><DavinciExport /></ProtectedRoute>}

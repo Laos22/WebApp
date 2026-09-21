@@ -1,5 +1,6 @@
 // server/src/models/Project.js
 import mongoose from 'mongoose';
+import { videoPlanSchema } from './VideoPlan.js';
 
 const nested = { _id: false, strict: 'throw' };
 const text = () => ({ type: String, default: '', maxlength: 4000 });
@@ -232,6 +233,7 @@ const projectSchema = new mongoose.Schema({
   visualBible: { type: visualBibleSchema, default: undefined },
   referencePlan: { type: referencePlanSchema, default: undefined },
   storyboard: { type: storyboardSchema, default: undefined },
+  videoPlan: { type: videoPlanSchema, default: undefined },
   scriptPath: {
     type: String,
     default: ""
