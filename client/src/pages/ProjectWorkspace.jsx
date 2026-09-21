@@ -186,6 +186,18 @@ export default function ProjectWorkspace() {
               Перейти &rarr;
             </div>
           </Link>}
+
+          {project.voiceover?.status === "confirmed" && project.storyboard?.status === "confirmed" && <Link
+            to={`/projects/${projectId}/davinci`}
+            className="group p-8 bg-slate-900/80 hover:bg-slate-900 border border-cyan-500/20 hover:border-cyan-500/60 rounded-2xl transition-all shadow-xl flex flex-col justify-between"
+          >
+            <div>
+              <div className="w-12 h-12 rounded-xl bg-cyan-600/20 border border-cyan-500/30 flex items-center justify-center text-2xl mb-4 group-hover:scale-110 transition-transform">🎬</div>
+              <h2 className="text-2xl font-bold mb-2 group-hover:text-cyan-300 transition-colors">Экспорт DaVinci Resolve</h2>
+              <p className="text-slate-400 text-sm">Проверка файлов проекта и подготовка монтажного FCPXML.</p>
+            </div>
+            <div className="mt-6 flex items-center text-cyan-400 font-semibold text-sm group-hover:translate-x-1 transition-transform">Перейти &rarr;</div>
+          </Link>}
         </div>
       </div>
     </div>

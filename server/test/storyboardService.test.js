@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  normalizeStoryboard, parseGeneratedStoryboard, storyboardEditableFrame, storyboardIsCurrent,
+  normalizeStoryboard, parseGeneratedStoryboard, rebaseStoryboardNarration,
+  storyboardEditableFrame, storyboardIsCurrent,
   storyboardImageMatchesFrame, validateStoryboardFrames,
 } from '../src/services/storyboardService.js';
 
@@ -146,4 +147,25 @@ test('single-frame validation strips stored internal fields', () => {
     'id', 'sourceVoiceoverBlockId', 'scriptText', 'visualDescription', 'prompt', 'referenceIds',
   ]);
   assert.deepEqual(editable.referenceIds, [referenceId]);
+});
+
+test('updated voiceover text is adopted without changing visual frame data', () => {
+  const current = [
+    {
+      id: 'frame_11111111-1111-4111-8111-111111111111', sourceVoiceoverBlockId: voiceBlock.id,
+      scriptText: 'Первый старый текст содержит ровно пять', visualDescription: 'Visual 1', prompt: 'Prompt 1',
+      referenceIds: [referenceId],
+    },
+    {
+      id: 'frame_22222222-2222-4222-8222-222222222222', sourceVoiceoverBlockId: voiceBlock.id,
+      scriptText: 'Второй старый текст тоже пять', visualDescription: 'Visual 2', prompt: 'Prompt 2',
+      referenceIds: [],
+    },
+  ];
+  const blocks = [{ ...voiceBlock, adaptedText: 'Первый новый текст содержит ровно пять Второй новый текст тоже пять' }];
+  const rebased = rebaseStoryboardNarration(current, blocks);
+  assert.equal(rebased.map(frame => frame.scriptText).join(' '), blocks[0].adaptedText);
+  assert.equal(rebased[0].prompt, 'Prompt 1');
+  assert.deepEqual(rebased[0].referenceIds, [referenceId]);
+  assert.equal(rebased[1].id, current[1].id);
 });

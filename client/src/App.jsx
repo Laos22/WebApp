@@ -18,6 +18,7 @@ import VisualBible from "./pages/VisualBible";
 import References from "./pages/References";
 import CoverGen from "./pages/CoverGen";
 import Settings from "./pages/Settings";
+import DavinciExport from "./pages/DavinciExport";
 
 function AppContent() {
   const { user } = useAuth(); // Получаем состояние пользователя
@@ -93,6 +94,10 @@ function AppContent() {
                 <AudioGen />
               </ProtectedRoute>
             }
+          />
+          <Route
+            path="/projects/:projectId/davinci"
+            element={<ProtectedRoute><DavinciExport /></ProtectedRoute>}
           />
           <Route
             path="/settings"

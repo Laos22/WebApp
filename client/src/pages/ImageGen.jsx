@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
-  confirmStoryboard, detailStoryboardFramePrompt, generateStoryboard,
+  adoptStoryboardVoiceover, confirmStoryboard, detailStoryboardFramePrompt, generateStoryboard,
   exportStoryboardFlowPackage, generateStoryboardFrameImage, getStoryboard, getStoryboardFrameImageUrl,
   getStoryboardFramePreviewUrl,
   importStoryboardFlowFrameImage,
@@ -321,6 +321,14 @@ export default function ImageGen() {
     sourceVoiceoverRevision: storyboard.sourceVoiceoverRevision,
   }), "Раскадровка утверждена.");
 
+  const adoptVoiceover = () => {
+    if (!window.confirm("Оставить текущие кадры, prompts, референсы и изображения, обновив только текст кадров по новой озвучке?")) return;
+    run("adopt-voiceover", () => adoptStoryboardVoiceover(projectId, {
+      expectedEditVersion: storyboard.editVersion,
+      sourceVoiceoverRevision: data.voiceoverRevision,
+    }), "Новая озвучка принята. Кадры, prompts и изображения сохранены.");
+  };
+
   const generateImageOne = (frameId, currentData) => generateStoryboardFrameImage(projectId, frameId, {
     profileId: imageProfileId,
     sourceStoryboardRevision: currentData.storyboard.revision,
@@ -616,7 +624,13 @@ export default function ImageGen() {
           <Link className="underline" to={`/projects/${projectId}/references`}>Перейти к референсам</Link>
         </div>}
 
-        {storyboard?.status === "stale" && <div className="mb-3 p-3 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-300">Сценарий или референсы изменились. Откройте управление раскадровкой и создайте её заново.</div>}
+        {storyboard?.status === "stale" && <div className="mb-3 p-3 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-300 space-y-3">
+          <p>{storyboard.staleReasons?.voiceover && !storyboard.staleReasons?.script && !storyboard.staleReasons?.references
+            ? "Текст озвучки изменился. Можно сохранить текущую раскадровку и изображения."
+            : "Сценарий или референсы изменились. Откройте управление раскадровкой и обновите её."}</p>
+          {storyboard.staleReasons?.voiceover && !storyboard.staleReasons?.script && !storyboard.staleReasons?.references &&
+            <button type="button" className={`${button} bg-amber-700 hover:bg-amber-600`} disabled={Boolean(pending)} onClick={adoptVoiceover}>{pending === "adopt-voiceover" ? "Обновляем текст…" : "Принять новую озвучку без пересоздания"}</button>}
+        </div>}
 
         {activeFrame ? <article id="active-storyboard-frame" className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/85 shadow-2xl scroll-mt-36">
           <header className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-800">

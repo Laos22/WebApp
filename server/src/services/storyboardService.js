@@ -137,6 +137,36 @@ export function storyboardEditableFrame(frame = {}) {
   };
 }
 
+export function rebaseStoryboardNarration(currentFrames, voiceoverBlocks) {
+  const editable = currentFrames.map(storyboardEditableFrame);
+  const blockById = new Map(voiceoverBlocks.map(block => [block.id, block]));
+  if (!editable.length || editable.some(frame => !blockById.has(frame.sourceVoiceoverBlockId))) {
+    invalid('STORYBOARD_VOICEOVER_STRUCTURE_MISMATCH');
+  }
+  for (const block of voiceoverBlocks) {
+    const indexes = editable
+      .map((frame, index) => frame.sourceVoiceoverBlockId === block.id ? index : -1)
+      .filter(index => index >= 0);
+    if (!indexes.length) invalid('STORYBOARD_VOICEOVER_STRUCTURE_MISMATCH');
+    const words = narrationWords(block.adaptedText);
+    const previousSizes = indexes.map(index => narrationWords(editable[index].scriptText).length);
+    let sizes = previousSizes;
+    const previousSizesValid = words.length < 5
+      ? indexes.length === 1 && previousSizes[0] === words.length
+      : previousSizes.every(size => size >= 5 && size <= 15);
+    if (!previousSizesValid || previousSizes.reduce((sum, size) => sum + size, 0) !== words.length) {
+      sizes = distributeWords(words.length, indexes.length);
+    }
+    if (!sizes) invalid('STORYBOARD_FRAME_WORD_LIMIT_MISMATCH');
+    let offset = 0;
+    indexes.forEach((frameIndex, position) => {
+      editable[frameIndex].scriptText = words.slice(offset, offset + sizes[position]).join(' ');
+      offset += sizes[position];
+    });
+  }
+  return editable;
+}
+
 export function storyboardIsCurrent(project, storyboard = normalizeStoryboard(project)) {
   const plan = project?.referencePlan;
   const voiceover = project?.voiceover;

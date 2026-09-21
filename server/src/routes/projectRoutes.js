@@ -37,7 +37,8 @@ import {
   normalizeReferencePlan, parseReferenceAnalysis, validateReferenceItems,
 } from "../services/referencePlanService.js";
 import {
-  normalizeStoryboard, parseGeneratedStoryboard, storyboardEditableFrame, storyboardIsCurrent,
+  normalizeStoryboard, parseGeneratedStoryboard, rebaseStoryboardNarration,
+  storyboardEditableFrame, storyboardIsCurrent,
   storyboardImageMatchesFrame, validateStoryboardFrames,
 } from "../services/storyboardService.js";
 import {
@@ -63,6 +64,8 @@ import {
   buildFlowManifest, flowFrameBaseName, flowPromptsText, flowReferenceFileName,
   frameIdFromFlowImagePath,
 } from "../services/flowPackageService.js";
+import { createDavinciXml } from "../services/davinciXmlService.js";
+import { safeProjectFolderName } from "../services/projectStorage.js";
 import path from "path";
 import fs from "fs";
 
@@ -1045,6 +1048,13 @@ async function storyboardResponse(project, userId) {
     projectId: project._id, userId, frameId: { $in: stored.frames.map(frame => frame.id) },
   }).select('+storageKey');
   const imageByFrame = new Map(generatedImages.map(image => [image.frameId, image]));
+  const staleReasons = {
+    script: project.script?.status !== 'confirmed' || stored.sourceScriptRevision !== project.script?.revision,
+    references: project.referencePlan?.status !== 'confirmed' ||
+      stored.sourceReferencePlanRevision !== project.referencePlan?.revision,
+    voiceover: project.voiceover?.status !== 'confirmed' ||
+      stored.sourceVoiceoverRevision !== project.voiceover?.revision,
+  };
   const frames = stored.frames.map(frame => {
     const image = imageByFrame.get(frame.id);
     const current = storyboardImageMatchesFrame(image, frame);
@@ -1075,6 +1085,7 @@ async function storyboardResponse(project, userId) {
     storyboard: {
       ...stored,
       frames,
+      staleReasons,
       status: stored.status === 'empty' || storyboardIsCurrent(project, stored) ? stored.status : 'stale',
     },
   };
@@ -1381,6 +1392,59 @@ router.patch('/:id/storyboard/frames/:frameId', ensureAuthenticated, async (req,
     return res.json(await storyboardResponse(saved, req.user._id));
   } catch {
     return res.status(500).json({ error: 'Не удалось сохранить кадр' });
+  }
+});
+
+router.post('/:id/storyboard/adopt-voiceover', ensureAuthenticated, async (req, res) => {
+  try {
+    const { expectedEditVersion, sourceVoiceoverRevision } = req.body || {};
+    if (Object.keys(req.body || {}).some(key => !['expectedEditVersion', 'sourceVoiceoverRevision'].includes(key)) ||
+        !Number.isSafeInteger(expectedEditVersion) || expectedEditVersion < 1 ||
+        !Number.isSafeInteger(sourceVoiceoverRevision) || sourceVoiceoverRevision < 1) {
+      return res.status(400).json({ error: 'Некорректные версии раскадровки' });
+    }
+    const owner = { _id: req.params.id, userId: req.user._id };
+    const project = await Project.findOne(owner);
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const storyboard = normalizeStoryboard(project);
+    if (storyboard.status !== 'confirmed' || storyboard.editVersion !== expectedEditVersion ||
+        project.script?.status !== 'confirmed' || storyboard.sourceScriptRevision !== project.script.revision ||
+        project.referencePlan?.status !== 'confirmed' ||
+        storyboard.sourceReferencePlanRevision !== project.referencePlan.revision ||
+        project.voiceover?.status !== 'confirmed' || project.voiceover.revision !== sourceVoiceoverRevision) {
+      return res.status(409).json({ error: 'Кроме озвучки изменились другие исходные данные. Обновите раскадровку.' });
+    }
+    const voiceoverBlocks = (project.voiceover.blocks || []).map(block => ({
+      id: block.id, order: block.order, adaptedText: block.adaptedText,
+    }));
+    const allowedReferenceIds = new Set(selectedStoryboardReferences(project).map(item => item.id));
+    let frames;
+    try {
+      const rebased = rebaseStoryboardNarration(storyboard.frames, voiceoverBlocks);
+      frames = validateStoryboardFrames(rebased, storyboard.frames, allowedReferenceIds, voiceoverBlocks);
+    } catch (error) {
+      return res.status(409).json({
+        error: error.code === 'STORYBOARD_FRAME_WORD_LIMIT_MISMATCH'
+          ? 'Новый текст нельзя распределить по существующим кадрам в пределах 5–15 слов.'
+          : 'Структура блоков озвучки изменилась. Требуется обновить раскадровку.',
+        code: error.code,
+      });
+    }
+    const saved = await Project.findOneAndUpdate({
+      ...owner, 'storyboard.status': 'confirmed', 'storyboard.editVersion': expectedEditVersion,
+      'storyboard.sourceScriptRevision': storyboard.sourceScriptRevision,
+      'storyboard.sourceReferencePlanRevision': storyboard.sourceReferencePlanRevision,
+      'voiceover.status': 'confirmed', 'voiceover.revision': sourceVoiceoverRevision,
+    }, { $set: {
+      'storyboard.frames': frames,
+      'storyboard.sourceVoiceoverRevision': sourceVoiceoverRevision,
+      'storyboard.updatedAt': new Date(), updatedAt: new Date(),
+    }, $inc: { 'storyboard.revision': 1, 'storyboard.editVersion': 1 } },
+    { new: true, runValidators: true });
+    if (!saved) return res.status(409).json({ error: 'Раскадровка изменилась. Обновите страницу.' });
+    return res.json(await storyboardResponse(saved, req.user._id));
+  } catch {
+    return res.status(500).json({ error: 'Не удалось принять обновлённую озвучку' });
   }
 });
 
@@ -2073,5 +2137,89 @@ function changeBible(action) {
 router.put('/:id/visual-bible', ensureAuthenticated, changeBible('save'));
 router.post('/:id/visual-bible/confirm', ensureAuthenticated, changeBible('confirm'));
 router.post('/:id/visual-bible/reopen', ensureAuthenticated, changeBible('reopen'));
+
+async function davinciProjectState(project, userId) {
+  const storyboard = normalizeStoryboard(project);
+  const images = await StoryboardImage.find({
+    projectId: project._id, userId,
+    frameId: { $in: storyboard.frames.map(frame => frame.id) },
+  }).select('+storageKey');
+  const imageByFrame = new Map(images.map(image => [image.frameId, image]));
+  const readyImages = storyboard.frames.filter(frame => {
+    const image = imageByFrame.get(frame.id);
+    return image?.status === 'ready' && image?.storageKey && storyboardImageMatchesFrame(image, frame);
+  });
+  const blocks = project.voiceover?.blocks || [];
+  const readyAudio = blocks.filter(block => block.audioStatus === 'ready' && block.audioStorageKey);
+  const storyboardReady = storyboard.status === 'confirmed' && storyboardIsCurrent(project, storyboard);
+  return {
+    storyboard, imageByFrame, blocks,
+    summary: {
+      storyboardReady,
+      frames: storyboard.frames.length,
+      readyImages: readyImages.length,
+      audioBlocks: blocks.length,
+      readyAudio: readyAudio.length,
+      canExport: storyboardReady && storyboard.frames.length > 0 &&
+        readyImages.length === storyboard.frames.length && blocks.length > 0 && readyAudio.length === blocks.length,
+      timingMode: 'estimated',
+    },
+  };
+}
+
+router.get('/:id/davinci', ensureAuthenticated, async (req, res) => {
+  try {
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id })
+      .select('+voiceover.blocks.audioStorageKey');
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const state = await davinciProjectState(project, req.user._id);
+    return res.json({ success: true, projectName: project.shortTitle || project.title, ...state.summary });
+  } catch {
+    return res.status(500).json({ error: 'Не удалось проверить готовность экспорта DaVinci Resolve' });
+  }
+});
+
+router.post('/:id/davinci/export', ensureAuthenticated, async (req, res) => {
+  try {
+    const { frameRate = 24, charsPerSecond = 15 } = req.body || {};
+    if (Object.keys(req.body || {}).some(key => !['frameRate', 'charsPerSecond'].includes(key)) ||
+        ![24, 25, 30].includes(frameRate) || !Number.isFinite(charsPerSecond) ||
+        charsPerSecond < 5 || charsPerSecond > 30) {
+      return res.status(400).json({ error: 'Некорректные настройки таймлайна' });
+    }
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id })
+      .select('+voiceover.blocks.audioStorageKey');
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const state = await davinciProjectState(project, req.user._id);
+    if (!state.summary.canExport) {
+      return res.status(409).json({ error: 'Для экспорта нужны актуальная раскадровка и все готовые изображения и MP3.' });
+    }
+    const imageFiles = new Map(state.storyboard.frames.map(frame => {
+      const image = state.imageByFrame.get(frame.id);
+      const extension = image.mimeType === 'image/png' ? 'png' : image.mimeType === 'image/webp' ? 'webp' : 'jpg';
+      return [frame.id, `${storyboardFrameFileBase(project, frame)}.${extension}`];
+    }));
+    const xml = createDavinciXml({
+      projectName: project.shortTitle || project.title,
+      frames: state.storyboard.frames,
+      voiceoverBlocks: state.blocks,
+      imageFiles, frameRate, charsPerSecond,
+    });
+    const baseName = safeProjectFolderName(project.shortTitle || project.title, 'AI_Project').replaceAll(' ', '_');
+    const filename = `Timeline_${baseName}.fcpxml`;
+    await writeProjectTextFile({
+      project, userId: req.user._id, directory: '', filename,
+      content: xml, mimeType: 'application/xml',
+    });
+    res.set('Content-Type', 'application/xml; charset=utf-8');
+    res.set('Content-Disposition', `attachment; filename="${filename.replaceAll('"', '')}"`);
+    return res.send(xml);
+  } catch (error) {
+    if (['INVALID_DAVINCI_SETTINGS', 'DAVINCI_STRUCTURE_MISMATCH', 'DAVINCI_IMAGE_MISSING'].includes(error.code)) {
+      return res.status(409).json({ error: 'Данные проекта не подходят для экспорта. Проверьте блоки и изображения.', code: error.code });
+    }
+    return res.status(500).json({ error: 'Не удалось подготовить XML для DaVinci Resolve' });
+  }
+});
 
 export default router;

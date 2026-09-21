@@ -127,6 +127,8 @@ export const saveStoryboard = (projectId, payload) =>
   projectRequest(projectId, "/storyboard", "PUT", payload);
 export const saveStoryboardFrame = (projectId, frameId, payload) =>
   projectRequest(projectId, `/storyboard/frames/${encodeURIComponent(frameId)}`, "PATCH", payload);
+export const adoptStoryboardVoiceover = (projectId, payload) =>
+  projectRequest(projectId, "/storyboard/adopt-voiceover", "POST", payload);
 export const confirmStoryboard = (projectId, payload) =>
   projectRequest(projectId, "/storyboard/confirm", "POST", payload);
 export const generateStoryboardFrameImage = (projectId, frameId, payload) =>
@@ -139,6 +141,25 @@ export const getStoryboardFrameImageUrl = (projectId, frameId, updatedAt, downlo
   `${SERVER_URL}/api/projects/${projectId}/storyboard/frames/${encodeURIComponent(frameId)}/image?v=${encodeURIComponent(updatedAt || "0")}${download ? "&download=1" : ""}`;
 export const getStoryboardFramePreviewUrl = (projectId, frameId, updatedAt) =>
   `${SERVER_URL}/api/projects/${projectId}/storyboard/frames/${encodeURIComponent(frameId)}/image?v=${encodeURIComponent(updatedAt || "0")}&preview=1`;
+export const getDavinciStatus = projectId => projectRequest(projectId, "/davinci");
+
+export async function downloadDavinciXml(projectId, settings) {
+  const response = await fetch(`${SERVER_URL}/api/projects/${projectId}/davinci/export`, {
+    method: "POST", credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    const error = new Error(data.error || `Не удалось подготовить XML (HTTP ${response.status})`);
+    error.status = response.status;
+    error.code = data.code;
+    throw error;
+  }
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1] || "Timeline.fcpxml";
+  return { blob: await response.blob(), filename };
+}
 
 async function flowFileRequest(url, options = {}) {
   const response = await fetch(url, { credentials: "include", ...options });
