@@ -52,7 +52,64 @@ function distributeWords(totalWords, frameCount) {
   return Array.from({ length: frameCount }, (_, index) => base + (index < remainder ? 1 : 0));
 }
 
-// Gemini chooses the number/order of frames and creates their visual content.
+export function planStoryboardFrames(blocks) {
+  if (!blocks.length) invalid('INVALID_STORYBOARD_RESPONSE');
+  const plans = blocks.map(block => {
+    const words = narrationWords(block.adaptedText);
+    if (!words.length) invalid('INVALID_STORYBOARD_RESPONSE');
+    return { block, words, count: Math.ceil(words.length / 15), target: Math.ceil(words.length / 12) };
+  });
+  let total = plans.reduce((sum, plan) => sum + plan.count, 0);
+  if (total > 200) invalid('STORYBOARD_TOO_MANY_FRAMES');
+  for (const plan of plans) {
+    const extra = Math.min(plan.target - plan.count, 200 - total);
+    plan.count += extra;
+    total += extra;
+  }
+  const frames = [];
+  for (const { block, words, count } of plans) {
+    let offset = 0;
+    for (const size of distributeWords(words.length, count)) {
+      frames.push({ slot: String(frames.length + 1), sourceVoiceoverBlockId: block.id,
+        scriptText: words.slice(offset, offset + size).join(' ') });
+      offset += size;
+    }
+  }
+  return frames;
+}
+
+// Only complete, validated batches are assembled; callers save after all succeed.
+export async function generatePlannedStoryboard(plan, allowedReferenceIds, requestBatch) {
+  const frames = [];
+  for (let offset = 0; offset < plan.length; offset += 12) {
+    const batch = plan.slice(offset, offset + 12);
+    let validated;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const raw = await requestBatch(batch, attempt);
+      try {
+        const values = JSON.parse(raw)?.frames;
+        if (!Array.isArray(values) || values.length !== batch.length) throw new Error();
+        const bySlot = new Map(values.map(value => [value.slot, value]));
+        if (bySlot.size !== batch.length) throw new Error();
+        validated = batch.map(({ slot, ...frame }) => {
+          const value = bySlot.get(slot);
+          if (!value || typeof value.visualDescription !== 'string' || !value.visualDescription.trim() ||
+              value.visualDescription.length > 4000 || typeof value.prompt !== 'string' ||
+              !value.prompt.trim() || value.prompt.length > 12000) throw new Error();
+          return { ...frame, visualDescription: value.visualDescription.trim(), prompt: value.prompt.trim(),
+            referenceIds: normalizeReferenceIds(value.referenceIds, allowedReferenceIds) };
+        });
+        break;
+      } catch {
+        if (attempt === 1) invalid('INVALID_STORYBOARD_RESPONSE');
+      }
+    }
+    frames.push(...validated);
+  }
+  return JSON.stringify({ frames });
+}
+
+// The server chooses the number/order of frames and Gemini creates visual content.
 // The server restores scriptText from the approved narration so a harmless
 // punctuation change or paraphrase cannot break exact text coverage.
 function restoreGeneratedNarration(frames, voiceoverBlocks) {

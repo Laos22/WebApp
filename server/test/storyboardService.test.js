@@ -4,6 +4,7 @@ import {
   normalizeStoryboard, parseGeneratedStoryboard, rebaseStoryboardNarration,
   storyboardEditableFrame, storyboardIsCurrent,
   storyboardImageMatchesFrame, validateStoryboardFrames,
+  planStoryboardFrames, generatePlannedStoryboard,
 } from '../src/services/storyboardService.js';
 
 const referenceId = 'ref_11111111-1111-4111-8111-111111111111';
@@ -13,6 +14,88 @@ const voiceBlock = {
   order: 1, adaptedText: 'Текст сценария',
 };
 const voiceBlocks = [voiceBlock];
+
+test('planning preserves every word and satisfies frame limits across narration lengths', () => {
+  for (let length = 1; length <= 3000; length++) {
+    const block = { ...voiceBlock, adaptedText: Array.from({ length }, (_, i) => `word${i}`).join(' ') };
+    const plan = planStoryboardFrames([block]);
+    assert.ok(plan.length <= 200);
+    assert.equal(plan.map(frame => frame.scriptText).join(' '), block.adaptedText);
+    assert.equal(new Set(plan.map(frame => frame.slot)).size, plan.length);
+    for (const frame of plan) {
+      const count = frame.scriptText.split(' ').length;
+      assert.ok(count <= 15 && (count >= 5 || length < 5));
+    }
+  }
+});
+
+test('planning accounts for separate blocks and rejects impossible totals before generation', () => {
+  const blocks = Array.from({ length: 200 }, (_, i) => ({ id: `block${i}`, order: i + 1, adaptedText: 'one two' }));
+  assert.equal(planStoryboardFrames(blocks).length, 200);
+  assert.throws(() => planStoryboardFrames([...blocks, { ...voiceBlock }]), { code: 'STORYBOARD_TOO_MANY_FRAMES' });
+  assert.throws(() => planStoryboardFrames([{ ...voiceBlock, adaptedText: Array(3001).fill('word').join(' ') }]), { code: 'STORYBOARD_TOO_MANY_FRAMES' });
+});
+
+const visualBatch = batch => JSON.stringify({ frames: batch.map(frame => ({
+  slot: frame.slot, visualDescription: `Scene ${frame.slot}`, prompt: `Image ${frame.slot}`, referenceIds: [referenceId],
+})).reverse() });
+
+test('batched generation orders slots, retains exact narration, and passes final validation', async () => {
+  const blocks = [voiceBlock, { id: 'second', order: 2, adaptedText: Array.from({ length: 301 }, (_, i) => `word${i}`).join(' ') }];
+  const plan = planStoryboardFrames(blocks);
+  const original = structuredClone(plan);
+  const sizes = [];
+  const raw = await generatePlannedStoryboard(plan, allowed, async batch => {
+    sizes.push(batch.length);
+    return visualBatch(batch);
+  });
+  assert.deepEqual(sizes, [12, 12, 3]);
+  assert.deepEqual(plan, original);
+  const frames = parseGeneratedStoryboard(raw, [], allowed, blocks);
+  assert.equal(frames.length, plan.length);
+  frames.forEach((frame, index) => {
+    assert.equal(frame.scriptText, plan[index].scriptText);
+    assert.equal(frame.sourceVoiceoverBlockId, plan[index].sourceVoiceoverBlockId);
+    assert.equal(frame.prompt, `Image ${index + 1}`);
+  });
+});
+
+test('invalid batch is retried once without repeating completed batches', async () => {
+  const plan = planStoryboardFrames([{ ...voiceBlock, adaptedText: Array(200).fill('word').join(' ') }]);
+  const calls = [];
+  await generatePlannedStoryboard(plan, allowed, async (batch, attempt) => {
+    calls.push([batch[0].slot, attempt]);
+    return batch[0].slot === '13' && attempt === 0 ? '{"frames":[]}' : visualBatch(batch);
+  });
+  assert.deepEqual(calls, [['1', 0], ['13', 0], ['13', 1]]);
+});
+
+test('missing, duplicate, unknown slots and invalid references fail after bounded retry', async () => {
+  const plan = planStoryboardFrames([{ ...voiceBlock, adaptedText: Array(24).fill('word').join(' ') }]);
+  for (const corrupt of [
+    () => 'not json',
+    frames => JSON.stringify({ frames: frames.slice(1) }),
+    frames => JSON.stringify({ frames: [frames[0], frames[0]] }),
+    frames => JSON.stringify({ frames: frames.map(frame => ({ ...frame, slot: 'unknown' })) }),
+    frames => JSON.stringify({ frames: frames.map(frame => ({ ...frame, referenceIds: ['unknown'] })) }),
+  ]) {
+    let calls = 0;
+    await assert.rejects(generatePlannedStoryboard(plan, allowed, async batch => {
+      calls++;
+      return corrupt(JSON.parse(visualBatch(batch)).frames);
+    }), { code: 'INVALID_STORYBOARD_RESPONSE' });
+    assert.equal(calls, 2);
+  }
+});
+
+test('provider failure does not trigger extra paid requests', async () => {
+  let calls = 0;
+  await assert.rejects(generatePlannedStoryboard(planStoryboardFrames(voiceBlocks), allowed, async () => {
+    calls++;
+    throw new Error('provider unavailable');
+  }), /provider unavailable/);
+  assert.equal(calls, 1);
+});
 
 test('generated storyboard receives stable server frame ids and approved references', () => {
   const frames = parseGeneratedStoryboard(JSON.stringify({ frames: [{

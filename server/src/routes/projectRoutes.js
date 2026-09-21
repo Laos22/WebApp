@@ -1186,8 +1186,8 @@ router.post('/:id/storyboard/generate', ensureAuthenticated, async (req, res) =>
     if (!saved) return res.status(409).json({ error: 'Сценарий, референсы или раскадровка изменились. Обновите страницу.' });
     return res.json(await storyboardResponse(saved, req.user._id));
   } catch (error) {
-    if (error.code === 'STORYBOARD_INPUT_TOO_LONG') return res.status(400).json({ code: error.code });
-    if (error.code === 'STORYBOARD_GENERATION_FAILED') return res.status(502).json({ code: error.code });
+    if (['STORYBOARD_INPUT_TOO_LONG', 'STORYBOARD_TOO_MANY_FRAMES'].includes(error.code)) return res.status(400).json({ code: error.code });
+    if (['STORYBOARD_GENERATION_FAILED', 'INVALID_STORYBOARD_RESPONSE'].includes(error.code)) return res.status(502).json({ code: error.code });
     return res.status(500).json({ error: 'Не удалось создать раскадровку' });
   }
 });

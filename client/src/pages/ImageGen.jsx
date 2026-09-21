@@ -64,7 +64,9 @@ function editableFrame(frame = {}) {
 function readableError(error) {
   if (error?.status === 409) return error.message || "Данные изменились. Обновите страницу.";
   if (error?.code === "STORYBOARD_TEXT_COVERAGE_MISMATCH") return "ИИ изменил текст озвучки при разделении на кадры. Попробуйте создать раскадровку заново.";
-  if (error?.code === "STORYBOARD_FRAME_WORD_LIMIT_MISMATCH") return "Количество созданных кадров не позволяет распределить текст по 5–15 слов. Повторите генерацию.";
+  if (error?.code === "STORYBOARD_FRAME_WORD_LIMIT_MISMATCH") return "Текущему тексту не подходит количество кадров: требуется 5–15 слов на кадр. Измените количество кадров или создайте новую раскадровку.";
+  if (error?.code === "STORYBOARD_TOO_MANY_FRAMES") return "Для этого текста нужно больше 200 кадров по 5–15 слов. Разделите материал на несколько проектов или сократите текст озвучки.";
+  if (error?.code === "INVALID_STORYBOARD_RESPONSE") return "ИИ не заполнил все запланированные кадры даже после автоматической повторной попытки. Раскадровка не сохранена.";
   if (error?.code === "STORYBOARD_DETAIL_FAILED") return "ИИ не смог детализировать prompt кадра. Повторите запрос.";
   if (error?.code === "STORYBOARD_DETAIL_RATE_LIMIT") return "Gemini временно ограничил запросы. Нажмите «Продолжить детализацию» позже.";
   if (error?.code === "INVALID_IMAGE_PROFILE") return "Выберите профиль изображения Google Studio.";

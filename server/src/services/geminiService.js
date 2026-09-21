@@ -1,5 +1,6 @@
 // server/src/services/geminiService.js
 import { GoogleGenAI } from "@google/genai";
+import { planStoryboardFrames, generatePlannedStoryboard } from './storyboardService.js';
 import { getDecryptedApiKey } from "./aiProfileResolver.js";
 import { DEFAULT_VISUAL_BIBLE_PROMPT, DEFAULT_VISUAL_BIBLE_EDIT_PROMPT, DEFAULT_REFERENCE_ANALYSIS_PROMPT, DEFAULT_REFERENCE_DETAIL_PROMPT, DEFAULT_STORYBOARD_PROMPT, DEFAULT_STORYBOARD_DETAIL_PROMPT, DEFAULT_AUDIO_ADAPTATION_PROMPT } from "../models/Settings.js";
 
@@ -155,18 +156,34 @@ export function buildStoryboardPrompt(project, references, currentFrames, instru
 
 export async function generateStoryboard(project, references, currentFrames, instructions, template, profile) {
   try {
+    const plan = planStoryboardFrames(project.voiceover?.blocks || []);
+    const basePrompt = buildStoryboardPrompt(project, references, currentFrames, instructions, template);
     const { apiKey, model } = resolveTextConfig(profile, 'generate-storyboard');
     const ai = new GoogleGenAI({ apiKey });
-    const response = await ai.models.generateContent({
-      model,
-      contents: [{ role: 'user', parts: [{
-        text: buildStoryboardPrompt(project, references, currentFrames, instructions, template),
-      }] }],
-      config: { responseMimeType: 'application/json' },
+    return await generatePlannedStoryboard(plan, new Set(references.map(reference => reference.id)), async (batch, attempt) => {
+      const text = `${basePrompt}\n\nСервер уже разделил утверждённый текст на кадры. Для этого запроса создай только визуальные описания для следующих слотов, ровно по одному на слот. Не объединяй и не добавляй кадры. Верни {"frames":[{"slot":"...","visualDescription":"...","prompt":"...","referenceIds":[]}]}. Поля scriptText и sourceVoiceoverBlockId служат контекстом и не возвращаются. Эта структура ответа заменяет структуру из шаблона выше.\n${JSON.stringify(batch)}${attempt ? '\nПредыдущий ответ не прошёл проверку: проверь все slot, обязательные поля и допустимые referenceIds.' : ''}`;
+      if (text.length > 196608) {
+        const error = new Error('Storyboard input too long');
+        error.code = 'STORYBOARD_INPUT_TOO_LONG';
+        throw error;
+      }
+      const response = await ai.models.generateContent({
+        model, contents: [{ role: 'user', parts: [{ text }] }],
+        config: { responseMimeType: 'application/json', responseJsonSchema: {
+          type: 'object', required: ['frames'], properties: { frames: {
+            type: 'array', minItems: batch.length, maxItems: batch.length,
+            items: { type: 'object', required: ['slot', 'visualDescription', 'prompt', 'referenceIds'], properties: {
+              slot: { type: 'string', enum: batch.map(frame => frame.slot) },
+              visualDescription: { type: 'string' }, prompt: { type: 'string' },
+              referenceIds: { type: 'array', items: { type: 'string' } },
+            } },
+          } },
+        } },
+      });
+      return modelText(response);
     });
-    return modelText(response);
   } catch (cause) {
-    if (cause.code === 'STORYBOARD_INPUT_TOO_LONG') throw cause;
+    if (['STORYBOARD_INPUT_TOO_LONG', 'STORYBOARD_TOO_MANY_FRAMES', 'INVALID_STORYBOARD_RESPONSE'].includes(cause.code)) throw cause;
     const error = new Error('Не удалось создать раскадровку');
     error.code = 'STORYBOARD_GENERATION_FAILED';
     throw error;
