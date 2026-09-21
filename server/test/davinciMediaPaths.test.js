@@ -13,6 +13,15 @@ test('absolute file URLs round-trip spaces, Cyrillic and reserved characters', (
   assert.equal(new URL(url).search, '');
   assert.equal(new URL(url).hash, '');
 });
+test('pasted paths accept paired quotes and preserve internal apostrophes', () => {
+  for (const quote of ["'", '"']) {
+    const root = '/Users/editor/Мой диск/Project';
+    assert.equal(normalizeMediaRoot(` ${quote}${root}${quote} `), root);
+    assert.equal(fileURLToPath(mediaSourceUrl(`${quote}${root}${quote}`, 'audio/test.mp3')), `${root}/audio/test.mp3`);
+  }
+  assert.equal(normalizeMediaRoot("/Users/editor/Editor's project"), "/Users/editor/Editor's project");
+  assert.throws(() => normalizeMediaRoot("'/Users/editor/Project"), { code: 'INVALID_DAVINCI_MEDIA_ROOT' });
+});
 test('Windows and UNC desktop paths work on a non-Windows export server', () => {
   assert.equal(mediaSourceUrl('D:\\Projects\\My film', 'audio/audio_block_1.mp3'), 'file:///D:/Projects/My%20film/audio/audio_block_1.mp3');
   assert.equal(mediaSourceUrl('\\\\studio\\media\\My film', 'images/frame_1_1.jpg'), 'file://studio/media/My%20film/images/frame_1_1.jpg');

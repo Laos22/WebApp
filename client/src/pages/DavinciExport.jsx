@@ -64,7 +64,8 @@ export default function DavinciExport() {
     if (busy || !data?.canExport || !settingsValid || !structureValid || trimError || pathError) return;
     setBusy(true); setError(""); setMessage("");
     try {
-      const result = await generateDavinciXml(projectId, { frameRate, charsPerSecond, addAnimations, addTransitions, transitionDurationSec, audioTrim, pathMode, mediaRootPath });
+      const result = await generateDavinciXml(projectId, { frameRate, charsPerSecond, addAnimations, addTransitions, transitionDurationSec, audioTrim, pathMode,
+        mediaRootPath: pathMode === 'relative' ? '' : mediaRootPath ? normalizeMediaRoot(mediaRootPath) : '' });
       if (pathMode === 'absolute') {
         setMediaRootPath(result.mediaRootPath);
         try { localStorage.setItem(`davinci-media-root:${projectId}`, result.mediaRootPath); } catch { /* Storage may be disabled. */ }
@@ -105,8 +106,8 @@ export default function DavinciExport() {
           <label><span className="block text-sm text-slate-300 mb-2">Оценка скорости речи</span><input type="number" min="5" max="30" step="0.5" value={charsPerSecond} onChange={event => setCharsPerSecond(Number(event.target.value))} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3" /><span className="block text-xs text-slate-500 mt-1">Символов в секунду, только при неизвестной длительности MP3</span></label>
         </div>
         <div className="space-y-3 border border-slate-700 rounded-xl p-4">
-          <label className="block">Пути к медиа<select value={pathMode} onChange={event => setPathMode(event.target.value)} className="block w-full mt-1 bg-slate-950 border border-slate-700 rounded-xl p-3"><option value="absolute">Абсолютные — для компьютера с Resolve</option><option value="relative">Относительные — переносимый проект</option></select></label>
-          {pathMode === 'absolute' && <label className="block">Папка проекта на компьютере с Resolve<input value={mediaRootPath} onChange={event => setMediaRootPath(event.target.value)} placeholder={data?.requiresMediaRoot ? '/Users/имя/Projects/Мой проект' : 'Автоматически: локальная папка проекта'} className="block w-full mt-1 bg-slate-950 border border-slate-700 rounded-xl p-3" /><span className="text-xs text-slate-400">Папка, внутри которой находятся images и audio. Для Google Drive укажите локальный путь на вашем компьютере. Поле меняет ссылки в XML, а не место сохранения проекта.</span></label>}
+          <label className="block">Пути к медиа<select value={pathMode} onChange={event => { setPathMode(event.target.value); setError(""); }} className="block w-full mt-1 bg-slate-950 border border-slate-700 rounded-xl p-3"><option value="absolute">Абсолютные — для компьютера с Resolve</option><option value="relative">Относительные — переносимый проект</option></select></label>
+          {pathMode === 'absolute' && <label className="block">Папка проекта на компьютере с Resolve<input value={mediaRootPath} onChange={event => { setMediaRootPath(event.target.value); setError(""); }} placeholder={data?.requiresMediaRoot ? '/Users/имя/Projects/Мой проект' : 'Автоматически: локальная папка проекта'} className="block w-full mt-1 bg-slate-950 border border-slate-700 rounded-xl p-3" /><span className="text-xs text-slate-400">Папка, внутри которой находятся images и audio. Для Google Drive укажите локальный путь на вашем компьютере. Поле меняет ссылки в XML, а не место сохранения проекта.</span></label>}
           {pathMode === 'relative' && <p className="text-sm text-amber-300">При импорте Resolve может потребовать вручную указать папку с медиа.</p>}
           {pathError && <p role="alert" className="text-amber-300">{pathError}</p>}
         </div>

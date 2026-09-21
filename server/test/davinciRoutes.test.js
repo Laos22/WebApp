@@ -91,10 +91,10 @@ for (const legacy of [false, true]) test(`status and export with ${legacy ? 'leg
   assert.equal((await request('/:id/davinci/export', 'post', {
     audioTrim: { enabled: true, mode: 'seconds', startSec: 20 },
   })).code, 400);
-  const relative = await request('/:id/davinci/export', 'post', { pathMode: 'relative' });
+  const relative = await request('/:id/davinci/export', 'post', { pathMode: 'relative', mediaRootPath: 'invalid leftover hidden input' });
   assert.equal(relative.code, 200);
   assert.match(await fs.readFile(path.join(project.projectPath, relative.value.filename), 'utf8'), /src="images\/still_/);
-  const custom = await request('/:id/davinci/export', 'post', { mediaRootPath: '/Volumes/Resolve media' });
+  const custom = await request('/:id/davinci/export', 'post', { mediaRootPath: "'/Volumes/Resolve media'" });
   assert.equal(custom.code, 200);
   const customXml = await fs.readFile(path.join(project.projectPath, custom.value.filename), 'utf8');
   assert.match(customXml, /src="file:\/\/\/Volumes\/Resolve%20media\/images\//);

@@ -2,7 +2,11 @@ function invalid() { throw Object.assign(new Error('INVALID_DAVINCI_MEDIA_ROOT')
 
 export function normalizeMediaRoot(value) {
   if (typeof value !== 'string' || value.length > 4000 || /[\u0000-\u001f]/.test(value)) invalid();
-  const root = value.trim().replace(/\\/g, '/').replace(/\/+$/, '');
+  let input = value.trim();
+  // Paths copied from Terminal may include surrounding shell quotes.
+  if ((input.startsWith("'") && input.endsWith("'")) ||
+      (input.startsWith('"') && input.endsWith('"'))) input = input.slice(1, -1);
+  const root = input.replace(/\\/g, '/').replace(/\/+$/, '');
   if (!root || (!root.startsWith('/') && !/^[a-z]:\//i.test(root))) invalid();
   if (root.split('/').some(part => part === '..' || part === '.')) invalid();
   return root;

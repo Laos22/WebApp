@@ -2242,7 +2242,7 @@ router.post('/:id/davinci/export', ensureAuthenticated, async (req, res) => {
     if (!['absolute', 'relative'].includes(pathMode) || typeof mediaRootPath !== 'string') {
       return res.status(400).json({ error: 'Некорректный режим путей к медиа.' });
     }
-    if (mediaRootPath) normalizeMediaRoot(mediaRootPath);
+    if (pathMode === 'absolute' && mediaRootPath) normalizeMediaRoot(mediaRootPath);
     stage = 'load-project';
     const project = await Project.findOne({ _id: req.params.id, userId: req.user._id })
       .select('+voiceover.blocks.audioStorageKey');
