@@ -261,6 +261,9 @@ app.get("/api/health", (req, res) => {
     message: "AI Backend is running",
     authMode,
     storageProvider,
+    buildCommit: /^[0-9a-f]{40}$/i.test(process.env.RENDER_GIT_COMMIT || '')
+      ? process.env.RENDER_GIT_COMMIT : null,
+    davinciExportVersion: 2,
   });
 });
 
