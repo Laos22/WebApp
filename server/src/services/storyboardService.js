@@ -76,7 +76,7 @@ function normalizeFrames(input, currentFrames, allowedReferenceIds, voiceoverBlo
   const used = new Set();
   const frames = input.map((value, index) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) invalid(generated ? 'INVALID_STORYBOARD_RESPONSE' : 'INVALID_STORYBOARD');
-    if (Object.keys(value).some(key => !['id', 'sourceVoiceoverBlockId', 'scriptText', 'visualDescription', 'prompt', 'referenceIds'].includes(key))) invalid(generated ? 'INVALID_STORYBOARD_RESPONSE' : 'INVALID_STORYBOARD');
+    if (Object.keys(value).some(key => !['id', 'sourceVoiceoverBlockId', 'scriptText', 'visualDescription', 'prompt', 'referenceIds', 'animation', 'marker'].includes(key))) invalid(generated ? 'INVALID_STORYBOARD_RESPONSE' : 'INVALID_STORYBOARD');
     let id = typeof value.id === 'string' && frameIdPattern.test(value.id) && existing.has(value.id)
       ? value.id : generated || !value.id ? `frame_${randomUUID()}` : invalid();
     while (used.has(id)) id = `frame_${randomUUID()}`;
@@ -87,9 +87,13 @@ function normalizeFrames(input, currentFrames, allowedReferenceIds, voiceoverBlo
     const prompt = cleanText(value.prompt, 12000);
     if (!scriptText || !visualDescription || !prompt || !allowedBlocks.has(sourceVoiceoverBlockId)) invalid(generated ? 'INVALID_STORYBOARD_RESPONSE' : 'INVALID_STORYBOARD');
     const previous = existing.get(id);
+    const animation = value.animation ?? previous?.animation ?? '';
+    const marker = value.marker ?? previous?.marker ?? '';
+    if (!['', 'Zoom In', 'Zoom Out', 'Pan Left', 'Pan Right', 'Pan Up', 'Pan Down'].includes(animation) ||
+        typeof marker !== 'string' || marker.length > 2000) invalid();
     const keepDetailState = !generated && previous && prompt === previous.prompt;
     return {
-      id, order: index + 1, sourceVoiceoverBlockId, scriptText, visualDescription, prompt,
+      id, order: index + 1, sourceVoiceoverBlockId, scriptText, visualDescription, prompt, animation, marker,
       referenceIds: normalizeReferenceIds(value.referenceIds ?? [], allowedReferenceIds),
       promptDetailStatus: keepDetailState ? previous.promptDetailStatus || 'pending' : 'pending',
       promptDetailedAt: keepDetailState ? previous.promptDetailedAt || null : null,
@@ -130,6 +134,8 @@ export function storyboardEditableFrame(frame = {}) {
   return {
     ...(frame.id ? { id: frame.id } : {}),
     sourceVoiceoverBlockId: frame.sourceVoiceoverBlockId || '',
+    animation: frame.animation || '',
+    marker: frame.marker || '',
     scriptText: frame.scriptText || '',
     visualDescription: frame.visualDescription || '',
     prompt: frame.prompt || '',

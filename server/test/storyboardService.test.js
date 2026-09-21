@@ -144,7 +144,7 @@ test('single-frame validation strips stored internal fields', () => {
     promptDetailErrorCode: '',
   });
   assert.deepEqual(Object.keys(editable), [
-    'id', 'sourceVoiceoverBlockId', 'scriptText', 'visualDescription', 'prompt', 'referenceIds',
+    'id', 'sourceVoiceoverBlockId', 'animation', 'marker', 'scriptText', 'visualDescription', 'prompt', 'referenceIds',
   ]);
   assert.deepEqual(editable.referenceIds, [referenceId]);
 });
@@ -168,4 +168,18 @@ test('updated voiceover text is adopted without changing visual frame data', () 
   assert.equal(rebased[0].prompt, 'Prompt 1');
   assert.deepEqual(rebased[0].referenceIds, [referenceId]);
   assert.equal(rebased[1].id, current[1].id);
+});
+
+test('editing animation and marker preserves image inputs, frame IDs and freshness', () => {
+  const frame = { id: 'frame_11111111-1111-4111-8111-111111111111', sourceVoiceoverBlockId: voiceBlock.id,
+    scriptText: voiceBlock.adaptedText, visualDescription: 'Описание', prompt: 'Prompt', referenceIds: [referenceId] };
+  const [updated] = validateStoryboardFrames([{ ...frame, animation: 'Zoom In', marker: 'Маркер' }], [frame], allowed, voiceBlocks);
+  assert.equal(updated.id, frame.id);
+  assert.equal(updated.prompt, frame.prompt);
+  assert.deepEqual(updated.referenceIds, frame.referenceIds);
+  assert.equal(updated.animation, 'Zoom In');
+  assert.equal(updated.marker, 'Маркер');
+  assert.ok(storyboardImageMatchesFrame({ sourcePrompt: frame.prompt, sourceReferenceIds: frame.referenceIds }, updated));
+  const [preserved] = validateStoryboardFrames([frame], [updated], allowed, voiceBlocks);
+  assert.equal(preserved.marker, 'Маркер');
 });

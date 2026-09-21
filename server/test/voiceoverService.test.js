@@ -37,3 +37,15 @@ test('manual block edit makes ready audio stale and increments text revision', (
   assert.equal(updated[0].textRevision, 3);
   assert.equal(updated[0].audioStatus, 'stale');
 });
+
+import { normalizeVoiceover } from '../src/services/voiceoverService.js';
+test('duration survives unchanged adaptation and resets when new audio is needed', () => {
+  const source = splitScenarioBlocks('Блок 1\nТекст.');
+  const raw = JSON.stringify({ blocks: [{ id: 'script_block_1', adaptedText: 'Текст.' }] });
+  const previous = parseAdaptedBlocks(raw, source);
+  previous[0].audioDurationSec = 2.4;
+  assert.equal(parseAdaptedBlocks(raw, source, previous)[0].audioDurationSec, 2.4);
+  assert.equal(parseAdaptedBlocks(JSON.stringify({ blocks: [{ id: 'script_block_1', adaptedText: 'Новый текст.' }] }), source, previous)[0].audioDurationSec, null);
+  assert.equal(normalizeVoiceover({ voiceover: { blocks: previous } }).blocks[0].audioDurationSec, 2.4);
+  assert.equal(normalizeVoiceover({ voiceover: { blocks: [{ id: 'old' }] } }).blocks[0].audioDurationSec, null);
+});

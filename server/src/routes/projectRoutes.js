@@ -1,3 +1,5 @@
+import { normalizeMediaRoot } from '../../../shared/davinciMediaPaths.js';
+import { validateAudioTrim, audioTrimSeconds } from '../../../shared/davinciAudioTrim.js';
 // server/src/routes/projectRoutes.js
 import express from "express";
 import multer from "multer";
@@ -64,7 +66,9 @@ import {
   buildFlowManifest, flowFrameBaseName, flowPromptsText, flowReferenceFileName,
   frameIdFromFlowImagePath,
 } from "../services/flowPackageService.js";
-import { createDavinciXml } from "../services/davinciXmlService.js";
+import { createDavinciXml, imageExtension } from "../services/davinciXmlService.js";
+import { ensurePortableLocalFile, ensureDavinciLocalWorkspace, saveDavinciStill } from "../services/davinciMediaStorage.js";
+import { measureMp3Duration, inspectAudioBlock } from "../services/audioDuration.js";
 import { safeProjectFolderName } from "../services/projectStorage.js";
 import path from "path";
 import fs from "fs";
@@ -630,6 +634,10 @@ router.post('/:id/voiceover/blocks/:blockId/generate', ensureAuthenticated, asyn
       return res.status(409).json({ error: 'Создайте или выберите профиль «Звук / ElevenLabs».', code: 'ELEVENLABS_PROFILE_REQUIRED' });
     }
     const audio = await synthesizeElevenLabs(block.adaptedText, profile);
+    let audioDurationSec = null;
+    try { audioDurationSec = await measureMp3Duration(audio); } catch {
+      console.warn('MP3_DURATION_UNAVAILABLE: длительность будет повторно определена при экспорте.');
+    }
     const stored = await saveVoiceoverAudio({
       projectId: project._id.toString(), blockId: block.id, blockOrder: block.order,
       projectPath: project.projectPath, project, userId: req.user._id, buffer: audio,
@@ -642,6 +650,7 @@ router.post('/:id/voiceover/blocks/:blockId/generate', ensureAuthenticated, asyn
       'voiceover.blocks.$[block].audioStorageKey': stored.storageKey,
       'voiceover.blocks.$[block].audioMimeType': 'audio/mpeg',
       'voiceover.blocks.$[block].audioByteSize': stored.byteSize,
+      'voiceover.blocks.$[block].audioDurationSec': audioDurationSec,
       'voiceover.blocks.$[block].audioProfileId': profile._id.toString(),
       'voiceover.blocks.$[block].audioGeneratedAt': new Date(),
       'voiceover.blocks.$[block].audioErrorCode': '',
@@ -1367,7 +1376,7 @@ router.patch('/:id/storyboard/frames/:frameId', ensureAuthenticated, async (req,
       id: block.id, order: block.order, adaptedText: block.adaptedText,
     }));
     const candidateFrames = storyboard.frames.map((frame, index) => storyboardEditableFrame(
-      index === frameIndex ? { ...body.frame, id: frame.id } : frame,
+      index === frameIndex ? { ...frame, ...body.frame, id: frame.id } : frame,
     ));
     let frames;
     try {
@@ -2145,12 +2154,48 @@ async function davinciProjectState(project, userId) {
     frameId: { $in: storyboard.frames.map(frame => frame.id) },
   }).select('+storageKey');
   const imageByFrame = new Map(images.map(image => [image.frameId, image]));
-  const readyImages = storyboard.frames.filter(frame => {
+  const warnings = [];
+  const readyImages = [];
+  // Read sequentially to bound memory and Drive requests for large storyboards.
+  for (const frame of storyboard.frames) {
     const image = imageByFrame.get(frame.id);
-    return image?.status === 'ready' && image?.storageKey && storyboardImageMatchesFrame(image, frame);
-  });
+    try {
+      if (image?.status !== 'ready' || !image.storageKey || !storyboardImageMatchesFrame(image, frame)) throw new Error();
+      imageExtension(image.mimeType);
+      const buffer = await readStoryboardImageFile(image.storageKey, project.projectPath, userId);
+      if (!buffer.length) throw new Error();
+      readyImages.push(frame);
+    } catch {
+      warnings.push(`Кадр ${frame.order}: изображение отсутствует, недоступно, устарело или имеет неподдерживаемый формат.`);
+    }
+  }
   const blocks = project.voiceover?.blocks || [];
-  const readyAudio = blocks.filter(block => block.audioStatus === 'ready' && block.audioStorageKey);
+  const readyAudio = [];
+  const audioTimings = [];
+  for (const block of blocks) {
+    const info = block.audioStatus === 'ready' && block.audioStorageKey
+      ? await inspectAudioBlock(block, {
+        read: key => readVoiceoverAudio(key, project.projectPath, userId),
+        persist: async (source, durationSec) => {
+          const result = await Project.updateOne({
+            _id: project._id, userId,
+            'voiceover.blocks': { $elemMatch: {
+              id: source.id, audioStorageKey: source.audioStorageKey,
+              textRevision: source.textRevision, audioGeneratedAt: source.audioGeneratedAt,
+            } },
+          }, { $set: { 'voiceover.blocks.$.audioDurationSec': durationSec } });
+          if (!result.matchedCount) throw new Error('DAVINCI_AUDIO_CHANGED');
+        },
+      }) : { available: false };
+    if (info.available) readyAudio.push(block);
+    else warnings.push(`Блок ${block.order}: MP3 отсутствует или недоступен.`);
+    if (info.available && !info.exact) warnings.push(`Блок ${block.order}: не удалось определить длительность MP3, используется приблизительная оценка по тексту.`);
+    audioTimings.push({ id: block.id, order: block.order, available: info.available,
+      exact: Boolean(info.exact), durationSec: info.durationSec ?? null,
+      trimText: block.adaptedText || '',
+      textLength: Math.max(Array.from(block.adaptedText || '').length, 1),
+      frameCount: storyboard.frames.filter(frame => frame.sourceVoiceoverBlockId === block.id).length });
+  }
   const storyboardReady = storyboard.status === 'confirmed' && storyboardIsCurrent(project, storyboard);
   return {
     storyboard, imageByFrame, blocks,
@@ -2162,7 +2207,10 @@ async function davinciProjectState(project, userId) {
       readyAudio: readyAudio.length,
       canExport: storyboardReady && storyboard.frames.length > 0 &&
         readyImages.length === storyboard.frames.length && blocks.length > 0 && readyAudio.length === blocks.length,
-      timingMode: 'estimated',
+      timingMode: audioTimings.every(item => item.exact) ? 'exact' : 'estimated',
+      audioTimings, warnings,
+      requiresMediaRoot: projectUsesDrive(project) || process.env.NODE_ENV === 'production',
+      defaultMediaRootPath: !projectUsesDrive(project) && process.env.NODE_ENV !== 'production' ? project.projectPath || '' : '',
     },
   };
 }
@@ -2180,45 +2228,92 @@ router.get('/:id/davinci', ensureAuthenticated, async (req, res) => {
 });
 
 router.post('/:id/davinci/export', ensureAuthenticated, async (req, res) => {
+  let stage = 'settings';
   try {
-    const { frameRate = 24, charsPerSecond = 15 } = req.body || {};
-    if (Object.keys(req.body || {}).some(key => !['frameRate', 'charsPerSecond'].includes(key)) ||
+    const { frameRate = 24, charsPerSecond = 15, addAnimations = true, addTransitions = false, transitionDurationSec = 0.5, audioTrim = {}, pathMode = 'absolute', mediaRootPath = '' } = req.body || {};
+    if (Object.keys(req.body || {}).some(key => !['frameRate', 'charsPerSecond', 'addAnimations', 'addTransitions', 'transitionDurationSec', 'audioTrim', 'pathMode', 'mediaRootPath'].includes(key)) ||
         ![24, 25, 30].includes(frameRate) || !Number.isFinite(charsPerSecond) ||
-        charsPerSecond < 5 || charsPerSecond > 30) {
+        charsPerSecond < 5 || charsPerSecond > 30 ||
+        typeof addAnimations !== 'boolean' || typeof addTransitions !== 'boolean' ||
+        !Number.isFinite(transitionDurationSec) || transitionDurationSec <= 0 || transitionDurationSec > 5) {
       return res.status(400).json({ error: 'Некорректные настройки таймлайна' });
     }
+    validateAudioTrim(audioTrim);
+    if (!['absolute', 'relative'].includes(pathMode) || typeof mediaRootPath !== 'string') {
+      return res.status(400).json({ error: 'Некорректный режим путей к медиа.' });
+    }
+    if (mediaRootPath) normalizeMediaRoot(mediaRootPath);
+    stage = 'load-project';
     const project = await Project.findOne({ _id: req.params.id, userId: req.user._id })
       .select('+voiceover.blocks.audioStorageKey');
     if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    stage = 'check-media';
     const state = await davinciProjectState(project, req.user._id);
     if (!state.summary.canExport) {
       return res.status(409).json({ error: 'Для экспорта нужны актуальная раскадровка и все готовые изображения и MP3.' });
     }
-    const imageFiles = new Map(state.storyboard.frames.map(frame => {
-      const image = state.imageByFrame.get(frame.id);
-      const extension = image.mimeType === 'image/png' ? 'png' : image.mimeType === 'image/webp' ? 'webp' : 'jpg';
-      return [frame.id, `${storyboardFrameFileBase(project, frame)}.${extension}`];
-    }));
-    const xml = createDavinciXml({
-      projectName: project.shortTitle || project.title,
-      frames: state.storyboard.frames,
-      voiceoverBlocks: state.blocks,
-      imageFiles, frameRate, charsPerSecond,
+    if (pathMode === 'absolute' && !mediaRootPath.trim() && (projectUsesDrive(project) || process.env.NODE_ENV === 'production')) {
+      return res.status(400).json({ error: 'Укажите путь к папке проекта на компьютере с DaVinci Resolve.', code: 'DAVINCI_MEDIA_ROOT_REQUIRED' });
+    }
+    stage = 'validate-audio-trim';
+    // Validate trims before creating export copies.
+    for (const block of state.blocks) audioTrimSeconds(block.adaptedText,
+      block.audioDurationSec || Math.max(Array.from(block.adaptedText || '').length, 1) / charsPerSecond, audioTrim);
+    stage = 'prepare-local-workspace';
+    await ensureDavinciLocalWorkspace(project, async root => {
+      const result = await Project.updateOne({
+        _id: project._id, userId: req.user._id,
+        'storage.provider': { $ne: 'google_drive' },
+        $or: [{ projectPath: '' }, { projectPath: null }],
+      }, { $set: { projectPath: root } });
+      if (!result.matchedCount) throw Object.assign(new Error('DAVINCI_PROJECT_CHANGED'), { code: 'DAVINCI_PROJECT_CHANGED' });
     });
+    const resolvedMediaRoot = pathMode === 'relative' ? '' : normalizeMediaRoot(mediaRootPath.trim() || project.projectPath);
+    stage = 'prepare-still-images';
+    const imageFiles = new Map();
+    for (const frame of state.storyboard.frames) {
+      const image = state.imageByFrame.get(frame.id);
+      const buffer = await readStoryboardImageFile(image.storageKey, project.projectPath, req.user._id);
+      const filename = await saveDavinciStill({ project, userId: req.user._id, buffer,
+        extension: imageExtension(image.mimeType), mimeType: image.mimeType });
+      imageFiles.set(frame.id, filename);
+    }
+    stage = 'generate-xml';
+    const xml = createDavinciXml({ projectName: project.shortTitle || project.title,
+      frames: state.storyboard.frames, voiceoverBlocks: state.blocks, imageFiles,
+      frameRate, charsPerSecond, addAnimations, addTransitions, transitionDurationSec, audioTrim, mediaRootPath: resolvedMediaRoot,
+      onWarning: warning => console.warn(warning) });
+    stage = 'copy-local-media';
+    if (!projectUsesDrive(project)) {
+      for (const block of state.blocks) {
+        if (block.audioStorageKey === `project/audio/audio_block_${block.order}.mp3`) continue;
+        const buffer = await readVoiceoverAudio(block.audioStorageKey, project.projectPath, req.user._id);
+        await ensurePortableLocalFile(project.projectPath, 'audio', `audio_block_${block.order}.mp3`, buffer);
+      }
+    }
     const baseName = safeProjectFolderName(project.shortTitle || project.title, 'AI_Project').replaceAll(' ', '_');
     const filename = `Timeline_${baseName}.fcpxml`;
+    stage = 'save-xml';
     await writeProjectTextFile({
       project, userId: req.user._id, directory: '', filename,
       content: xml, mimeType: 'application/xml',
     });
-    res.set('Content-Type', 'application/xml; charset=utf-8');
-    res.set('Content-Disposition', `attachment; filename="${filename.replaceAll('"', '')}"`);
-    return res.send(xml);
+    return res.json({ success: true, message: 'Time Line готов', filename, pathMode,
+      mediaRootPath: resolvedMediaRoot });
   } catch (error) {
-    if (['INVALID_DAVINCI_SETTINGS', 'DAVINCI_STRUCTURE_MISMATCH', 'DAVINCI_IMAGE_MISSING'].includes(error.code)) {
+    // Never log raw errors: SDK messages/stacks may contain paths or credentials.
+    const knownCodes = new Set(['INVALID_PROJECT_PATH', 'EACCES', 'EPERM', 'ENOSPC', 'ENOENT', 'ENAMETOOLONG', 'DAVINCI_PROJECT_CHANGED']);
+    const diagnosticCode = knownCodes.has(error.code) ? error.code : 'DAVINCI_EXPORT_FAILED';
+    console.error('[DaVinci export]', { stage, code: diagnosticCode });
+    if (error.code === 'INVALID_DAVINCI_MEDIA_ROOT') return res.status(400).json({ error: 'Укажите абсолютный путь к папке проекта на компьютере с Resolve, например /Users/имя/Projects/Мой проект.', code: error.code });
+    if (error.code === 'INVALID_AUDIO_TRIM') return res.status(400).json({ error: 'Некорректная обрезка аудио: начало и конец должны оставлять ненулевую длительность блока.', code: error.code });
+    if (diagnosticCode === 'DAVINCI_PROJECT_CHANGED') {
+      return res.status(409).json({ error: 'Проект изменился. Обновите страницу и повторите экспорт.', code: diagnosticCode });
+    }
+    if (['INVALID_DAVINCI_SETTINGS', 'DAVINCI_STRUCTURE_MISMATCH', 'DAVINCI_IMAGE_MISSING', 'DAVINCI_BLOCK_TOO_SHORT', 'DAVINCI_IMAGE_FORMAT_UNSUPPORTED', 'DAVINCI_MEDIA_NAME_CONFLICT'].includes(error.code)) {
       return res.status(409).json({ error: 'Данные проекта не подходят для экспорта. Проверьте блоки и изображения.', code: error.code });
     }
-    return res.status(500).json({ error: 'Не удалось подготовить XML для DaVinci Resolve' });
+    return res.status(500).json({ error: `Не удалось подготовить XML для DaVinci Resolve. Этап: ${stage}; код: ${diagnosticCode}.`, code: diagnosticCode, stage });
   }
 });
 

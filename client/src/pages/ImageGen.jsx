@@ -52,6 +52,8 @@ function editableFrame(frame = {}) {
   return {
     ...(frame.id ? { id: frame.id } : {}),
     sourceVoiceoverBlockId: frame.sourceVoiceoverBlockId || "",
+    animation: frame.animation || "",
+    marker: frame.marker || "",
     scriptText: frame.scriptText || "",
     visualDescription: frame.visualDescription || "",
     prompt: frame.prompt || "",
@@ -769,6 +771,8 @@ export default function ImageGen() {
         <button type="button" className={`${button} flex-1 bg-slate-700 hover:bg-slate-600`} disabled={currentFrameIndex === frames.length - 1 || Boolean(pending)} onClick={() => moveFrame(currentFrameIndex, 1)}>Переместить →</button>
       </div>
       <label className="block"><span className="text-sm text-slate-400">Блок озвучки</span><select value={activeFrame.sourceVoiceoverBlockId} onChange={event => updateFrame(currentFrameIndex, "sourceVoiceoverBlockId", event.target.value)} className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-xl p-3"><option value="">Выберите блок</option>{data.voiceoverBlocks.map(block => <option key={block.id} value={block.id}>Блок {block.order}: {block.sourceTitle}</option>)}</select></label>
+      <label className="block"><span className="text-sm text-slate-400">Анимация DaVinci Resolve</span><select value={activeFrame.animation || ""} onChange={event => updateFrame(currentFrameIndex, "animation", event.target.value)} className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-xl p-3">{["", "Zoom In", "Zoom Out", "Pan Left", "Pan Right", "Pan Up", "Pan Down"].map(value => <option key={value} value={value}>{value || "Без анимации"}</option>)}</select></label>
+      <label className="block"><span className="text-sm text-slate-400">Маркер DaVinci Resolve</span><textarea value={activeFrame.marker || ""} maxLength={2000} onChange={event => updateFrame(currentFrameIndex, "marker", event.target.value)} className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
       <label className="block"><span className="text-sm text-slate-400">Точный фрагмент текста озвучки</span><textarea value={activeFrame.scriptText} maxLength={4000} onChange={event => updateFrame(currentFrameIndex, "scriptText", event.target.value)} className="w-full min-h-24 mt-1 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
       <label className="block"><span className="text-sm text-slate-400">Что происходит в кадре</span><textarea value={activeFrame.visualDescription} maxLength={4000} onChange={event => updateFrame(currentFrameIndex, "visualDescription", event.target.value)} className="w-full min-h-28 mt-1 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
       <label className="block"><span className="text-sm text-slate-400">Prompt для изображения</span><textarea value={activeFrame.prompt} maxLength={12000} onChange={event => updateFrame(currentFrameIndex, "prompt", event.target.value)} className="w-full min-h-40 mt-1 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
