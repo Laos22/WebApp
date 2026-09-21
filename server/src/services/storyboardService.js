@@ -131,3 +131,16 @@ export function storyboardIsCurrent(project, storyboard = normalizeStoryboard(pr
     storyboard.sourceReferencePlanRevision === plan.revision &&
     storyboard.sourceVoiceoverRevision === voiceover.revision;
 }
+
+function sameReferenceIds(left, right) {
+  return JSON.stringify(Array.from(left || [])) === JSON.stringify(Array.from(right || []));
+}
+
+// A storyboard revision describes the whole board. It must not invalidate an
+// unchanged frame image record when another frame is edited or the board is
+// confirmed again. The record belongs to the stable frame id and its inputs.
+export function storyboardImageMatchesFrame(image, frame) {
+  return Boolean(image && frame &&
+    image.sourcePrompt === frame.prompt &&
+    sameReferenceIds(image.sourceReferenceIds, frame.referenceIds));
+}

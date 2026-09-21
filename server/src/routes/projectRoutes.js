@@ -38,7 +38,7 @@ import {
 } from "../services/referencePlanService.js";
 import {
   normalizeStoryboard, parseGeneratedStoryboard, storyboardIsCurrent,
-  validateStoryboardFrames,
+  storyboardImageMatchesFrame, validateStoryboardFrames,
 } from "../services/storyboardService.js";
 import {
   splitScenarioBlocks, parseAdaptedBlocks, normalizeVoiceover,
@@ -1047,9 +1047,7 @@ async function storyboardResponse(project, userId) {
   const imageByFrame = new Map(generatedImages.map(image => [image.frameId, image]));
   const frames = stored.frames.map(frame => {
     const image = imageByFrame.get(frame.id);
-    const current = image && image.sourceStoryboardRevision === stored.revision &&
-      image.sourcePrompt === frame.prompt &&
-      JSON.stringify(image.sourceReferenceIds || []) === JSON.stringify(frame.referenceIds || []);
+    const current = storyboardImageMatchesFrame(image, frame);
     return {
       ...frame,
       image: current ? {
@@ -1333,6 +1331,59 @@ router.put('/:id/storyboard', ensureAuthenticated, async (req, res) => {
   }
 });
 
+router.patch('/:id/storyboard/frames/:frameId', ensureAuthenticated, async (req, res) => {
+  try {
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body) ||
+        Object.keys(body).some(key => !['frame', 'expectedEditVersion', 'sourceStoryboardRevision'].includes(key)) ||
+        !body.frame || typeof body.frame !== 'object' || Array.isArray(body.frame) ||
+        !Number.isSafeInteger(body.expectedEditVersion) || body.expectedEditVersion < 1 ||
+        !Number.isSafeInteger(body.sourceStoryboardRevision) || body.sourceStoryboardRevision < 1) {
+      return res.status(400).json({ error: 'Некорректные данные кадра' });
+    }
+    const owner = { _id: req.params.id, userId: req.user._id };
+    const project = await Project.findOne(owner);
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const storyboard = normalizeStoryboard(project);
+    const frameIndex = storyboard.frames.findIndex(frame => frame.id === req.params.frameId);
+    if (frameIndex < 0) return res.status(404).json({ error: 'Кадр не найден' });
+    if (storyboard.status !== 'confirmed' || storyboard.revision !== body.sourceStoryboardRevision ||
+        storyboard.editVersion !== body.expectedEditVersion || !storyboardIsCurrent(project, storyboard)) {
+      return res.status(409).json({ error: 'Раскадровка изменилась. Обновите страницу.' });
+    }
+    const allowedReferenceIds = new Set(selectedStoryboardReferences(project).map(item => item.id));
+    const voiceoverBlocks = (project.voiceover?.blocks || []).map(block => ({
+      id: block.id, order: block.order, adaptedText: block.adaptedText,
+    }));
+    const candidateFrames = storyboard.frames.map((frame, index) => index === frameIndex
+      ? { ...body.frame, id: frame.id }
+      : frame);
+    let frames;
+    try {
+      frames = validateStoryboardFrames(candidateFrames, storyboard.frames, allowedReferenceIds, voiceoverBlocks);
+    } catch {
+      return res.status(400).json({ error: 'Кадр нарушает структуру или точный текст озвучки' });
+    }
+    const nextFrame = frames[frameIndex];
+    const saved = await Project.findOneAndUpdate({
+      ...owner, 'storyboard.status': 'confirmed', 'storyboard.revision': body.sourceStoryboardRevision,
+      'storyboard.editVersion': body.expectedEditVersion,
+      'storyboard.frames': { $elemMatch: { id: req.params.frameId } },
+    }, { $set: {
+      'storyboard.frames.$[frame]': nextFrame,
+      'storyboard.updatedAt': new Date(), updatedAt: new Date(),
+    }, $inc: {
+      'storyboard.revision': 1, 'storyboard.editVersion': 1,
+    } }, {
+      new: true, runValidators: true, arrayFilters: [{ 'frame.id': req.params.frameId }],
+    });
+    if (!saved) return res.status(409).json({ error: 'Раскадровка изменилась. Обновите страницу.' });
+    return res.json(await storyboardResponse(saved, req.user._id));
+  } catch {
+    return res.status(500).json({ error: 'Не удалось сохранить кадр' });
+  }
+});
+
 router.post('/:id/storyboard/confirm', ensureAuthenticated, async (req, res) => {
   try {
     const { expectedEditVersion, sourceScriptRevision, sourceReferencePlanRevision, sourceVoiceoverRevision } = req.body || {};
@@ -1409,10 +1460,56 @@ router.post('/:id/storyboard/images/reset', ensureAuthenticated, async (req, res
   }
 });
 
+router.post('/:id/storyboard/images/reconcile', ensureAuthenticated, async (req, res) => {
+  try {
+    const { sourceStoryboardRevision } = req.body || {};
+    if (Object.keys(req.body || {}).some(key => key !== 'sourceStoryboardRevision') ||
+        !Number.isSafeInteger(sourceStoryboardRevision) || sourceStoryboardRevision < 1) {
+      return res.status(400).json({ error: 'Некорректная версия раскадровки' });
+    }
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const storyboard = normalizeStoryboard(project);
+    if (storyboard.status !== 'confirmed' || storyboard.revision !== sourceStoryboardRevision ||
+        !storyboardIsCurrent(project, storyboard)) {
+      return res.status(409).json({ error: 'Раскадровка изменилась. Обновите страницу.' });
+    }
+    const images = await StoryboardImage.find({
+      projectId: project._id, userId: req.user._id,
+      frameId: { $in: storyboard.frames.map(frame => frame.id) },
+    }).select('+storageKey');
+    const imageByFrame = new Map(images.map(image => [image.frameId, image]));
+    const matching = storyboard.frames
+      .map(frame => ({ frame, image: imageByFrame.get(frame.id) }))
+      .filter(({ frame, image }) => image?.status === 'ready' && image?.storageKey &&
+        storyboardImageMatchesFrame(image, frame));
+    const reattach = matching.filter(({ image }) => image.sourceStoryboardRevision !== storyboard.revision);
+    if (reattach.length) {
+      await StoryboardImage.bulkWrite(reattach.map(({ image }) => ({
+        updateOne: {
+          filter: { _id: image._id, projectId: project._id, userId: req.user._id },
+          update: { $set: { sourceStoryboardRevision: storyboard.revision } },
+        },
+      })));
+    }
+    const response = await storyboardResponse(project, req.user._id);
+    return res.json({
+      ...response,
+      reconcileSummary: {
+        reattached: reattach.length,
+        current: matching.length,
+        stale: images.length - matching.length,
+        missing: storyboard.frames.length - images.length,
+      },
+    });
+  } catch {
+    return res.status(500).json({ error: 'Не удалось проверить привязки изображений' });
+  }
+});
+
 function storyboardImageIsCurrent(image, storyboard, frame) {
   return image?.status === 'ready' && Boolean(image.storageKey) &&
-    image.sourceStoryboardRevision === storyboard.revision && image.sourcePrompt === frame.prompt &&
-    JSON.stringify(image.sourceReferenceIds || []) === JSON.stringify(frame.referenceIds || []);
+    storyboardImageMatchesFrame(image, frame);
 }
 
 async function saveFlowStoryboardImage({ project, userId, storyboard, frame, buffer }) {
@@ -1782,7 +1879,6 @@ router.get('/:id/storyboard/frames/:frameId/image', ensureAuthenticated, async (
     if (!image?.storageKey) return res.status(404).json({ error: 'Изображение кадра не найдено' });
     const projectCurrent = await Project.findOne({
       _id: req.params.id, userId: req.user._id, 'storyboard.status': 'confirmed',
-      'storyboard.revision': image.sourceStoryboardRevision,
       'storyboard.frames': { $elemMatch: {
         id: image.frameId, prompt: image.sourcePrompt, referenceIds: image.sourceReferenceIds,
       } },

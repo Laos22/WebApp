@@ -115,12 +115,16 @@ export const resetStoryboardPromptDetails = (projectId, payload) =>
   projectRequest(projectId, "/storyboard/detail-prompts/reset", "POST", payload);
 export const saveStoryboard = (projectId, payload) =>
   projectRequest(projectId, "/storyboard", "PUT", payload);
+export const saveStoryboardFrame = (projectId, frameId, payload) =>
+  projectRequest(projectId, `/storyboard/frames/${encodeURIComponent(frameId)}`, "PATCH", payload);
 export const confirmStoryboard = (projectId, payload) =>
   projectRequest(projectId, "/storyboard/confirm", "POST", payload);
 export const generateStoryboardFrameImage = (projectId, frameId, payload) =>
   projectRequest(projectId, `/storyboard/frames/${encodeURIComponent(frameId)}/generate-image`, "POST", payload);
 export const resetStoryboardImages = (projectId, payload) =>
   projectRequest(projectId, "/storyboard/images/reset", "POST", payload);
+export const reconcileStoryboardImages = (projectId, payload) =>
+  projectRequest(projectId, "/storyboard/images/reconcile", "POST", payload);
 export const getStoryboardFrameImageUrl = (projectId, frameId, updatedAt, download = false) =>
   `${SERVER_URL}/api/projects/${projectId}/storyboard/frames/${encodeURIComponent(frameId)}/image?v=${encodeURIComponent(updatedAt || "0")}${download ? "&download=1" : ""}`;
 export const getStoryboardFramePreviewUrl = (projectId, frameId, updatedAt) =>

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalizeStoryboard, parseGeneratedStoryboard, storyboardIsCurrent,
-  validateStoryboardFrames,
+  storyboardImageMatchesFrame, validateStoryboardFrames,
 } from '../src/services/storyboardService.js';
 
 const referenceId = 'ref_11111111-1111-4111-8111-111111111111';
@@ -103,4 +103,28 @@ test('storyboard freshness follows script, voiceover and reference revisions', (
   project.voiceover.revision = 5;
   assert.equal(storyboardIsCurrent(project), false);
   assert.equal(normalizeStoryboard({}).status, 'empty');
+});
+
+test('frame image remains current after an unrelated storyboard revision change', () => {
+  const frame = { id: 'frame_1', prompt: 'Same prompt', referenceIds: ['ref_1'] };
+  const image = {
+    status: 'ready', storageKey: 'projects/example/images/frame.jpg',
+    sourceStoryboardRevision: 2, sourcePrompt: 'Same prompt', sourceReferenceIds: ['ref_1'],
+  };
+  assert.equal(storyboardImageMatchesFrame(image, frame), true);
+  image.sourceStoryboardRevision = 99;
+  assert.equal(storyboardImageMatchesFrame(image, frame), true);
+});
+
+test('frame image becomes stale only when its generation inputs change', () => {
+  const image = {
+    status: 'ready', storageKey: 'projects/example/images/frame.jpg',
+    sourcePrompt: 'Original prompt', sourceReferenceIds: ['ref_1'],
+  };
+  assert.equal(storyboardImageMatchesFrame(image, {
+    prompt: 'Changed prompt', referenceIds: ['ref_1'],
+  }), false);
+  assert.equal(storyboardImageMatchesFrame(image, {
+    prompt: 'Original prompt', referenceIds: [],
+  }), false);
 });

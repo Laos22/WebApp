@@ -5,7 +5,8 @@ import {
   exportStoryboardFlowPackage, generateStoryboardFrameImage, getStoryboard, getStoryboardFrameImageUrl,
   getStoryboardFramePreviewUrl,
   importStoryboardFlowFrameImage,
-  resetStoryboardImages, resetStoryboardPromptDetails, saveStoryboard,
+  reconcileStoryboardImages, resetStoryboardImages, resetStoryboardPromptDetails, saveStoryboard,
+  saveStoryboardFrame,
 } from "../services/api";
 import { fetchProfiles } from "../services/profileService";
 
@@ -128,6 +129,15 @@ export default function ImageGen() {
     frames: storyboard.frames.map(editableFrame),
   }) : "", [storyboard]);
   const dirty = Boolean(storyboard) && JSON.stringify({ instructions, frames }) !== baseline;
+  const changedFrameIds = useMemo(() => {
+    if (!storyboard || frames.length !== storyboard.frames.length) return [];
+    return frames.reduce((changed, frame, index) => {
+      if (JSON.stringify(frame) !== JSON.stringify(editableFrame(storyboard.frames[index]))) {
+        changed.push(frame.id || `new:${index}`);
+      }
+      return changed;
+    }, []);
+  }, [frames, storyboard]);
   const prerequisitesReady = data?.scriptStatus === "confirmed" && data?.voiceoverStatus === "confirmed" && data?.referencePlanStatus === "confirmed";
   const detailStats = useMemo(() => {
     const storedFrames = storyboard?.frames || [];
@@ -286,6 +296,23 @@ export default function ImageGen() {
   const save = () => run("save", () => saveStoryboard(projectId, {
     instructions, frames, expectedEditVersion: storyboard.editVersion,
   }), "Изменения раскадровки сохранены.");
+
+  const saveActiveFrame = () => {
+    if (!activeFrame?.id) return;
+    run(`save-frame:${activeFrame.id}`, () => saveStoryboardFrame(projectId, activeFrame.id, {
+      frame: activeFrame,
+      expectedEditVersion: storyboard.editVersion,
+      sourceStoryboardRevision: storyboard.revision,
+    }), `Кадр ${currentFrameIndex + 1} сохранён. Остальные кадры и изображения не изменены.`);
+  };
+
+  const cancelActiveFrameChanges = () => {
+    if (!activeStoredFrame) return;
+    setFrames(current => current.map((frame, index) =>
+      index === currentFrameIndex ? editableFrame(activeStoredFrame) : frame));
+    setError("");
+    setMessage(`Изменения кадра ${currentFrameIndex + 1} отменены.`);
+  };
 
   const confirm = () => run("confirm", () => confirmStoryboard(projectId, {
     expectedEditVersion: storyboard.editVersion,
@@ -460,6 +487,25 @@ export default function ImageGen() {
       "Изображение Google Flow привязано к кадру.");
   };
 
+  const reconcileImages = async () => {
+    if (pending || dirty || storyboard?.status !== "confirmed") return;
+    setPending("reconcile-images"); setError(""); setMessage("");
+    try {
+      const result = await reconcileStoryboardImages(projectId, {
+        sourceStoryboardRevision: storyboard.revision,
+      });
+      if (mounted.current) {
+        applyData(result);
+        const summary = result.reconcileSummary || {};
+        setMessage(`Проверка завершена: доступно ${summary.current || 0}, восстановлено ${summary.reattached || 0}, устарело ${summary.stale || 0}, отсутствует ${summary.missing || 0}.`);
+      }
+    } catch (err) {
+      if (mounted.current) setError(readableError(err));
+    } finally {
+      if (mounted.current) setPending("");
+    }
+  };
+
   const copyFramePrompt = async frame => {
     try {
       await navigator.clipboard.writeText(frame.prompt);
@@ -498,10 +544,17 @@ export default function ImageGen() {
 
   const activeFrame = frames[currentFrameIndex];
   const activeStoredFrame = activeFrame && storyboard?.frames.find(item => item.id === activeFrame.id);
+  const activeFrameDirty = Boolean(activeFrame?.id && activeStoredFrame &&
+    JSON.stringify(activeFrame) !== JSON.stringify(editableFrame(activeStoredFrame)));
+  const frameStructureUnchanged = Boolean(storyboard && frames.length === storyboard.frames.length &&
+    frames.every((frame, index) => frame.id === storyboard.frames[index]?.id));
+  const canSaveActiveFrame = Boolean(storyboard?.status === "confirmed" && activeFrameDirty &&
+    instructions === (storyboard.instructions || "") && frameStructureUnchanged &&
+    changedFrameIds.length === 1 && changedFrameIds[0] === activeFrame.id);
   const activeDetailStatus = activeStoredFrame?.promptDetailStatus || "pending";
   const activeImage = activeStoredFrame?.image || { status: "pending", hasImage: false };
   const activeImageStatus = activeFrame && pending === `image:${activeFrame.id}` ? "generating" : activeImage.status;
-  const imageStatusLabel = activeImageStatus === "ready" ? "Готово" : activeImageStatus === "error" ? "Ошибка" : activeImageStatus === "generating" ? "Генерируется" : "Ожидает";
+  const imageStatusLabel = activeImageStatus === "ready" ? "Готово" : activeImageStatus === "error" ? "Ошибка" : activeImageStatus === "generating" ? "Генерируется" : activeImage.stale ? "Требует обновления" : "Ожидает";
   const activePreviewUrl = activeFrame?.id && activeImage.hasImage
     ? getStoryboardFramePreviewUrl(projectId, activeFrame.id, activeImage.updatedAt)
     : "";
@@ -690,6 +743,10 @@ export default function ImageGen() {
         {flowImportProgress && <p className="text-sm text-cyan-300">Импортировано в этом запуске: {flowImportProgress.done}/{flowImportProgress.total} · добавлено {flowImportProgress.imported} · заменено {flowImportProgress.replaced} · ошибок {flowImportProgress.errors}</p>}
       </div>}
       <p className="text-sm text-slate-400">Готово {imageStats.ready}/{imageStats.total}{imageStats.failed > 0 ? ` · ошибок ${imageStats.failed}` : ""}{imageStats.generating > 0 ? ` · генерируется ${imageStats.generating}` : ""}</p>
+      <div className="border-t border-slate-800 pt-4 space-y-2">
+        <button type="button" className={`${button} w-full bg-slate-700 hover:bg-slate-600`} disabled={Boolean(pending) || dirty || storyboard.status !== "confirmed"} onClick={reconcileImages}>{pending === "reconcile-images" ? "Проверяем привязки…" : "Восстановить привязки изображений"}</button>
+        <p className="text-xs text-slate-500">Безопасно проверяет сохранённые изображения и возвращает только те, у которых совпадают кадр, prompt и референсы.</p>
+      </div>
     </Drawer>}
 
     {frameMenuOpen && activeFrame && <Drawer title={`Кадр ${currentFrameIndex + 1} — настройки`} wide onClose={() => setFrameMenuOpen(false)}>
@@ -703,6 +760,14 @@ export default function ImageGen() {
       <label className="block"><span className="text-sm text-slate-400">Prompt для изображения</span><textarea value={activeFrame.prompt} maxLength={12000} onChange={event => updateFrame(currentFrameIndex, "prompt", event.target.value)} className="w-full min-h-40 mt-1 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
       <div className="flex flex-wrap items-center gap-3"><span className={`text-sm ${activeDetailStatus === "ready" ? "text-emerald-400" : activeDetailStatus === "error" ? "text-red-400" : "text-slate-500"}`}>Детализация: {activeDetailStatus === "ready" ? "готово" : activeDetailStatus === "error" ? "ошибка" : "ожидает"}</span><button type="button" className={`${button} bg-fuchsia-700 hover:bg-fuchsia-600`} disabled={Boolean(pending) || dirty || !prerequisitesReady || !activeFrame.id} onClick={() => detailFrame(activeFrame.id)}>{pending === `detail:${activeFrame.id}` ? "ИИ детализирует…" : "Детализировать prompt"}</button></div>
       <fieldset className="border border-slate-700 rounded-xl p-4 space-y-3"><legend className="px-2 text-sm text-slate-300">Референсы этого кадра</legend>{data.references.length ? <div className="grid sm:grid-cols-2 gap-2">{data.references.map(reference => <label key={reference.id} className="flex items-start gap-2 p-2 rounded-lg bg-slate-950/60"><input type="checkbox" checked={activeFrame.referenceIds.includes(reference.id)} onChange={() => toggleReference(currentFrameIndex, reference.id)} /><span><span className="block">{reference.name}</span><span className={`text-xs ${reference.imageReady ? "text-emerald-400" : "text-slate-500"}`}>{reference.imageReady ? "Изображение загружено" : "Только текстовый референс"}</span></span></label>)}</div> : <p className="text-slate-500">Нет выбранных референсов.</p>}</fieldset>
+      {activeFrameDirty && <section className="rounded-xl border border-amber-700/60 bg-amber-950/20 p-4 space-y-3">
+        <p className="text-sm text-amber-200">Изменения этого кадра ещё не сохранены.</p>
+        {!canSaveActiveFrame && <p className="text-xs text-amber-300">Одновременно изменены другие кадры, их порядок или общая инструкция. Для отдельного сохранения сначала отмените эти изменения либо используйте общее сохранение раскадровки.</p>}
+        <div className="grid sm:grid-cols-2 gap-2">
+          <button type="button" className={`${button} bg-emerald-700 hover:bg-emerald-600`} disabled={Boolean(pending) || !canSaveActiveFrame} onClick={saveActiveFrame}>{pending === `save-frame:${activeFrame.id}` ? "Сохраняем…" : "Сохранить этот кадр"}</button>
+          <button type="button" className={`${button} bg-slate-700 hover:bg-slate-600`} disabled={Boolean(pending)} onClick={cancelActiveFrameChanges}>Отменить изменения кадра</button>
+        </div>
+      </section>}
       {storyboard.status === "confirmed" && !dirty && activeFrame.id && <section className="border border-cyan-800/60 bg-cyan-950/20 rounded-xl p-4 space-y-3">
         <div className="flex items-center justify-between gap-2"><h3 className="font-semibold">Изображение кадра</h3><span className="text-sm text-slate-300">{imageStatusLabel}</span></div>
         <div className="flex flex-wrap gap-2">

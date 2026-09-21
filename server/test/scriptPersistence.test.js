@@ -43,7 +43,7 @@ function setup({ owner = true, failWrite = false, failMirror = false } = {}) {
       return structuredClone(project);
     },
   };
-  const router = Object.fromEntries(['get', 'post', 'put', 'delete'].map(method => [method,
+  const router = Object.fromEntries(['get', 'post', 'put', 'patch', 'delete'].map(method => [method,
     (path, ...handlers) => routes.set(`${method} ${path}`, handlers.at(-1))]));
   vm.runInNewContext(source, {
     process: { env: {} },
