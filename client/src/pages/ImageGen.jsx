@@ -9,6 +9,7 @@ import {
   saveStoryboardFrame,
 } from "../services/api";
 import { fetchProfiles } from "../services/profileService";
+import { frameLabel } from "../utils/frameLabel";
 
 const panel = "bg-slate-900/80 border border-slate-800 rounded-2xl p-5 md:p-6 space-y-4";
 const button = "px-4 py-2.5 rounded-xl bg-purple-700 hover:bg-purple-600 disabled:opacity-50 disabled:cursor-not-allowed";
@@ -307,7 +308,7 @@ export default function ImageGen() {
       frame: activeFrame,
       expectedEditVersion: storyboard.editVersion,
       sourceStoryboardRevision: storyboard.revision,
-    }), `Кадр ${currentFrameIndex + 1} сохранён. Остальные кадры и изображения не изменены.`);
+    }), `${frameLabel(activeFrame, frames, data.voiceoverBlocks)} сохранён. Остальные кадры и изображения не изменены.`);
   };
 
   const cancelActiveFrameChanges = () => {
@@ -315,7 +316,7 @@ export default function ImageGen() {
     setFrames(current => current.map((frame, index) =>
       index === currentFrameIndex ? editableFrame(activeStoredFrame) : frame));
     setError("");
-    setMessage(`Изменения кадра ${currentFrameIndex + 1} отменены.`);
+    setMessage(`Изменения ${frameLabel(activeFrame, frames, data.voiceoverBlocks)} отменены.`);
   };
 
   const confirm = () => run("confirm", () => confirmStoryboard(projectId, {
@@ -521,7 +522,7 @@ export default function ImageGen() {
   const copyFramePrompt = async frame => {
     try {
       await navigator.clipboard.writeText(frame.prompt);
-      setMessage(`Prompt кадра ${frame.order || ""} скопирован.`);
+      setMessage(`${frameLabel(frame, frames, data.voiceoverBlocks)}: prompt скопирован.`);
       setError("");
     } catch { setError("Не удалось скопировать prompt. Разрешите браузеру доступ к буферу обмена."); }
   };
@@ -605,7 +606,7 @@ export default function ImageGen() {
         <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 text-xs whitespace-nowrap">
           {frames.length > 0 && <div className="shrink-0 flex items-center rounded-full bg-purple-950 border border-purple-800/60 overflow-hidden">
             <button type="button" aria-label="Предыдущий кадр" className="w-7 h-7 hover:bg-purple-800 disabled:opacity-40" disabled={currentFrameIndex === 0} onClick={() => goToFrame(currentFrameIndex - 1)}>‹</button>
-            <button type="button" className="h-7 px-2.5 hover:bg-purple-800 font-semibold" onClick={() => setOpenPanel("frames")}>Кадр {currentFrameIndex + 1}/{frames.length}⌄</button>
+            <button type="button" className="h-7 px-2.5 hover:bg-purple-800 font-semibold" onClick={() => setOpenPanel("frames")}>{frameLabel(activeFrame, frames, data.voiceoverBlocks)}⌄</button>
             <button type="button" aria-label="Следующий кадр" className="w-7 h-7 hover:bg-purple-800 disabled:opacity-40" disabled={currentFrameIndex >= frames.length - 1} onClick={() => goToFrame(currentFrameIndex + 1)}>›</button>
           </div>}
           <span className="px-2.5 py-1 rounded-full bg-slate-800">Раскадровка: <b>{statuses[storyboard?.status] || storyboard?.status}</b></span>
@@ -639,7 +640,7 @@ export default function ImageGen() {
         {activeFrame ? <article id="active-storyboard-frame" className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/85 shadow-2xl scroll-mt-36">
           <header className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-800">
             <div className="min-w-0">
-              <div className="flex items-center gap-2"><h2 className="font-bold">Кадр {currentFrameIndex + 1}</h2>
+              <div className="flex items-center gap-2"><h2 className="font-bold">{frameLabel(activeFrame, frames, data.voiceoverBlocks)}</h2>
                 <span className={`text-xs px-2 py-0.5 rounded-full ${activeImageStatus === "ready" ? "bg-emerald-950 text-emerald-300" : activeImageStatus === "error" ? "bg-red-950 text-red-300" : activeImageStatus === "generating" ? "bg-cyan-950 text-cyan-300" : "bg-slate-800 text-slate-300"}`}>{imageStatusLabel}</span>
               </div>
               <p className="text-xs text-slate-500 truncate">Prompt: {activeDetailStatus === "ready" ? "детализирован" : activeDetailStatus === "error" ? "ошибка детализации" : "ожидает детализации"}</p>
@@ -660,7 +661,7 @@ export default function ImageGen() {
                   <span className="text-sm">Загрузка изображения…</span>
                 </div>}
                 {imageLoadError && <div role="alert" className="absolute inset-0 flex items-center justify-center p-6 bg-red-950/40 text-red-200 text-center">Не удалось загрузить изображение. Обновите страницу или войдите через Google заново.</div>}
-                <img key={activePreviewUrl} src={activePreviewUrl} alt={`Кадр ${currentFrameIndex + 1}`}
+                <img key={activePreviewUrl} src={activePreviewUrl} alt={frameLabel(activeFrame, frames, data.voiceoverBlocks)}
                   loading="eager" decoding="async" fetchPriority="high"
                   onLoad={() => { setImageLoading(false); setImageLoadError(false); preloadNextFrame(); }}
                   onError={() => { setImageLoading(false); setImageLoadError(true); }}
@@ -689,13 +690,13 @@ export default function ImageGen() {
 
     {openPanel === "frames" && <Drawer title="Выбор кадра" onClose={() => setOpenPanel("")}>
       <select value={currentFrameIndex} onChange={event => { goToFrame(Number(event.target.value)); setOpenPanel(""); }} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3">
-        {frames.map((frame, index) => <option key={frame.id || index} value={index}>Кадр {index + 1} из {frames.length}</option>)}
+        {frames.map((frame, index) => <option key={frame.id || index} value={index}>{frameLabel(frame, frames, data.voiceoverBlocks)} из {frames.length}</option>)}
       </select>
       <div className="grid grid-cols-6 sm:grid-cols-10 gap-2 max-h-[55dvh] overflow-y-auto pr-1">
         {frames.map((frame, index) => {
           const state = storyboard.frames.find(item => item.id === frame.id)?.image?.status || "pending";
           const color = state === "ready" ? "bg-emerald-700" : state === "error" ? "bg-red-800" : state === "generating" ? "bg-cyan-700" : "bg-slate-700";
-          return <button key={frame.id || index} type="button" className={`py-2.5 rounded-lg text-sm ${color} ${index === currentFrameIndex ? "ring-2 ring-purple-400" : ""}`} onClick={() => { goToFrame(index); setOpenPanel(""); }}>{index + 1}</button>;
+          return <button key={frame.id || index} type="button" className={`py-2.5 rounded-lg text-sm ${color} ${index === currentFrameIndex ? "ring-2 ring-purple-400" : ""}`} onClick={() => { goToFrame(index); setOpenPanel(""); }}>{frameLabel(frame, frames, data.voiceoverBlocks)}</button>;
         })}
       </div>
       <p className="text-xs text-slate-500">Зелёный — изображение готово, красный — ошибка, голубой — генерируется.</p>
@@ -726,7 +727,7 @@ export default function ImageGen() {
           {frames.map((frame, index) => {
             const state = storyboard.frames.find(item => item.id === frame.id)?.image?.status || "pending";
             const color = state === "ready" ? "bg-emerald-700" : state === "error" ? "bg-red-800" : state === "generating" ? "bg-cyan-700" : "bg-slate-700";
-            return <button key={frame.id || index} type="button" className={`py-2 rounded-lg text-sm ${color} ${index === currentFrameIndex ? "ring-2 ring-purple-400" : ""}`} onClick={() => { goToFrame(index); setOpenPanel(""); }}>{index + 1}</button>;
+            return <button key={frame.id || index} type="button" className={`py-2 rounded-lg text-sm ${color} ${index === currentFrameIndex ? "ring-2 ring-purple-400" : ""}`} onClick={() => { goToFrame(index); setOpenPanel(""); }}>{frameLabel(frame, frames, data.voiceoverBlocks)}</button>;
           })}
         </div>
         <p className="text-xs text-slate-500">Зелёный — готово, красный — ошибка, голубой — генерируется.</p>

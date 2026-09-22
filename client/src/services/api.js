@@ -86,6 +86,8 @@ export const getVoiceoverAudioUrl = (projectId, blockId, generatedAt) =>
   `${SERVER_URL}/api/projects/${projectId}/voiceover/blocks/${encodeURIComponent(blockId)}/audio?v=${encodeURIComponent(generatedAt || "0")}`;
 export const getSoundEffects = projectId => projectRequest(projectId, '/sound-effects');
 export const analyzeSoundDesign = projectId => projectRequest(projectId, '/sound-effects/analyze', 'POST', {});
+export const addSoundDesignFrame = (projectId, frameId) => projectRequest(projectId, '/sound-effects/frames', 'POST', { frameId });
+export const removeSoundDesignFrame = (projectId, frameId) => projectRequest(projectId, `/sound-effects/frames/${encodeURIComponent(frameId)}`, 'DELETE');
 export const soundEffectAudioUrl = (projectId, effectId, generatedAt) =>
   `${SERVER_URL}/api/projects/${projectId}/sound-effects/${encodeURIComponent(effectId)}/audio?v=${encodeURIComponent(generatedAt || '0')}`;
 export const createSoundEffect = (projectId, payload) => projectRequest(projectId, '/sound-effects', 'POST', payload);

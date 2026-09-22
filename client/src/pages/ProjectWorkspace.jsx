@@ -100,9 +100,15 @@ export default function ProjectWorkspace() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {project.storyboard?.status === 'confirmed' && videoAvailable && <Link
-            to={`/projects/${projectId}/video`} className="p-8 bg-slate-900 rounded-2xl border border-purple-500/40">
-            <h2 className="text-2xl font-bold mb-2">Работа с видео</h2>
-            <p className="text-slate-400 text-sm">Анализ кадров, выбор движения и подготовка видеопромтов.</p>
+            to={`/projects/${projectId}/video`}
+            className="group p-8 bg-slate-900/80 hover:bg-slate-900 border border-blue-500/20 hover:border-blue-500/60 rounded-2xl transition-all shadow-xl flex flex-col justify-between"
+          >
+            <div>
+              <div className="w-12 h-12 rounded-xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-2xl mb-4 group-hover:scale-110 transition-transform">🎬</div>
+              <h2 className="text-2xl font-bold mb-2 group-hover:text-blue-300 transition-colors">Работа с видео</h2>
+              <p className="text-slate-400 text-sm">Анализ кадров, выбор движения и подготовка видеопромтов.</p>
+            </div>
+            <div className="mt-6 flex items-center text-blue-400 font-semibold text-sm group-hover:translate-x-1 transition-transform">Перейти &rarr;</div>
           </Link>}
           <Link
             to={`/projects/${projectId}/script`}

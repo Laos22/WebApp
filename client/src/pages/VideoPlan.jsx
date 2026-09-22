@@ -236,7 +236,7 @@ function VideoPlanEditor({ projectId }) {
         <button className={secondary} disabled={busy || position === 0} onClick={() => setIndex(visibleFrames[position - 1].index)}>← Предыдущий</button>
         <button ref={pickerToggle} className={`${secondary} col-span-2 row-start-1 min-w-0 sm:flex-1`} disabled={busy}
           aria-expanded={pickerOpen} aria-controls="video-frame-picker" onClick={() => setPickerOpen(value => !value)}>
-          Кадр {activeIndex + 1} · Список кадров ({visibleFrames.length}) {pickerOpen ? '▴' : '▾'}
+          Кадр {frame?.blockNumber ?? '—'}–{frame?.frameInBlock ?? activeIndex + 1} · Список кадров ({visibleFrames.length}) {pickerOpen ? '▴' : '▾'}
         </button>
         <button className={secondary} disabled={busy || position === visibleFrames.length - 1} onClick={() => setIndex(visibleFrames[position + 1].index)}>Следующий →</button>
       </nav>
@@ -245,17 +245,17 @@ function VideoPlanEditor({ projectId }) {
         <p className="text-sm text-slate-300">Зелёным отмечены кадры для анимации.</p>
         <div className="flex flex-wrap gap-2 max-h-64 overflow-y-auto p-1">
           {visibleFrames.map(item => <button key={item.frameId} disabled={busy} onClick={() => chooseFrame(item.index)} aria-current={item.index === activeIndex ? 'true' : undefined}
-            aria-label={`Кадр ${item.index + 1}, блок ${item.blockNumber ?? '—'}${item.plan.selected ? ', для анимации' : ''}${item.unsaved ? ', несохранённые правки' : ''}`}
-            title={`Блок ${item.blockNumber ?? '—'} · Кадр ${item.frameInBlock}`}
+            aria-label={`Кадр ${item.blockNumber ?? '—'}–${item.frameInBlock ?? item.index + 1}${item.plan.selected ? ', для анимации' : ''}${item.unsaved ? ', несохранённые правки' : ''}`}
+            title={`Кадр ${item.blockNumber ?? '—'}–${item.frameInBlock ?? item.index + 1}`}
             className={`min-w-12 rounded-lg border-2 px-3 py-2 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-400 ${item.plan.selected ? 'border-emerald-400 bg-emerald-950/60 text-emerald-200' : 'border-slate-700 bg-slate-900'} ${item.index === activeIndex ? 'ring-2 ring-purple-400 ring-offset-2 ring-offset-slate-950' : ''}`}>
-            {item.index + 1}{item.unsaved ? ' *' : ''}
+            {item.blockNumber ?? '—'}–{item.frameInBlock ?? item.index + 1}{item.unsaved ? ' *' : ''}
           </button>)}
         </div>
       </section>}
       <div className="grid gap-5 md:grid-cols-2">
         <div className="space-y-3 min-w-0">
-          <h2 className="font-semibold">Кадр {activeIndex + 1} · Блок {frame.blockNumber ?? '—'}</h2>
-          {frame.hasImage ? <img key={frame.previewUrl} src={videoPreviewUrl(frame.previewUrl)} alt={`Исходное изображение кадра ${activeIndex + 1}`}
+          <h2 className="font-semibold">Кадр {frame.blockNumber ?? '—'}–{frame.frameInBlock ?? activeIndex + 1}</h2>
+          {frame.hasImage ? <img key={frame.previewUrl} src={videoPreviewUrl(frame.previewUrl)} alt={`Исходное изображение кадра ${frame.blockNumber ?? '—'}–${frame.frameInBlock ?? activeIndex + 1}`}
             className="w-full max-h-[55vh] object-contain rounded-xl bg-slate-900" />
             : <div className="rounded-xl bg-slate-900 p-10 text-slate-400">Исходное изображение отсутствует или устарело.</div>}
           <label className="flex gap-3 items-center rounded-xl border border-slate-700 p-3"><input type="checkbox" checked={draft.selected} disabled={busy}

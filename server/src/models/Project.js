@@ -136,6 +136,7 @@ const voiceoverSchema = new mongoose.Schema({
 const soundEffectSchema = new mongoose.Schema({
   _id: { type: String, required: true, maxlength: 36 },
   name: { type: String, required: true, maxlength: 120 },
+  sourcePrompt: { type: String, default: '', maxlength: 450 },
   prompt: { type: String, required: true, maxlength: 450 },
   durationSec: { type: Number, min: 0.5, max: 30, default: null },
   loop: { type: Boolean, default: false },
@@ -174,6 +175,7 @@ const soundPlanSchema = new mongoose.Schema({
 const backgroundMusicSchema = new mongoose.Schema({
   status: { type: String, enum: ['empty', 'generating', 'ready', 'error'], default: 'empty' },
   title: { type: String, default: '', maxlength: 160 },
+  sourcePrompt: { type: String, default: '', maxlength: 4100 },
   prompt: { type: String, default: '', maxlength: 4100 },
   durationSec: { type: Number, min: 3, max: 600, default: null },
   instrumental: { type: Boolean, default: true },
