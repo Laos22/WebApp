@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { getVideoPlan, saveVideoPlanFrame, videoPreviewUrl, videoPlanAction, saveVideoInstructions } from '../services/api';
+import { getVideoPlan, saveVideoPlanFrame, videoPreviewUrl, videoPlanAction, saveVideoInstructions,
+  exportFlowVideoPackage, importFlowVideo, videoFileUrl } from '../services/api';
 import { pendingVideoFrames, runVideoQueue } from '../services/videoPlanQueue';
 import { videoPlanView, filterVideoFrames } from '../services/videoPlanView';
 
@@ -26,6 +27,7 @@ function VideoPlanEditor({ projectId }) {
   const [message, setMessage] = useState('');
   const [conflict, setConflict] = useState(false);
   const [reload, setReload] = useState(0);
+  const [flowBusy, setFlowBusy] = useState('');
   useEffect(() => {
     let active = true;
     getVideoPlan(projectId).then(result => { if (active) { setData(result); setInstructions(result.videoPlan.instructions); } })
@@ -136,6 +138,35 @@ function VideoPlanEditor({ projectId }) {
     finally { setBusy(false); setRunning(false); setProgress(''); }
   }
   function chooseFrame(i) { setIndex(i); setPickerOpen(false); setMessage(''); pickerToggle.current?.focus(); }
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url; anchor.download = filename;
+    document.body.appendChild(anchor); anchor.click(); anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  async function exportFlowVideo() {
+    setFlowBusy('export'); setError(''); setMessage('');
+    try {
+      const result = await exportFlowVideoPackage(projectId, data.videoPlan.editVersion);
+      downloadBlob(result.blob, result.filename);
+      setMessage('Пакет видео для Google Flow скачан.');
+    } catch (err) { setError(err.message); }
+    finally { setFlowBusy(''); }
+  }
+  async function importFrameVideo(event) {
+    const videoFile = event.target.files?.[0];
+    event.target.value = '';
+    if (!videoFile || !frame?.videoInputFingerprint) return;
+    setFlowBusy(`import:${frame.frameId}`); setError(''); setMessage('');
+    try {
+      await importFlowVideo(projectId, frame.frameId, videoFile, frame.videoInputFingerprint);
+      const result = await getVideoPlan(projectId);
+      setData(result);
+      setMessage(`Видео кадра ${activeIndex + 1} импортировано.`);
+    } catch (err) { setError(err.message); }
+    finally { setFlowBusy(''); }
+  }
   const analysis = data?.videoPlan.analysis;
   const canResumeAnalysis = analysis && data.videoPlan.status !== 'stale' && analysis.completedChunks.length < data.analysisChunks.length;
   const scopeBlocks = analysis?.allowedBlockIds ? [...new Set(data.frames.filter(f =>
@@ -151,6 +182,11 @@ function VideoPlanEditor({ projectId }) {
           <div key={label}><div className="text-xl sm:text-2xl font-bold">{count}</div><div className="text-xs sm:text-sm text-slate-300">{label}</div></div>)}
       </div>
       <div className="text-xs text-slate-400">{({ empty: 'Выберите кадры для анимации', draft: 'Черновик видеоплана', confirmed: 'Видеоплан утверждён', stale: 'Раскадровка изменилась — проверьте план' })[data.videoPlan.status]}</div>
+      <div className="flex flex-wrap gap-2 border-t border-slate-700 pt-3">
+        <button className={button} disabled={busy || flowBusy || data.videoPlan.status !== 'confirmed' || !view.selected}
+          onClick={exportFlowVideo}>{flowBusy === 'export' ? 'Готовим пакет…' : 'Скачать пакет Google Flow Video'}</button>
+        <span className="self-center text-xs text-slate-400">Экспортируются выбранные кадры без актуального видео.</span>
+      </div>
       {progress && <p>{progress}</p>}
       {running && <button className={secondary} onClick={() => { stop.current = true; setProgress('Остановка после текущего запроса…'); }}>Остановить после текущего запроса</button>}
     </div>}
@@ -226,7 +262,23 @@ function VideoPlanEditor({ projectId }) {
             onChange={event => edit({ selected: event.target.checked })} className="size-5 accent-emerald-500" />Анимировать этот кадр</label>
           <p className="whitespace-pre-wrap break-words text-sm">{frame.text}</p>
           <p className="text-sm text-slate-400">Длительность: {frame.targetDurationSec === null ? 'недоступна — проверьте раскадровку и озвучку' : `${frame.targetDurationSec.toFixed(2)} с${frame.durationExact ? '' : ' (оценка)'}`}</p>
-          {frame.video && <p>Видео: {({ pending: 'ожидает', generating: 'создаётся', ready: 'готово', stale: 'устарело', error: 'ошибка' })[frame.video.status]}</p>}
+          <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-3 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p>Видео: {({ pending: 'ожидает', generating: 'создаётся', ready: 'готово', stale: 'устарело', error: 'ошибка' })[frame.video?.status || 'pending']}</p>
+              <label className={`${secondary} cursor-pointer ${flowBusy ? 'pointer-events-none opacity-40' : ''}`}>
+                {flowBusy === `import:${frame.frameId}` ? 'Импортируем…' : frame.video?.status === 'ready' ? 'Заменить MP4' : 'Импортировать MP4'}
+                <input type="file" accept="video/mp4,.mp4" className="sr-only" disabled={Boolean(flowBusy)}
+                  onChange={importFrameVideo} />
+              </label>
+            </div>
+            {frame.video?.status === 'ready' && <>
+              <video controls preload="metadata" className="w-full max-h-[45vh] rounded-lg bg-black"
+                src={videoFileUrl(projectId, frame.frameId, frame.video.generatedAt || frame.video.filename)} />
+              <a className="text-sm text-purple-300 hover:text-purple-200" download={frame.video.filename}
+                href={videoFileUrl(projectId, frame.frameId, frame.video.generatedAt || frame.video.filename)}>Скачать MP4</a>
+            </>}
+            {!frame.videoInputFingerprint && <p className="text-xs text-slate-400">Сначала сохраните и утвердите готовый промт кадра.</p>}
+          </div>
         </div>
         <section className="space-y-3 min-w-0 rounded-2xl border border-slate-800 p-4" aria-labelledby="detail-heading">
           <h2 id="detail-heading" className="text-xl font-semibold">2. Детализация промта</h2>
@@ -247,6 +299,6 @@ function VideoPlanEditor({ projectId }) {
         </section>
       </div>
     </>}
-    <p className="text-xs text-slate-500">Здесь подготавливается видеоплан. Генерация видео будет доступна позже.</p>
+    <p className="text-xs text-slate-500">Сгенерируйте ролики в Google Flow по скачанному пакету, затем импортируйте MP4 для каждого кадра.</p>
   </div>;
 }

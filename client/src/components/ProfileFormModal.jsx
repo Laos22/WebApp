@@ -49,6 +49,9 @@ export default function ProfileFormModal({ initialProfile, onSave, onClose }) {
         ),
       },
     };
+    // The server deliberately does not return the stored secret. An empty
+    // key while editing therefore means "keep the existing encrypted key".
+    if (form.id && !String(form.apiKey || '').trim()) delete cleaned.apiKey;
     onSave(cleaned);
   };
 
@@ -121,13 +124,18 @@ export default function ProfileFormModal({ initialProfile, onSave, onClose }) {
             <label className={labelClass}>API Ключ</label>
             <input
               type="password"
-              required
+              required={!form.id && !form.hasApiKey}
               value={form.apiKey}
               onChange={(e) => updateField("apiKey", e.target.value)}
               className={inputClass}
-              placeholder="sk-..."
+              placeholder={form.id && form.hasApiKey ? "Сохранённый ключ останется без изменений" : "sk-..."}
               autoComplete="off"
             />
+            {form.id && form.hasApiKey && (
+              <p className="mt-2 text-xs text-slate-400">
+                Ключ уже сохранён. Оставьте поле пустым, чтобы изменить модель, провайдера или профиль по умолчанию без повторного ввода ключа.
+              </p>
+            )}
           </div>
 
           {/* Чекбокс "по умолчанию" */}

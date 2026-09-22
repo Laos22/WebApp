@@ -99,6 +99,8 @@ test('stable video names, strict paths, local replacement rollback/commit and sy
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const project = { ...fixture(), projectPath: root };
   assert.equal(storyboardVideoFilename(project, 'f2'), 'video_2_2.mp4');
+  assert.equal(storyboardVideoFilename(project, 'f2', 'v123'), 'video_2_2__v123.mp4');
+  assert.equal(resolveStoryboardVideoStorageKey('project/video/video_2_2__v123.mp4', root), path.join(root, 'video/video_2_2__v123.mp4'));
   assert.throws(() => storyboardVideoFilename(project, '../x'));
   for (const key of ['../x', '/tmp/video_2_1.mp4', 'project/video/../images/x', 'project/video/video_0_1.mp4', 'project/video/video_2_1.mp4/extra', 'project/video/..\\x']) {
     assert.throws(() => resolveStoryboardVideoStorageKey(key, root), { code: 'INVALID_STORAGE_KEY' });

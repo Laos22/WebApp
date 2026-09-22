@@ -5,11 +5,50 @@ export function videoError(code, status = 400) {
   return Object.assign(new Error(code), { code, status });
 }
 export function classifyVideoError(error) {
+  const rawMessage = String(error?.message || '');
+  if (/API-ключ не найден|Missing text profile|primaryModel|api.?key/i.test(rawMessage)) {
+    return {
+      status: 503,
+      code: 'AI_CONFIGURATION_MISSING',
+      error: 'Не настроен текстовый AI-профиль. Откройте настройки и укажите API-ключ и модель.',
+    };
+  }
   if (Number(error?.status || error?.code || error?.response?.status || error?.error?.code) === 429 || /(?:resource_exhausted|rate.?limit|quota)/i.test(String(error?.message || ''))) {
     const raw = error?.response?.headers?.get?.('retry-after') ?? error?.response?.headers?.['retry-after'];
     const delay = raw == null ? NaN : (/^\d+(\.\d+)?$/.test(String(raw)) ? Number(raw) * 1000 : Date.parse(raw) - Date.now());
     return { status: 429, code: 'AI_RATE_LIMIT', error: 'Временное ограничение ИИ. Повторите позже.',
       ...(Number.isFinite(delay) ? { retryAfterMs: Math.max(1000, delay) } : {}) };
+  }
+  const providerStatus = Number(error?.status || error?.statusCode || error?.response?.status);
+  if (providerStatus === 401 || providerStatus === 403 || /permission denied|unauthorized|invalid api key/i.test(rawMessage)) {
+    return {
+      status: 503,
+      code: 'AI_CONFIGURATION_MISSING',
+      error: 'AI-провайдер отклонил запрос. Проверьте API-ключ и доступ к выбранной модели.',
+    };
+  }
+  if (providerStatus === 404 || /model .*?(?:no longer available|not found)|not_found/i.test(rawMessage)) {
+    return {
+      status: 503,
+      code: 'AI_MODEL_UNAVAILABLE',
+      error: 'Выбранная AI-модель больше недоступна. В настройках профиля укажите gemini-3.6-flash и сохраните изменения.',
+    };
+  }
+  if (providerStatus === 503 || /temporarily unavailable|high demand|status["']?\s*:\s*["']UNAVAILABLE/i.test(rawMessage)) {
+    return {
+      status: 503,
+      code: 'AI_PROVIDER_UNAVAILABLE',
+      error: 'AI-модель временно перегружена. Подождите немного и повторите операцию.',
+    };
+  }
+  // Application validation errors already carry a stable code; only classify
+  // an untyped HTTP 400 as a provider request failure.
+  if (providerStatus === 400 && !error?.code) {
+    return {
+      status: 502,
+      code: 'AI_PROVIDER_REQUEST_FAILED',
+      error: 'AI-провайдер отклонил запрос. Проверьте выбранную модель и настройки текстового профиля.',
+    };
   }
   const messages = {
     INVALID_AI_RESPONSE: 'Неверный ответ ИИ. Повторите запрос позже.',
@@ -23,6 +62,10 @@ export function classifyVideoError(error) {
     PLAN_NOT_READY: 'Выберите кадры и подготовьте непустой промт для каждого выбранного кадра.',
     ANALYSIS_RESTART_REQUIRED: 'Исходные данные или выбор кадров изменились. Запустите анализ заново.',
     INPUT_TOO_LARGE: 'Данные кадра слишком велики. Сократите описание или инструкции.',
+    AI_CONFIGURATION_MISSING: 'Не настроен текстовый AI-профиль. Откройте настройки и укажите API-ключ и модель.',
+    AI_PROVIDER_REQUEST_FAILED: 'AI-провайдер отклонил запрос. Проверьте выбранную модель и настройки текстового профиля.',
+    AI_MODEL_UNAVAILABLE: 'Выбранная AI-модель больше недоступна. В настройках профиля укажите gemini-3.6-flash и сохраните изменения.',
+    AI_PROVIDER_UNAVAILABLE: 'AI-модель временно перегружена. Подождите немного и повторите операцию.',
   };
   return { status: messages[error?.code] ? error.status || 400 : 503,
     code: messages[error?.code] ? error.code : 'VIDEO_PLAN_FAILED',

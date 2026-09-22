@@ -11,6 +11,37 @@ function modelText(response) {
   return text.trim();
 }
 
+async function generateOpenRouterText(prompt, profile, json = false) {
+  const apiKey = getDecryptedApiKey(profile);
+  if (!apiKey) throw new Error('API-ключ OpenRouter не найден');
+  const model = profile?.textSettings?.primaryModel?.trim() || 'openrouter/free';
+  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': 'https://webapp.local',
+      'X-Title': 'WebApp',
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: 'user', content: String(prompt) }],
+      ...(json ? { response_format: { type: 'json_object' } } : {}),
+      temperature: profile?.textSettings?.temperature ?? 0.7,
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(payload?.error?.message || 'OpenRouter request failed');
+    error.status = response.status;
+    error.code = payload?.error?.code;
+    throw error;
+  }
+  const text = payload?.choices?.[0]?.message?.content;
+  if (typeof text !== 'string' || !text.trim()) throw new Error('OpenRouter returned empty text');
+  return text.trim();
+}
+
 function providerStatus(error) {
   return Number(error?.status || error?.code || error?.response?.status || error?.error?.code) || 0;
 }
@@ -603,6 +634,9 @@ export async function editScript(currentScript, instruction, profile) {
 
 // Single bounded request; the client owns pacing and resumable orchestration.
 export async function generateVideoPlanText(prompt, profile, json = false) {
+  if (profile?.provider === 'openrouter') {
+    return generateOpenRouterText(prompt, profile, json);
+  }
   const { apiKey, model } = resolveTextConfig(profile, 'video-plan');
   const ai = new GoogleGenAI({ apiKey });
   const result = await ai.models.generateContent({ model, contents: prompt,

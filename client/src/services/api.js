@@ -213,3 +213,27 @@ export const videoPlanAction = (projectId, action, body) =>
   projectRequest(projectId, `/video-plan/${action}`, 'POST', body);
 export const saveVideoInstructions = (projectId, instructions, expectedEditVersion) =>
   projectRequest(projectId, '/video-plan', 'PATCH', { instructions, expectedEditVersion, frames: [] });
+
+export async function exportFlowVideoPackage(projectId, expectedEditVersion) {
+  const params = new URLSearchParams({ expectedEditVersion: String(expectedEditVersion) });
+  const response = await flowFileRequest(
+    `${SERVER_URL}/api/projects/${projectId}/video-plan/flow/export?${params}`,
+  );
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const filename = disposition.match(/filename="([^"]+)"/)?.[1] || 'flow-video.zip';
+  return { blob: await response.blob(), filename };
+}
+
+export async function importFlowVideo(projectId, frameId, video, inputFingerprint) {
+  const form = new FormData();
+  form.append('video', video);
+  form.append('inputFingerprint', inputFingerprint);
+  const response = await flowFileRequest(
+    `${SERVER_URL}/api/projects/${projectId}/video-plan/frames/${encodeURIComponent(frameId)}/import-flow-video`,
+    { method: 'POST', body: form },
+  );
+  return response.json();
+}
+
+export const videoFileUrl = (projectId, frameId, version = '') =>
+  `${SERVER_URL}/api/projects/${projectId}/video-plan/frames/${encodeURIComponent(frameId)}/video${version ? `?v=${encodeURIComponent(version)}` : ''}`;

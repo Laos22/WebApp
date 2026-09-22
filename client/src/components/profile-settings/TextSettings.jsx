@@ -30,7 +30,7 @@ export default function TextSettings({ settings, onChange }) {
           value={settings.primaryModel}
           onChange={(e) => onChange("primaryModel", e.target.value)}
           className={inputClass}
-          placeholder="google/gemini-pro"
+          placeholder="openrouter/free или google/gemini-3.6-flash"
         />
       </div>
 

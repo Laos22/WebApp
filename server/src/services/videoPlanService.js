@@ -106,13 +106,16 @@ export function videoPlanResponse(project, images = [], videos = []) {
         generationProfileId: video?.generationProfileId, provider: video?.provider });
       // Explicit allowlist: internal file keys and provider operation IDs never leave the server.
       const safeVideo = video ? Object.fromEntries(['status', 'mimeType', 'filename', 'byteSize', 'durationSec',
-        'width', 'height', 'generationProfileId', 'provider', 'errorCode', 'generatedAt'].map(key => [key, video[key]])) : null;
+        'width', 'height', 'generationProfileId', 'provider', 'errorCode', 'generatedAt', 'inputFingerprint'].map(key => [key, video[key]])) : null;
       if (safeVideo?.status === 'ready' && (!hasImage || !timing || video.inputFingerprint !== fingerprint)) safeVideo.status = 'stale';
       return { frameId: frame.id, blockNumber: block?.order ?? null,
         frameInBlock: frames.filter(item => item.sourceVoiceoverBlockId === frame.sourceVoiceoverBlockId).findIndex(item => item.id === frame.id) + 1,
         text: frame.scriptText, hasImage,
         previewUrl: hasImage ? `/api/projects/${project._id}/storyboard/frames/${encodeURIComponent(frame.id)}/image?preview=1&v=${encodeURIComponent(sourceImage.updatedAt || sourceImage.generatedAt || '0')}` : null,
-        targetDurationSec: null, durationExact: false, ...timing, video: safeVideo };
+        targetDurationSec: null, durationExact: false, ...timing, video: safeVideo,
+        videoInputFingerprint: videoPlan.frames[index]?.selected && videoPlan.frames[index]?.promptStatus === 'ready'
+          ? videoInputFingerprint({ frame, planFrame: videoPlan.frames[index], image: hasImage ? sourceImage : null,
+            durationSec: timing?.targetDurationSec ?? null, generationProfileId: 'google-flow', provider: 'google-flow' }) : null };
     }),
   };
 }
