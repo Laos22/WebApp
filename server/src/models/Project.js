@@ -149,6 +149,28 @@ const soundEffectSchema = new mongoose.Schema({
   errorCode: { type: String, default: '', maxlength: 120 },
 }, { timestamps: true, strict: 'throw' });
 
+const soundSuggestionSchema = new mongoose.Schema({
+  _id: { type: String, required: true, maxlength: 36 },
+  frameId: { type: String, required: true, maxlength: 80 },
+  blockId: { type: String, required: true, maxlength: 80 },
+  frameOrder: { type: Number, required: true, min: 1, validate: Number.isSafeInteger },
+  reason: { type: String, required: true, maxlength: 500 },
+  prompt: { type: String, required: true, maxlength: 450 },
+  durationSec: { type: Number, min: 0.5, max: 30, default: null },
+  loop: { type: Boolean, default: false },
+  promptInfluence: { type: Number, min: 0, max: 1, default: 0.5 },
+  status: { type: String, enum: ['suggested', 'generated', 'skipped'], default: 'suggested' },
+  effectId: { type: String, default: '', maxlength: 36 },
+}, { _id: false, strict: 'throw' });
+
+const soundPlanSchema = new mongoose.Schema({
+  status: { type: String, enum: ['empty', 'ready', 'stale'], default: 'empty' },
+  sourceStoryboardRevision: { type: Number, default: null, min: 0 },
+  sourceVoiceoverRevision: { type: Number, default: null, min: 0 },
+  generatedAt: { type: Date, default: null },
+  suggestions: { type: [soundSuggestionSchema], default: [], validate: value => value.length <= 200 },
+}, { _id: false, strict: 'throw' });
+
 const storyboardFrameSchema = new mongoose.Schema({
   id: { type: String, required: true, maxlength: 80 },
   order: { type: Number, required: true, min: 1, validate: Number.isSafeInteger },
@@ -247,6 +269,7 @@ const projectSchema = new mongoose.Schema({
   script: { type: scriptSchema, default: undefined },
   voiceover: { type: voiceoverSchema, default: undefined },
   soundEffects: { type: [soundEffectSchema], default: [] },
+  soundPlan: { type: soundPlanSchema, default: undefined },
   visualBible: { type: visualBibleSchema, default: undefined },
   referencePlan: { type: referencePlanSchema, default: undefined },
   storyboard: { type: storyboardSchema, default: undefined },

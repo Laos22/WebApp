@@ -20,6 +20,7 @@ import {
   generateStoryboard,
   detailStoryboardFramePrompt,
   generateVoiceoverAdaptation,
+  generateVideoPlanText,
 } from "../services/geminiService.js";
 import {
   resolveProfile,
@@ -77,6 +78,7 @@ import fs from "fs";
 import { randomUUID } from "node:crypto";
 import { generateElevenLabsSoundEffect } from "../services/elevenLabsService.js";
 import { saveSoundEffectFile, readSoundEffectFile, deleteSoundEffectFile } from "../services/soundEffectStorage.js";
+import { soundDesignPrompt, parseSoundDesign } from "../services/soundDesignService.js";
 
 const router = express.Router();
 const configuredFlowArchiveMb = Number(process.env.MAX_FLOW_ARCHIVE_MB || 100);
@@ -710,12 +712,53 @@ function soundEffectResponse(effect) {
   };
 }
 
+function soundSuggestionResponse(item) {
+  const value = item?.toObject ? item.toObject() : item;
+  return { id: String(value._id), frameId: value.frameId, blockId: value.blockId, frameOrder: value.frameOrder,
+    reason: value.reason, prompt: value.prompt, durationSec: value.durationSec, loop: value.loop,
+    promptInfluence: value.promptInfluence, status: value.status, effectId: value.effectId || '' };
+}
+
+function soundPlanResponse(project) {
+  const plan = project.soundPlan;
+  if (!plan) return { status: 'empty', suggestions: [] };
+  return { status: plan.status, sourceStoryboardRevision: plan.sourceStoryboardRevision,
+    sourceVoiceoverRevision: plan.sourceVoiceoverRevision, generatedAt: plan.generatedAt,
+    suggestions: (plan.suggestions || []).map(soundSuggestionResponse) };
+}
+
 router.get('/:id/sound-effects', ensureAuthenticated, async (req, res) => {
   try {
     const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
     if (!project) return res.status(404).json({ error: 'Проект не найден' });
-    return res.json({ success: true, soundEffects: (project.soundEffects || []).map(soundEffectResponse) });
+    return res.json({ success: true, soundEffects: (project.soundEffects || []).map(soundEffectResponse), soundPlan: soundPlanResponse(project) });
   } catch (error) { return res.status(500).json({ error: 'Не удалось загрузить звуковые эффекты' }); }
+});
+
+router.post('/:id/sound-effects/analyze', ensureAuthenticated, async (req, res) => {
+  try {
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    if (project.storyboard?.status !== 'confirmed' || project.voiceover?.status !== 'confirmed') {
+      return res.status(409).json({ error: 'Сначала утвердите раскадровку и текст озвучки' });
+    }
+    const settings = await Settings.findOne({ userId: req.user._id });
+    const profile = resolveProfile(settings, 'text');
+    if (!profile) return res.status(503).json({ error: 'Настройте текстовый AI-профиль для анализа звука' });
+    const text = await generateVideoPlanText(soundDesignPrompt(project), profile, true);
+    const suggestions = parseSoundDesign(text, project);
+    const plan = { status: 'ready', sourceStoryboardRevision: project.storyboard.revision,
+      sourceVoiceoverRevision: project.voiceover.revision, generatedAt: new Date(), suggestions };
+    const saved = await Project.findOneAndUpdate(
+      { _id: project._id, userId: req.user._id, 'storyboard.revision': project.storyboard.revision, 'voiceover.revision': project.voiceover.revision },
+      { $set: { soundPlan: plan, updatedAt: new Date() } }, { new: true, runValidators: true },
+    );
+    if (!saved) return res.status(409).json({ error: 'Раскадровка изменилась во время анализа. Повторите запрос.' });
+    return res.json({ success: true, soundPlan: soundPlanResponse(saved) });
+  } catch (error) {
+    console.error('[SOUND_DESIGN_ERROR]', { status: error?.status || null, code: error?.code || null, message: String(error?.message || '').slice(0, 300) });
+    return res.status(error.status === 429 ? 429 : 502).json({ error: error.code === 'INVALID_SOUND_PLAN' ? 'ИИ вернул некорректные предложения звуков. Повторите анализ.' : 'Не удалось проанализировать звук для кадров' });
+  }
 });
 
 router.post('/:id/sound-effects', ensureAuthenticated, async (req, res) => {
@@ -727,6 +770,7 @@ router.post('/:id/sound-effects', ensureAuthenticated, async (req, res) => {
     projectForStorage = project;
     const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
     const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    const suggestionId = typeof req.body?.suggestionId === 'string' ? req.body.suggestionId : '';
     const durationSec = req.body?.durationSec === null || req.body?.durationSec === undefined || req.body?.durationSec === ''
       ? null : Number(req.body.durationSec);
     const loop = Boolean(req.body?.loop);
@@ -749,6 +793,12 @@ router.post('/:id/sound-effects', ensureAuthenticated, async (req, res) => {
     );
     if (!saved) throw new Error('PROJECT_SAVE_FAILED');
     const effect = saved.soundEffects.find(item => String(item._id) === effectId);
+    if (suggestionId) {
+      await Project.updateOne(
+        { _id: project._id, userId: req.user._id, 'soundPlan.suggestions._id': suggestionId },
+        { $set: { 'soundPlan.suggestions.$.status': 'generated', 'soundPlan.suggestions.$.effectId': effectId, updatedAt: new Date() } },
+      );
+    }
     return res.status(201).json({ success: true, soundEffect: soundEffectResponse(effect) });
   } catch (error) {
     if (stored && projectForStorage) await deleteSoundEffectFile(stored.storageKey, projectForStorage, req.user._id).catch(() => {});
