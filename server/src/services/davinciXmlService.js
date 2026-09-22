@@ -93,9 +93,9 @@ export function imageExtension(mimeType) {
 }
 
 export function createDavinciXml({
-  projectName, frames, voiceoverBlocks, imageFiles, frameRate = 24, charsPerSecond = 15,
+  projectName, frames, voiceoverBlocks, imageFiles, videoFiles = new Map(), frameRate = 24, charsPerSecond = 15,
   addAnimations = true, addTransitions = false, transitionDurationSec = 0.5,
-  mediaRootPath = '', audioTrim = {}, onWarning = () => {},
+  mediaRootPath = '', audioTrim = {}, backgroundMusic = null, soundEffects = [], onWarning = () => {},
 }) {
   if (![24, 25, 30].includes(frameRate) || !Number.isFinite(charsPerSecond) || charsPerSecond < 5 || charsPerSecond > 30 ||
       typeof addAnimations !== 'boolean' || typeof addTransitions !== 'boolean' ||
@@ -119,6 +119,8 @@ export function createDavinciXml({
     if (duration > 0) clips.push(`        <transition name="${name}" offset="${time(offset)}" duration="${time(duration)}"><filter-video ref="${transitionId}" name="Transition"><param name="color" key="3" value="0 0 0 1"/></filter-video></transition>`);
   };
   let previousDuration = null;
+  let audioAnchorIndex;
+  const frameOffsets = new Map();
   for (const item of plan.blocks) {
     const { block, duration, durations, offset } = item;
     if (!item.exact) onWarning(`Блок ${block.order}: длительность приблизительная, рассчитана по тексту.`);
@@ -134,10 +136,19 @@ export function createDavinciXml({
     item.frames.forEach((frame, index) => {
       const filename = imageFiles.get(frame.id);
       if (!filename || !/^(frame_[0-9]+_[0-9]+|still_[a-p]{64})\.(jpg|png|webp)$/.test(filename)) fail('DAVINCI_IMAGE_MISSING');
-      const displayName = `frame_${block.order}_${index + 1}.${filename.split('.').at(-1)}`;
+      const video = videoFiles.get(frame.id);
+      const displayName = `frame_${block.order}_${index + 1}.${video ? 'mp4' : filename.split('.').at(-1)}`;
       const imageId = `r${resourceNumber++}`;
       const clipDuration = durations[index];
+      if (video) {
+        if (!/^video_[0-9]+_[0-9]+(?:__[0-9a-f-]{36})?\.mp4$/i.test(video.filename) || !(video.durationSec > 0)) fail('INVALID_DAVINCI_SETTINGS');
+        const formatId = `r${resourceNumber++}`;
+        resources.push(`    <format id="${formatId}" frameDuration="1/${frameRate}s" width="${video.width || 1920}" height="${video.height || 1080}"/>`);
+        resources.push(`    <asset id="${imageId}" name="${escapeXml(video.filename)}" hasVideo="1" start="0s" duration="${time(Math.round(video.durationSec * TIMEBASE))}" format="${formatId}"><media-rep src="${escapeXml(mediaSourceUrl(mediaRootPath, `video/${video.filename}`))}" kind="original-media"/></asset>`);
+      } else {
       resources.push(`    <asset id="${imageId}" name="${filename}" hasVideo="1" start="0s" duration="${Math.max(3600, Math.ceil(duration / TIMEBASE) + 10)}/1s" format="r1"><media-rep src="${escapeXml(mediaSourceUrl(mediaRootPath, `images/${filename}`))}" kind="original-media"/></asset>`);
+      }
+
       if (transitionId) {
         if (previousDuration === null) {
           const fadeDuration = Math.floor(Math.min(transitionDurationSec * TIMEBASE, clipDuration / 4) / quantum) * quantum;
@@ -149,14 +160,25 @@ export function createDavinciXml({
         }
       }
       previousDuration = clipDuration;
-      clips.push(`        <asset-clip name="${displayName}" ref="${imageId}" start="0s" duration="${time(clipDuration)}" offset="${time(offset + blockOffset)}" enabled="1">`,
-        `          <adjust-conform type="${addAnimations && /^Pan /.test(frame.animation || '') ? 'fill' : 'fit'}"/>`);
-      if (addAnimations) clips.push(...transform(frame.animation, clipDuration, frameRate));
+      frameOffsets.set(frame.id, offset + blockOffset);
+      // A wrapper keeps connected audio on the sequence clock even when video is retimed.
+      if (video) {
+        clips.push(`        <clip name="${displayName}" start="0s" duration="${time(clipDuration)}" offset="${time(offset + blockOffset)}" enabled="1">`);
+        clips.push(`          <video ref="${imageId}" start="0s" offset="0s" duration="${time(clipDuration)}">`);
+        const sourceDuration = Math.round(video.durationSec * TIMEBASE);
+        if (sourceDuration < clipDuration) clips.push(`            <timeMap><timept time="0s" value="0s" interp="linear"/><timept time="${time(clipDuration)}" value="${time(sourceDuration)}" interp="linear"/></timeMap>`);
+        clips.push('            <adjust-conform type="fit"/>', '          </video>');
+      } else {
+        clips.push(`        <asset-clip name="${displayName}" ref="${imageId}" start="0s" duration="${time(clipDuration)}" offset="${time(offset + blockOffset)}" enabled="1">`,
+          `          <adjust-conform type="${addAnimations && /^Pan /.test(frame.animation || '') ? 'fill' : 'fit'}"/>`);
+        if (addAnimations) clips.push(...transform(frame.animation, clipDuration, frameRate));
+      }
+      if (audioAnchorIndex === undefined) audioAnchorIndex = clips.length;
       if (index === 0) clips.push(`          <asset-clip name="${audioName}" ref="${audioId}" lane="-1" start="${time(trimStart)}" offset="${time(trimStart)}" duration="${time(audibleDuration)}" audioRole="dialogue"/>`);
       for (const [note, value] of [['Voiceover Text', frame.scriptText], ['Start Time', time(offset + blockOffset)], ['Animation Instruction', frame.animation], ['DaVinci Resolve Marker', frame.marker]]) {
         if (value) clips.push(`          <marker start="0s" duration="1/${frameRate}s" value="${escapeXml(value)}" note="${note}"/>`);
       }
-      clips.push('        </asset-clip>');
+      clips.push(video ? '        </clip>' : '        </asset-clip>');
       blockOffset += clipDuration;
     });
   }
@@ -164,6 +186,27 @@ export function createDavinciXml({
     const fadeDuration = Math.floor(Math.min(transitionDurationSec * TIMEBASE, previousDuration / 4) / quantum) * quantum;
     transition(plan.duration - fadeDuration, fadeDuration, 'Fade Out');
   }
+  const connectedAudio = [];
+  if (backgroundMusic?.filename && backgroundMusic?.durationSec > 0) {
+    const musicId = `r${resourceNumber++}`;
+    const musicDuration = Math.min(plan.duration, Math.round(backgroundMusic.durationSec * TIMEBASE));
+    resources.push(`    <asset id="${musicId}" name="${escapeXml(backgroundMusic.filename)}" start="0s" hasAudio="1" duration="${time(Math.round(backgroundMusic.durationSec * TIMEBASE))}" audioSources="1" audioChannels="2" audioRate="48k"><media-rep src="${escapeXml(mediaSourceUrl(mediaRootPath, `audio/${backgroundMusic.filename}`))}" kind="original-media"/></asset>`);
+    connectedAudio.push(`          <asset-clip name="${escapeXml(backgroundMusic.title || 'Background Music')}" ref="${musicId}" start="0s" duration="${time(musicDuration)}" offset="0s" enabled="1" lane="-2" audioRole="music"/>`);
+  }
+  const laneEnds = [];
+  for (const sourceEffect of soundEffects) {
+    const effect = { ...sourceEffect, offsetTicks: frameOffsets.get(sourceEffect.frameId) ?? sourceEffect.offsetTicks };
+    if (!effect?.filename || !(effect.durationSec > 0) || !(effect.offsetTicks >= 0)) continue;
+    const effectId = `r${resourceNumber++}`;
+    const duration = Math.min(plan.duration - effect.offsetTicks, Math.round(effect.durationSec * TIMEBASE));
+    if (duration <= 0) continue;
+    resources.push(`    <asset id="${effectId}" name="${escapeXml(effect.filename)}" start="0s" hasAudio="1" duration="${time(Math.round(effect.durationSec * TIMEBASE))}" audioSources="1" audioChannels="2" audioRate="48k"><media-rep src="${escapeXml(mediaSourceUrl(mediaRootPath, `audio/${effect.filename}`))}" kind="original-media"/></asset>`);
+    let lane = laneEnds.findIndex(end => end <= effect.offsetTicks);
+    if (lane < 0) lane = laneEnds.length;
+    laneEnds[lane] = effect.offsetTicks + duration;
+    connectedAudio.push(`          <asset-clip name="${escapeXml(effect.title || 'Sound Effect')}" ref="${effectId}" start="0s" duration="${time(duration)}" offset="${time(effect.offsetTicks)}" enabled="1" lane="${-3 - lane}" audioRole="effects"/>`);
+  }
+  clips.splice(audioAnchorIndex, 0, ...connectedAudio);
   return ['<?xml version="1.0" encoding="UTF-8"?>', '<fcpxml version="1.9">',
     '  <resources>', ...resources, '  </resources>', '  <library>', '    <event name="AI Generated Project">',
     `      <project name="${escapeXml(projectName || 'AI Project')}">`,

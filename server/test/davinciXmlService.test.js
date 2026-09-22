@@ -129,3 +129,27 @@ test('very short clips omit transitions that cannot fit instead of extending the
   assert.doesNotMatch(xml, /<transition /);
   assert.match(xml, new RegExp(`sequence format="r0" duration="${TIMEBASE / 24}/${TIMEBASE}s"`));
 });
+
+
+test('exports MP4, music, overlapping frame effects and transitions together at 25 FPS', () => {
+  const input = fixture();
+  const plan = timelinePlan(input.voiceoverBlocks, input.frames, 25);
+  const effectOffset = plan.blocks[0].durations[0];
+  const xml = createDavinciXml({ ...input, frameRate: 25, addTransitions: true,
+    videoFiles: new Map([[input.frames[0].id, { filename: 'video_1_1.mp4', durationSec: 0.25, width: 1280, height: 720 }]]),
+    backgroundMusic: { filename: 'background_music_test.mp3', durationSec: 10 },
+    soundEffects: [1, 2].map(i => ({ filename: `sound_effect_${i}.mp3`, durationSec: 2, frameId: input.frames[1].id })),
+  });
+  assert.match(xml, /src="video\/video_1_1.mp4"/);
+  assert.doesNotMatch(xml, /src="images\/frame_1_1.jpg"/);
+  assert.match(xml, /<timeMap>/);
+  assert.match(xml, /lane="-2" audioRole="music"/);
+  assert.match(xml, /lane="-3" audioRole="effects"/);
+  assert.match(xml, /lane="-4" audioRole="effects"/);
+  assert.equal((xml.match(/<transition /g) || []).length, input.frames.length + 1);
+  const effects = [...xml.matchAll(/<asset-clip[^>]+audioRole="effects"[^>]*>/g)];
+  for (const [tag] of effects) assert.ok(tag.includes(`offset="${effectOffset}/${TIMEBASE}s"`));
+  const firstClip = xml.slice(xml.indexOf('<clip name='), xml.indexOf('</clip>'));
+  for (const role of ['dialogue', 'music', 'effects']) assert.ok(firstClip.includes(`audioRole="${role}"`));
+  assert.ok(xml.includes(`sequence format="r0" duration="${plan.duration}/${TIMEBASE}s"`));
+});

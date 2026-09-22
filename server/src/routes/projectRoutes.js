@@ -1,4 +1,6 @@
 import StoryboardVideo from '../models/StoryboardVideo.js';
+import { readStoryboardVideoFile } from '../services/storyboardVideoStorage.js';
+import { videoPlanResponse } from '../services/videoPlanService.js';
 import { checkDriveFile } from '../services/driveSync.js';
 import { normalizeMediaRoot } from '../../../shared/davinciMediaPaths.js';
 import { validateAudioTrim, audioTrimSeconds } from '../../../shared/davinciAudioTrim.js';
@@ -2431,6 +2433,26 @@ async function davinciProjectState(project, userId) {
     }
   }
   const blocks = project.voiceover?.blocks || [];
+  const backgroundMusic = project.backgroundMusic?.status === 'ready' && project.backgroundMusic.storageKey
+    ? { ...project.backgroundMusic.toObject?.() || project.backgroundMusic }
+    : null;
+  if (backgroundMusic) {
+    try { backgroundMusic.durationSec = await measureMp3Duration(await readMusicFile(backgroundMusic.storageKey, project, userId)); }
+    catch { backgroundMusic.available = false; warnings.push('Фоновая музыка отсутствует или недоступна.'); }
+  }
+  const effectById = new Map((project.soundEffects || []).map(effect => [String(effect._id), effect]));
+  const soundEffects = [];
+  const suggestions = project.soundPlan?.suggestions || [];
+  for (const suggestion of suggestions) {
+    if (suggestion.status !== 'generated' || !suggestion.effectId) continue;
+    const effect = effectById.get(String(suggestion.effectId));
+    if (effect?.status !== 'ready' || !effect.storageKey || !storyboard.frames.some(f => f.id === suggestion.frameId)) continue;
+    try {
+      const buffer = await readSoundEffectFile(effect.storageKey, project, userId);
+      const durationSec = await measureMp3Duration(buffer);
+      soundEffects.push({ filename: effect.filename, storageKey: effect.storageKey, title: effect.name, durationSec, frameId: suggestion.frameId });
+    } catch { warnings.push(`Звуковой эффект для кадра ${suggestion.frameOrder} недоступен.`); }
+  }
   const readyAudio = [];
   const audioTimings = [];
   for (const block of blocks) {
@@ -2460,12 +2482,16 @@ async function davinciProjectState(project, userId) {
   const storyboardReady = storyboard.status === 'confirmed' && storyboardIsCurrent(project, storyboard);
   return {
     storyboard, imageByFrame, blocks,
+    backgroundMusic: backgroundMusic?.available === false ? null : backgroundMusic,
+    soundEffects,
     summary: {
       storyboardReady,
       frames: storyboard.frames.length,
       readyImages: readyImages.length,
       audioBlocks: blocks.length,
       readyAudio: readyAudio.length,
+      backgroundMusicReady: Boolean(backgroundMusic && backgroundMusic.available !== false),
+      soundEffectCount: soundEffects.length,
       canExport: storyboardReady && storyboard.frames.length > 0 &&
         readyImages.length === storyboard.frames.length && blocks.length > 0 && readyAudio.length === blocks.length,
       timingMode: audioTimings.every(item => item.exact) ? 'exact' : 'estimated',
@@ -2479,7 +2505,7 @@ async function davinciProjectState(project, userId) {
 router.get('/:id/davinci', ensureAuthenticated, async (req, res) => {
   try {
     const project = await Project.findOne({ _id: req.params.id, userId: req.user._id })
-      .select('+voiceover.blocks.audioStorageKey');
+      .select('+voiceover.blocks.audioStorageKey +backgroundMusic.storageKey +soundEffects.storageKey');
     if (!project) return res.status(404).json({ error: 'Проект не найден' });
     const state = await davinciProjectState(project, req.user._id);
     return res.json({ success: true, projectName: project.shortTitle || project.title, ...state.summary });
@@ -2506,7 +2532,7 @@ router.post('/:id/davinci/export', ensureAuthenticated, async (req, res) => {
     if (pathMode === 'absolute' && mediaRootPath) normalizeMediaRoot(mediaRootPath);
     stage = 'load-project';
     const project = await Project.findOne({ _id: req.params.id, userId: req.user._id })
-      .select('+voiceover.blocks.audioStorageKey');
+      .select('+voiceover.blocks.audioStorageKey +backgroundMusic.storageKey +soundEffects.storageKey');
     if (!project) return res.status(404).json({ error: 'Проект не найден' });
     if (pathMode === 'absolute' && !mediaRootPath.trim() && (projectUsesDrive(project) || process.env.NODE_ENV === 'production')) {
       return res.status(400).json({ error: 'Укажите путь к папке проекта на компьютере с DaVinci Resolve.', code: 'DAVINCI_MEDIA_ROOT_REQUIRED' });
@@ -2538,10 +2564,25 @@ router.post('/:id/davinci/export', ensureAuthenticated, async (req, res) => {
         extension: imageExtension(image.mimeType), mimeType: image.mimeType });
       return filename;
     }, (completed, total) => console.info('[DaVinci export]', { stage, completed, total }));
+    stage = 'prepare-video';
+    const videoFiles = new Map();
+    const videos = await StoryboardVideo.find({ projectId: project._id, userId: req.user._id, status: 'ready' }).select('+storageKey');
+    const videoState = videoPlanResponse(project, [...state.imageByFrame.values()], videos);
+    for (const frame of videoState.frames) {
+      if (frame.video?.status !== 'ready') continue;
+      const video = videos.find(item => item.frameId === frame.frameId);
+      const buffer = await readStoryboardVideoFile(video.storageKey, project.projectPath, req.user._id);
+      const filename = video.filename;
+      if (!/^video_[0-9]+_[0-9]+(?:__[0-9a-f-]{36})?\.mp4$/i.test(filename)) throw new Error('INVALID_VIDEO_FILENAME');
+      if (!projectUsesDrive(project)) await ensurePortableLocalFile(project.projectPath, 'video', filename, buffer);
+      videoFiles.set(frame.frameId, { filename, durationSec: video.durationSec, width: video.width, height: video.height });
+    }
     stage = 'generate-xml';
     const xml = createDavinciXml({ projectName: project.shortTitle || project.title,
-      frames: state.storyboard.frames, voiceoverBlocks: state.blocks, imageFiles,
+      frames: state.storyboard.frames, voiceoverBlocks: state.blocks, imageFiles, videoFiles,
       frameRate, charsPerSecond, addAnimations, addTransitions, transitionDurationSec, audioTrim, mediaRootPath: resolvedMediaRoot,
+      backgroundMusic: state.backgroundMusic,
+      soundEffects: state.soundEffects,
       onWarning: warning => console.warn(warning) });
     stage = 'copy-local-media';
     if (!projectUsesDrive(project)) {
@@ -2549,6 +2590,15 @@ router.post('/:id/davinci/export', ensureAuthenticated, async (req, res) => {
         if (block.audioStorageKey === `project/audio/audio_block_${block.order}.mp3`) continue;
         const buffer = await readVoiceoverAudio(block.audioStorageKey, project.projectPath, req.user._id);
         await ensurePortableLocalFile(project.projectPath, 'audio', `audio_block_${block.order}.mp3`, buffer);
+      }
+      if (state.backgroundMusic && state.backgroundMusic.storageKey !== `project/audio/${state.backgroundMusic.filename}`) {
+        const buffer = await readMusicFile(state.backgroundMusic.storageKey, project, req.user._id);
+        await ensurePortableLocalFile(project.projectPath, 'audio', state.backgroundMusic.filename, buffer);
+      }
+      for (const effect of state.soundEffects) {
+        if (effect.storageKey === `project/audio/${effect.filename}`) continue;
+        const buffer = await readSoundEffectFile(effect.storageKey, project, req.user._id);
+        await ensurePortableLocalFile(project.projectPath, 'audio', effect.filename, buffer);
       }
     }
     const baseName = safeProjectFolderName(project.shortTitle || project.title, 'AI_Project').replaceAll(' ', '_');

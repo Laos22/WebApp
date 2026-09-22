@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 process.env.ENCRYPTION_KEY = 'davinci-test-only-configuration-00000000000000000000';
 const { default: router } = await import('../src/routes/projectRoutes.js');
 const { default: Project } = await import('../src/models/Project.js');
+const { default: StoryboardVideo } = await import('../src/models/StoryboardVideo.js');
 const { default: StoryboardImage } = await import('../src/models/StoryboardImage.js');
 
 async function request(routePath, method, body = {}) {
@@ -43,9 +44,21 @@ for (const legacy of [false, true]) test(`status and export with ${legacy ? 'leg
     script: { status: 'confirmed', revision: 1 }, referencePlan: { status: 'confirmed', revision: 1 },
     voiceover: { status: 'confirmed', revision: 1, blocks: [block] },
     storyboard: { status: 'confirmed', sourceScriptRevision: 1, sourceReferencePlanRevision: 1, sourceVoiceoverRevision: 1, frames: [frame] } };
+  if (!legacy) {
+    const suffix = '11111111-1111-4111-8111-111111111111';
+    project.backgroundMusic = { status: 'ready', filename: `background_music_${suffix}.mp3`, storageKey: `project/audio/background_music_${suffix}.mp3` };
+    project.soundEffects = [{ _id: suffix, status: 'ready', filename: `sound_effect_${suffix}.mp3`, storageKey: `project/audio/sound_effect_${suffix}.mp3`, durationSec: null }];
+    project.soundPlan = { suggestions: [{ frameId: frame.id, status: 'generated', effectId: suffix }] };
+    for (const media of [project.backgroundMusic, ...project.soundEffects]) await fs.writeFile(path.join(root, 'audio', media.filename), Buffer.concat(Array(100).fill(mp3Frame)));
+  }
   const image = { frameId: frame.id, status: 'ready', storageKey: 'project/images/frame_1_1.jpg', mimeType: 'image/jpeg', sourcePrompt: frame.prompt, sourceReferenceIds: [] };
   if (legacy) image.storageKey = path.relative(path.join(process.cwd(), 'uploads'), imagePath);
-  t.mock.method(Project, 'findOne', () => ({ select: async () => project }));
+  t.mock.method(Project, 'findOne', () => ({ select: async fields => {
+    assert.ok(fields.includes('+backgroundMusic.storageKey'));
+    assert.ok(fields.includes('+soundEffects.storageKey'));
+    return project;
+  } }));
+  t.mock.method(StoryboardVideo, 'find', () => ({ select: async () => [] }));
   t.mock.method(StoryboardImage, 'find', () => ({ select: async () => [image] }));
   const writes = [];
   t.mock.method(Project, 'updateOne', async (filter, update) => { writes.push({ filter, update }); return { matchedCount: 1 }; });
@@ -64,6 +77,13 @@ for (const legacy of [false, true]) test(`status and export with ${legacy ? 'leg
   assert.equal(exported.value.mediaRootPath, project.projectPath);
   const exportedXml = await fs.readFile(path.join(project.projectPath, exported.value.filename), 'utf8');
   assert.match(exportedXml, /adjust-transform/);
+  if (!legacy) {
+    assert.equal(status.value.backgroundMusicReady, true);
+    assert.equal(status.value.soundEffectCount, 1);
+    assert.match(exportedXml, /lane="-2" audioRole="music"/);
+    assert.match(exportedXml, /lane="-3" audioRole="effects"/);
+    assert.ok(exportedXml.indexOf('audioRole="music"') < exportedXml.indexOf('</asset-clip>'));
+  }
   for (const [, url] of exportedXml.matchAll(/src="([^"]+)"/g)) {
     assert.ok(url.startsWith('file:///'));
     await fs.access(fileURLToPath(url));
