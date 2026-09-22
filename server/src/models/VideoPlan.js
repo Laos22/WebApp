@@ -18,6 +18,8 @@ export const videoPlanSchema = new mongoose.Schema({
   analysis: { type: new mongoose.Schema({
     selectionLimit: { type: Number, min: 0, max: 1000, default: null,
       validate: value => value === null || Number.isSafeInteger(value) },
+    allowedBlockIds: { type: [String], default: null, validate: values => values === null ||
+      (values.length > 0 && values.length <= 200 && new Set(values).size === values.length) },
     completedChunks: { type: [Number], default: [], validate: values => values.length <= 1000 &&
       values.every(value => Number.isSafeInteger(value) && value >= 0) && new Set(values).size === values.length },
   }, { _id: false, strict: 'throw' }), default: null },

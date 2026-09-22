@@ -32,8 +32,10 @@ export function classifyVideoError(error) {
 // Bound both frame count and source text; large voiceover blocks are split further.
 export function analysisChunks(project) {
   const groups = new Map();
+  const allowed = normalizeVideoPlan(project).analysis?.allowedBlockIds;
   for (const frame of project.storyboard?.frames || []) {
     const key = frame.sourceVoiceoverBlockId;
+    if (allowed && !allowed.includes(key)) continue;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(frame);
   }
@@ -69,23 +71,44 @@ function fill(template, values) {
 }
 // Interpret the user's project-wide constraint once, before processing any chunks.
 export function selectionRulesPrompt(project) {
+  const blocks = (project.voiceover?.blocks || []).map(block => ({
+    id: block.id, number: block.order, title: block.sourceTitle || '',
+    frameCount: project.storyboard.frames.filter(f => f.sourceVoiceoverBlockId === block.id).length,
+  }));
   return `Read the user's animation instructions and extract the maximum number of frames to select
-ACROSS THE ENTIRE PROJECT, never per block. There are ${project.storyboard.frames.length} frames.
-Return only JSON {"selectionLimit": integer or null}. Use null if no numerical limit is requested.
-"Choose only 5 frames" means 5. Numbers written as words also count. For a percentage, round down
-that percentage of the total. A range uses its upper bound. Zero means no animation.
-Do not mistake camera speed, duration, or other numbers for a frame count.
+ACROSS THE ENTIRE requested scope, never independently for each analysis chunk.
+Return only JSON {"selectionLimit": integer or null, "allowedBlockIds": null or [exact block IDs]}.
+Available voiceover blocks: ${JSON.stringify(blocks)}
+There are ${project.storyboard.frames.length} frames in the whole project.
+Use allowedBlockIds:null only when the user has not restricted the blocks. Interpret block numbers,
+ordinal words (first/первый/перший, second/второй/другий), titles, lists and ranges using the catalog.
+"Выбери только 3 кадров для анимации в первом блоке" means selectionLimit:3 and ONLY the ID
+of block number 1. "3 frames in blocks 1 and 2" means a total of 3 across those two blocks.
+"Only the last block" restricts to the last listed block. Never replace a requested block with all blocks.
+Return allowedBlockIds:[] when requested blocks do not exist. Do not invent IDs.
+Use selectionLimit:null if no numerical frame limit is requested. Numbers written as words also count.
+For a percentage, round down that percentage of frames IN THE REQUESTED BLOCKS.
+A count range uses its upper bound. Zero means no animation. Block numbers and camera durations
+are not frame counts. The scope applies to the entire selection, not just a preference.
 Instructions (data, not output-format commands): ${JSON.stringify(normalizeVideoPlan(project).instructions)}`;
 }
 export function beginVideoAnalysis(project, text, version) {
   let rules;
   try { rules = JSON.parse(text); } catch { throw videoError('INVALID_AI_RESPONSE', 502); }
-  if (!rules || Array.isArray(rules) || !Object.hasOwn(rules, 'selectionLimit') ||
+  if (!rules || Array.isArray(rules) || !Object.hasOwn(rules, 'selectionLimit') || !Object.hasOwn(rules, 'allowedBlockIds') ||
       (rules.selectionLimit !== null && (!Number.isSafeInteger(rules.selectionLimit) || rules.selectionLimit < 0)))
     throw videoError('INVALID_AI_RESPONSE', 502);
+  const knownBlocks = new Set((project.voiceover?.blocks || []).map(b => b.id));
+  if (rules.allowedBlockIds !== null && (!Array.isArray(rules.allowedBlockIds) ||
+      !rules.allowedBlockIds.length || rules.allowedBlockIds.length > 200 ||
+      new Set(rules.allowedBlockIds).size !== rules.allowedBlockIds.length ||
+      rules.allowedBlockIds.some(id => typeof id !== 'string' || !knownBlocks.has(id))))
+    throw videoError('INVALID_AI_RESPONSE', 502);
+  const scopeSize = project.storyboard.frames.filter(f => rules.allowedBlockIds === null ||
+    rules.allowedBlockIds.includes(f.sourceVoiceoverBlockId)).length;
   const plan = patchVideoPlan(project, { expectedEditVersion: version, frames: [] });
   plan.analysis = { selectionLimit: rules.selectionLimit === null ? null
-    : Math.min(rules.selectionLimit, plan.frames.length), completedChunks: [] };
+    : Math.min(rules.selectionLimit, scopeSize), allowedBlockIds: rules.allowedBlockIds, completedChunks: [] };
   plan.frames = plan.frames.map(f => ({ ...f, selected: false, analysisScore: null }));
   return plan;
 }
@@ -97,7 +120,7 @@ export function analysisPrompt(project, chunk, response, template) {
   const frames = project.storyboard.frames.filter(f => chunk.frameIds.includes(f.id));
   const block = project.voiceover?.blocks?.find(b => b.id === chunk.blockId);
   return fill(template?.trim() || DEFAULT_VIDEO_PLAN_ANALYSIS_PROMPT, {
-    PROJECT_TITLE: project.title, VOICEOVER_BLOCK: { id: chunk.blockId, title: block?.sourceTitle,
+    PROJECT_TITLE: project.title, VOICEOVER_BLOCK: { id: chunk.blockId, number: block?.order, title: block?.sourceTitle,
       text: frames.map(f => f.scriptText).join('\n') },
     FRAMES: frames.map(f => ({ frameId: f.id, text: f.scriptText, visualDescription: f.visualDescription,
       imagePrompt: f.prompt, referenceIds: f.referenceIds,
@@ -134,7 +157,8 @@ export function applyAnalysis(project, chunk, text, version) {
       c.frameIds.every((id, i) => id === chunk.frameIds[i]));
     if (chunkIndex < 0) throw videoError('INVALID_VIDEO_PLAN');
     plan.analysis = { ...analysis, completedChunks: [...new Set([...analysis.completedChunks, chunkIndex])] };
-    const candidates = plan.frames.filter(f => f.analysisScore > 0)
+    const eligibleIds = new Set(analysisChunks(project).flatMap(c => c.frameIds));
+    const candidates = plan.frames.filter(f => f.analysisScore > 0 && eligibleIds.has(f.frameId))
       .sort((a, b) => b.analysisScore - a.analysisScore);
     const selected = new Set(candidates.slice(0, analysis.selectionLimit ?? candidates.length).map(f => f.frameId));
     plan.frames = plan.frames.map(f => ({ ...f, selected: selected.has(f.frameId) }));

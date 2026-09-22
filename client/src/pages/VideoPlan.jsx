@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { getVideoPlan, saveVideoPlanFrame, videoPreviewUrl, videoPlanAction, saveVideoInstructions } from '../services/api';
 import { pendingVideoFrames, runVideoQueue } from '../services/videoPlanQueue';
-import { videoPlanView } from '../services/videoPlanView';
+import { videoPlanView, filterVideoFrames } from '../services/videoPlanView';
 
 const button = 'rounded-xl bg-purple-700 px-4 py-3 text-white disabled:opacity-40';
 const secondary = 'rounded-xl border border-slate-600 px-4 py-3 text-slate-200 disabled:opacity-40';
@@ -21,6 +21,7 @@ function VideoPlanEditor({ projectId }) {
   const [busy, setBusy] = useState(false);
   const [running, setRunning] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [filter, setFilter] = useState('all');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [conflict, setConflict] = useState(false);
@@ -32,7 +33,10 @@ function VideoPlanEditor({ projectId }) {
     return () => { active = false; stop.current = true; };
   }, [projectId, reload]);
   const view = videoPlanView(data, drafts);
-  const frame = view.frames[index];
+  const visibleFrames = filterVideoFrames(view, filter);
+  const frame = visibleFrames.find(f => f.index === index) || visibleFrames[0];
+  const activeIndex = frame?.index;
+  const position = visibleFrames.findIndex(f => f.index === activeIndex);
   const saved = data?.videoPlan.frames.find(item => item.frameId === frame?.frameId);
   const draft = frame?.plan;
   const frameEdits = Object.keys(drafts).length > 0;
@@ -118,7 +122,7 @@ function VideoPlanEditor({ projectId }) {
         const updateProgress = value => {
           if (analyzing) {
             const ids = new Set((current.videoPlan.analysis?.completedChunks || []).flatMap(i => current.analysisChunks[i]?.frameIds || []));
-            setProgress(/^\d/.test(value) ? `Анализ: проверено ${ids.size} из ${current.frames.length} кадров` : value);
+            setProgress(/^\d/.test(value) ? `Анализ: проверено ${ids.size} из ${current.analysisChunks.reduce((sum, chunk) => sum + chunk.frameIds.length, 0)} кадров` : value);
           } else setProgress(/^\d/.test(value) ? `Детализация: обработано ${value} кадров` : value);
         };
         updateProgress('0');
@@ -134,6 +138,8 @@ function VideoPlanEditor({ projectId }) {
   function chooseFrame(i) { setIndex(i); setPickerOpen(false); setMessage(''); pickerToggle.current?.focus(); }
   const analysis = data?.videoPlan.analysis;
   const canResumeAnalysis = analysis && data.videoPlan.status !== 'stale' && analysis.completedChunks.length < data.analysisChunks.length;
+  const scopeBlocks = analysis?.allowedBlockIds ? [...new Set(data.frames.filter(f =>
+    data.analysisChunks.some(c => analysis.allowedBlockIds.includes(c.blockId) && c.frameIds.includes(f.frameId))).map(f => f.blockNumber))] : null;
   return <div className="mx-auto max-w-5xl p-4 sm:p-8 text-left text-slate-200 space-y-5">
     <Link onClick={event => { if ((unsaved || busy) && !window.confirm('Есть несохранённые правки или выполняется запрос. Покинуть страницу?')) event.preventDefault(); }}
       className="text-purple-300" to={`/projects/${projectId}`}>← К проекту</Link>
@@ -156,14 +162,20 @@ function VideoPlanEditor({ projectId }) {
     {!data && !error && <p role="status">Загрузка…</p>}
     {data && <section className="rounded-2xl border border-slate-800 p-4 space-y-3" aria-labelledby="selection-heading">
       <h2 id="selection-heading" className="text-xl font-semibold">1. Выбор кадров</h2>
-      <p className="text-sm text-slate-400">Попросите ИИ предложить кадры или выберите их вручную. Количество в инструкции относится ко всему проекту.</p>
+      <p className="text-sm text-slate-400">Попросите ИИ предложить кадры или выберите их вручную. Можно указать количество и блоки: «Выбери только 3 кадра в первом блоке».</p>
       <label className="block">Общие инструкции
         <textarea value={instructions} maxLength={4000} disabled={busy} onChange={e => setInstructions(e.target.value)}
           placeholder="Выбери только 5 кадров для анимации. Используй медленные движения камеры. Не анимируй архивные фотографии."
           className="mt-2 min-h-24 w-full rounded-xl bg-slate-900 p-3" />
       </label>
-      <div className="flex flex-wrap gap-2">
+      <div aria-label="Действия видеоплана" className="flex gap-2 overflow-x-auto pb-2 [&>button]:shrink-0 [&>button]:whitespace-nowrap">
         <button className={button} disabled={busy || frameEdits || conflict || !view.total} onClick={() => operation('analyze')}>Анализировать и предложить кадры</button>
+        <button className={button} disabled={busy || frameEdits || conflict || !view.selected} onClick={() => operation('all')}>Детализировать все выбранные ({view.selected})</button>
+        {pendingCount > 0 && pendingCount < view.selected && <button className={secondary} disabled={busy || frameEdits || conflict}
+          onClick={() => operation('continue')}>Продолжить детализацию ({pendingCount})</button>}
+        <button className={secondary} disabled={busy || unsaved || conflict || !view.selected} onClick={() => operation('reset')}>Начать детализацию заново</button>
+        <button className={secondary} disabled={busy || unsaved || conflict || !view.selected || view.ready !== view.selected}
+          onClick={() => operation('confirm')}>Утвердить видеоплан</button>
         {canResumeAnalysis && <button className={secondary} disabled={busy || unsaved || conflict} onClick={() => operation('resume-analysis')}>Продолжить анализ</button>}
         {instructionsDirty && <>
           <button className={secondary} disabled={busy || conflict} onClick={() => operation('instructions')}>Сохранить инструкции</button>
@@ -171,40 +183,43 @@ function VideoPlanEditor({ projectId }) {
         </>}
       </div>
       <p className="text-xs text-slate-400">Инструкции сохраняются при запуске ИИ. Повторный анализ пересматривает выбор кадров; во время анализа выбор предварительный.</p>
-      {analysis?.selectionLimit != null && <p className="text-sm text-emerald-300">Лимит анализа: не более {analysis.selectionLimit} кадров на весь проект. Ручной выбор можно изменить.</p>}
+      {analysis?.selectionLimit != null && <p className="text-sm text-emerald-300">Лимит анализа: не более {analysis.selectionLimit} кадров {scopeBlocks ? 'в указанных блоках' : 'на весь проект'}. Ручной выбор можно изменить.</p>}
+      {scopeBlocks && <p className="text-sm text-emerald-300">Блоки анализа: {scopeBlocks.join(', ')}. Кадры остальных блоков не выбираются.</p>}
     </section>}
     {frameEdits && <p className="text-amber-300 text-sm">Есть несохранённые правки кадров ({Object.keys(drafts).length}). Сохраните или отмените их перед анализом или массовой детализацией.</p>}
-    {data && !frame && <p>В раскадровке пока нет кадров.</p>}
+    {data && <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Фильтр кадров">
+      <button className={filter === 'all' ? button : secondary} disabled={busy} aria-pressed={filter === 'all'}
+        onClick={() => setFilter('all')}>Все кадры ({view.total})</button>
+      <button className={filter === 'animation' ? button : secondary} disabled={busy} aria-pressed={filter === 'animation'}
+        onClick={() => setFilter('animation')}>Только с анимацией ({view.selected})</button>
+      {filter === 'animation' && frameEdits && <p className="text-xs text-amber-300">Кадры с несохранёнными правками остаются видимыми до сохранения.</p>}
+    </div>}
+    {data && !frame && <p>{filter === 'animation' ? 'Для анимации пока не выбран ни один кадр. Переключитесь на все кадры.' : 'В раскадровке пока нет кадров.'}</p>}
     {frame && <>
       <nav aria-label="Выбор кадра" className="grid grid-cols-2 gap-2 items-center sm:flex">
-        <button className={secondary} disabled={busy || index === 0} onClick={() => setIndex(index - 1)}>← Предыдущий</button>
+        <button className={secondary} disabled={busy || position === 0} onClick={() => setIndex(visibleFrames[position - 1].index)}>← Предыдущий</button>
         <button ref={pickerToggle} className={`${secondary} col-span-2 row-start-1 min-w-0 sm:flex-1`} disabled={busy}
           aria-expanded={pickerOpen} aria-controls="video-frame-picker" onClick={() => setPickerOpen(value => !value)}>
-          Кадр {index + 1} из {view.total} · Все кадры {pickerOpen ? '▴' : '▾'}
+          Кадр {activeIndex + 1} · Список кадров ({visibleFrames.length}) {pickerOpen ? '▴' : '▾'}
         </button>
-        <button className={secondary} disabled={busy || index === view.total - 1} onClick={() => setIndex(index + 1)}>Следующий →</button>
+        <button className={secondary} disabled={busy || position === visibleFrames.length - 1} onClick={() => setIndex(visibleFrames[position + 1].index)}>Следующий →</button>
       </nav>
-      {pickerOpen && <section id="video-frame-picker" aria-label="Все кадры" className="rounded-xl border border-slate-700 p-3 space-y-3"
+      {pickerOpen && <section id="video-frame-picker" aria-label="Список кадров" className="rounded-xl border border-slate-700 p-3 space-y-3"
         onKeyDown={event => { if (event.key === 'Escape') { setPickerOpen(false); pickerToggle.current?.focus(); } }}>
-        <p className="text-sm text-slate-300">Зелёным отмечены кадры для анимации. Выберите кадр, чтобы изменить галочку или промт.</p>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 max-h-[60vh] overflow-y-auto p-1">
-          {view.frames.map((item, i) => <button key={item.frameId} disabled={busy} onClick={() => chooseFrame(i)} aria-current={i === index ? 'true' : undefined}
-            className={`rounded-xl border-2 text-left overflow-hidden focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-400 ${item.plan.selected ? 'border-emerald-400 bg-emerald-950/60' : 'border-slate-700 bg-slate-900'} ${i === index ? 'ring-2 ring-purple-400 ring-offset-2 ring-offset-slate-950' : ''}`}>
-            {item.hasImage ? <img loading="lazy" src={videoPreviewUrl(item.previewUrl)} alt="" className="aspect-video w-full object-cover" />
-              : <div className="aspect-video grid place-items-center text-xs text-slate-500">Нет изображения</div>}
-            <div className="p-2 space-y-1">
-              <p className="font-semibold">Кадр {i + 1}{item.unsaved ? ' *' : ''}</p>
-              <p className="text-xs text-slate-400">Блок {item.blockNumber ?? '—'} · Кадр {item.frameInBlock}</p>
-              <p className={`text-xs ${item.plan.selected ? 'text-emerald-300' : 'text-slate-400'}`}>{item.plan.selected ? '✓ Для анимации' : 'Статичный'}</p>
-              {item.ready && <p className="text-xs text-emerald-200">Промт готов</p>}
-            </div>
+        <p className="text-sm text-slate-300">Зелёным отмечены кадры для анимации.</p>
+        <div className="flex flex-wrap gap-2 max-h-64 overflow-y-auto p-1">
+          {visibleFrames.map(item => <button key={item.frameId} disabled={busy} onClick={() => chooseFrame(item.index)} aria-current={item.index === activeIndex ? 'true' : undefined}
+            aria-label={`Кадр ${item.index + 1}, блок ${item.blockNumber ?? '—'}${item.plan.selected ? ', для анимации' : ''}${item.unsaved ? ', несохранённые правки' : ''}`}
+            title={`Блок ${item.blockNumber ?? '—'} · Кадр ${item.frameInBlock}`}
+            className={`min-w-12 rounded-lg border-2 px-3 py-2 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-purple-400 ${item.plan.selected ? 'border-emerald-400 bg-emerald-950/60 text-emerald-200' : 'border-slate-700 bg-slate-900'} ${item.index === activeIndex ? 'ring-2 ring-purple-400 ring-offset-2 ring-offset-slate-950' : ''}`}>
+            {item.index + 1}{item.unsaved ? ' *' : ''}
           </button>)}
         </div>
       </section>}
       <div className="grid gap-5 md:grid-cols-2">
         <div className="space-y-3 min-w-0">
-          <h2 className="font-semibold">Кадр {index + 1} · Блок {frame.blockNumber ?? '—'}</h2>
-          {frame.hasImage ? <img key={frame.previewUrl} src={videoPreviewUrl(frame.previewUrl)} alt={`Исходное изображение кадра ${index + 1}`}
+          <h2 className="font-semibold">Кадр {activeIndex + 1} · Блок {frame.blockNumber ?? '—'}</h2>
+          {frame.hasImage ? <img key={frame.previewUrl} src={videoPreviewUrl(frame.previewUrl)} alt={`Исходное изображение кадра ${activeIndex + 1}`}
             className="w-full max-h-[55vh] object-contain rounded-xl bg-slate-900" />
             : <div className="rounded-xl bg-slate-900 p-10 text-slate-400">Исходное изображение отсутствует или устарело.</div>}
           <label className="flex gap-3 items-center rounded-xl border border-slate-700 p-3"><input type="checkbox" checked={draft.selected} disabled={busy}
@@ -229,21 +244,9 @@ function VideoPlanEditor({ projectId }) {
             onClick={() => operation('prepare', 'single')}>{saved.promptStatus === 'ready' ? 'Детализировать промт заново' : 'Детализировать промт кадра'}</button>
           {!draft.selected && <p className="text-xs text-slate-400">Отметьте «Анимировать этот кадр», чтобы детализировать его промт.</p>}
           <p className="text-xs text-slate-400">Правки текущего кадра сохраняются перед детализацией. Готово к генерации = выбранный кадр с готовым промтом и актуальным изображением.</p>
-          <div className="border-t border-slate-700 pt-3 space-y-2">
-            <button className={`${button} w-full`} disabled={busy || frameEdits || conflict || !view.selected} onClick={() => operation('all')}>Детализировать все выбранные ({view.selected})</button>
-            {pendingCount > 0 && pendingCount < view.selected && <button className={`${secondary} w-full`} disabled={busy || frameEdits || conflict}
-              onClick={() => operation('continue')}>Продолжить детализацию ({pendingCount})</button>}
-          </div>
         </section>
       </div>
     </>}
-    {data && <details><summary className="cursor-pointer py-2 text-slate-400">Дополнительные действия</summary>
-      <div className="flex flex-wrap gap-2 pt-2">
-        <button className={secondary} disabled={busy || unsaved || conflict || !view.selected} onClick={() => operation('reset')}>Начать детализацию заново</button>
-        <button className={secondary} disabled={busy || unsaved || conflict || !view.selected || view.ready !== view.selected}
-          onClick={() => operation('confirm')}>Утвердить видеоплан</button>
-      </div>
-    </details>}
     <p className="text-xs text-slate-500">Здесь подготавливается видеоплан. Генерация видео будет доступна позже.</p>
   </div>;
 }

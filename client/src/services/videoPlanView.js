@@ -12,3 +12,9 @@ export function videoPlanView(data, drafts = {}) {
   return { frames, total: frames.length, selected: frames.filter(f => f.plan?.selected).length,
     ready: frames.filter(f => f.ready).length };
 }
+
+export function filterVideoFrames(view, filter = 'all') {
+  return view.frames.map((frame, index) => ({ ...frame, index }))
+    // Keep unsaved edits reachable until the user saves or cancels them.
+    .filter(frame => filter === 'all' || frame.plan.selected || frame.unsaved);
+}
