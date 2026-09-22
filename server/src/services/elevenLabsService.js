@@ -101,3 +101,39 @@ export async function synthesizeElevenLabs(text, profile) {
   }
   return buffer;
 }
+
+export async function generateElevenLabsSoundEffect({ text, profile, durationSec = null, loop = false, promptInfluence = 0.3 }) {
+  const apiKey = getDecryptedApiKey(profile);
+  if (!apiKey || profile?.type !== 'audio' || profile?.provider !== 'elevenlabs') {
+    const error = new Error('ElevenLabs profile is incomplete');
+    error.code = 'ELEVENLABS_PROFILE_REQUIRED';
+    throw error;
+  }
+  const prompt = String(text || '').trim();
+  if (!prompt || prompt.length > 450) {
+    const error = new Error('Sound effect prompt is invalid');
+    error.code = 'ELEVENLABS_INVALID_SOUND_PROMPT';
+    error.httpStatus = 400;
+    throw error;
+  }
+  const response = await fetch('https://api.elevenlabs.io/v1/sound-generation?output_format=mp3_44100_128', {
+    method: 'POST',
+    headers: { Accept: 'audio/mpeg', 'Content-Type': 'application/json', 'xi-api-key': apiKey },
+    body: JSON.stringify({
+      text: prompt,
+      model_id: 'eleven_text_to_sound_v2',
+      loop: Boolean(loop),
+      ...(durationSec == null ? {} : { duration_seconds: durationSec }),
+      prompt_influence: promptInfluence,
+    }),
+  });
+  if (!response.ok) {
+    const error = new Error(await readProviderError(response));
+    error.code = providerErrorCode(response.status);
+    error.httpStatus = response.status;
+    throw error;
+  }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (!buffer.length) throw Object.assign(new Error('ElevenLabs returned empty audio'), { code: 'ELEVENLABS_GENERATION_FAILED' });
+  return buffer;
+}

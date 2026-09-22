@@ -20,6 +20,7 @@ import CoverGen from "./pages/CoverGen";
 import Settings from "./pages/Settings";
 import VideoPlan from "./pages/VideoPlan";
 import DavinciExport from "./pages/DavinciExport";
+import SoundEffects from "./pages/SoundEffects";
 
 function AppContent() {
   const { user } = useAuth(); // Получаем состояние пользователя
@@ -97,6 +98,7 @@ function AppContent() {
             }
           />
           <Route path="/projects/:projectId/video" element={<ProtectedRoute><VideoPlan /></ProtectedRoute>} />
+          <Route path="/projects/:projectId/sounds" element={<ProtectedRoute><SoundEffects /></ProtectedRoute>} />
           <Route
             path="/projects/:projectId/davinci"
             element={<ProtectedRoute><DavinciExport /></ProtectedRoute>}

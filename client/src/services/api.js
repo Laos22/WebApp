@@ -84,6 +84,10 @@ export const generateVoiceoverBlock = (projectId, blockId, payload) =>
   projectRequest(projectId, `/voiceover/blocks/${encodeURIComponent(blockId)}/generate`, "POST", payload);
 export const getVoiceoverAudioUrl = (projectId, blockId, generatedAt) =>
   `${SERVER_URL}/api/projects/${projectId}/voiceover/blocks/${encodeURIComponent(blockId)}/audio?v=${encodeURIComponent(generatedAt || "0")}`;
+export const getSoundEffects = projectId => projectRequest(projectId, '/sound-effects');
+export const soundEffectAudioUrl = (projectId, effectId, generatedAt) =>
+  `${SERVER_URL}/api/projects/${projectId}/sound-effects/${encodeURIComponent(effectId)}/audio?v=${encodeURIComponent(generatedAt || '0')}`;
+export const createSoundEffect = (projectId, payload) => projectRequest(projectId, '/sound-effects', 'POST', payload);
 export const getReferencePlan = (projectId) => projectRequest(projectId, "/reference-plan");
 export const analyzeReferencePlan = (projectId, payload) =>
   projectRequest(projectId, "/reference-plan/analyze", "POST", payload);

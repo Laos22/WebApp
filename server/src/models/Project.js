@@ -133,6 +133,22 @@ const voiceoverSchema = new mongoose.Schema({
   confirmedAt: { type: Date, default: null },
 }, { _id: false, strict: 'throw' });
 
+const soundEffectSchema = new mongoose.Schema({
+  _id: { type: String, required: true, maxlength: 36 },
+  name: { type: String, required: true, maxlength: 120 },
+  prompt: { type: String, required: true, maxlength: 450 },
+  durationSec: { type: Number, min: 0.5, max: 30, default: null },
+  loop: { type: Boolean, default: false },
+  promptInfluence: { type: Number, min: 0, max: 1, default: 0.3 },
+  status: { type: String, enum: ['generating', 'ready', 'error'], default: 'generating' },
+  storageKey: { type: String, default: '', maxlength: 1000, select: false },
+  filename: { type: String, default: '', maxlength: 240 },
+  mimeType: { type: String, default: 'audio/mpeg', maxlength: 80 },
+  byteSize: { type: Number, min: 0, default: 0, validate: Number.isSafeInteger },
+  generatedAt: { type: Date, default: null },
+  errorCode: { type: String, default: '', maxlength: 120 },
+}, { timestamps: true, strict: 'throw' });
+
 const storyboardFrameSchema = new mongoose.Schema({
   id: { type: String, required: true, maxlength: 80 },
   order: { type: Number, required: true, min: 1, validate: Number.isSafeInteger },
@@ -230,6 +246,7 @@ const projectSchema = new mongoose.Schema({
   storage: { type: projectStorageSchema, default: () => ({ provider: "local" }) },
   script: { type: scriptSchema, default: undefined },
   voiceover: { type: voiceoverSchema, default: undefined },
+  soundEffects: { type: [soundEffectSchema], default: [] },
   visualBible: { type: visualBibleSchema, default: undefined },
   referencePlan: { type: referencePlanSchema, default: undefined },
   storyboard: { type: storyboardSchema, default: undefined },

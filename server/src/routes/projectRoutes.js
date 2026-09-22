@@ -74,6 +74,9 @@ import { measureMp3Duration, inspectAudioBlock } from "../services/audioDuration
 import { safeProjectFolderName } from "../services/projectStorage.js";
 import path from "path";
 import fs from "fs";
+import { randomUUID } from "node:crypto";
+import { generateElevenLabsSoundEffect } from "../services/elevenLabsService.js";
+import { saveSoundEffectFile, readSoundEffectFile, deleteSoundEffectFile } from "../services/soundEffectStorage.js";
 
 const router = express.Router();
 const configuredFlowArchiveMb = Number(process.env.MAX_FLOW_ARCHIVE_MB || 100);
@@ -695,6 +698,100 @@ router.get('/:id/voiceover/blocks/:blockId/audio', ensureAuthenticated, async (r
   } catch {
     return res.status(500).json({ error: 'Не удалось прочитать аудио' });
   }
+});
+
+function soundEffectResponse(effect) {
+  const value = effect?.toObject ? effect.toObject() : effect;
+  return {
+    id: String(value._id || value.id), name: value.name, prompt: value.prompt,
+    durationSec: value.durationSec, loop: value.loop, promptInfluence: value.promptInfluence,
+    status: value.status, filename: value.filename, mimeType: value.mimeType,
+    byteSize: value.byteSize, generatedAt: value.generatedAt, errorCode: value.errorCode,
+  };
+}
+
+router.get('/:id/sound-effects', ensureAuthenticated, async (req, res) => {
+  try {
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    return res.json({ success: true, soundEffects: (project.soundEffects || []).map(soundEffectResponse) });
+  } catch (error) { return res.status(500).json({ error: 'Не удалось загрузить звуковые эффекты' }); }
+});
+
+router.post('/:id/sound-effects', ensureAuthenticated, async (req, res) => {
+  let stored = null;
+  let projectForStorage = null;
+  try {
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    projectForStorage = project;
+    const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    const durationSec = req.body?.durationSec === null || req.body?.durationSec === undefined || req.body?.durationSec === ''
+      ? null : Number(req.body.durationSec);
+    const loop = Boolean(req.body?.loop);
+    const promptInfluence = req.body?.promptInfluence === undefined ? 0.3 : Number(req.body.promptInfluence);
+    if (!name || name.length > 120 || !prompt || prompt.length > 450 ||
+      (durationSec !== null && (!Number.isFinite(durationSec) || durationSec < 0.5 || durationSec > 30)) ||
+      !Number.isFinite(promptInfluence) || promptInfluence < 0 || promptInfluence > 1) {
+      return res.status(400).json({ error: 'Проверьте название, описание, длительность и влияние промта' });
+    }
+    const settings = await Settings.findOne({ userId: req.user._id });
+    const profile = resolveProfile(settings, 'audio');
+    if (!profile || profile.provider !== 'elevenlabs') return res.status(400).json({ error: 'Настройте профиль ElevenLabs для звуковых эффектов' });
+    const effectId = randomUUID();
+    const buffer = await generateElevenLabsSoundEffect({ text: prompt, profile, durationSec, loop, promptInfluence });
+    stored = await saveSoundEffectFile({ project, userId: req.user._id, buffer, effectId });
+    const saved = await Project.findOneAndUpdate(
+      { _id: project._id, userId: req.user._id },
+      { $push: { soundEffects: { _id: effectId, name, prompt, durationSec, loop, promptInfluence, status: 'ready', ...stored, generatedAt: new Date(), errorCode: '' } }, $set: { updatedAt: new Date() } },
+      { new: true, runValidators: true },
+    );
+    if (!saved) throw new Error('PROJECT_SAVE_FAILED');
+    const effect = saved.soundEffects.find(item => String(item._id) === effectId);
+    return res.status(201).json({ success: true, soundEffect: soundEffectResponse(effect) });
+  } catch (error) {
+    if (stored && projectForStorage) await deleteSoundEffectFile(stored.storageKey, projectForStorage, req.user._id).catch(() => {});
+    const status = error.httpStatus === 429 ? 429 : error.httpStatus === 401 || error.httpStatus === 403 ? 503 : error.code === 'ELEVENLABS_PROFILE_REQUIRED' ? 400 : 500;
+    return res.status(status).json({ error: status === 429 ? 'Лимит ElevenLabs исчерпан. Повторите позже.' : error.code === 'ELEVENLABS_PROFILE_REQUIRED' ? 'Настройте профиль ElevenLabs' : 'Не удалось создать звуковой эффект' });
+  }
+});
+
+router.get('/:id/sound-effects/:effectId/audio', ensureAuthenticated, async (req, res) => {
+  try {
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id }).select('+soundEffects.storageKey');
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const effect = (project.soundEffects || []).find(item => String(item._id) === req.params.effectId && item.status === 'ready');
+    if (!effect?.storageKey) return res.status(404).json({ error: 'Звуковой эффект не найден' });
+    const audio = await readSoundEffectFile(effect.storageKey, project, req.user._id);
+    const range = /^bytes=(\d*)-(\d*)$/i.exec(String(req.headers.range || ''));
+    let start = 0;
+    let end = audio.length - 1;
+    let status = 200;
+    if (range) {
+      if (range[1] === '' && range[2] === '') return res.status(416).set('Content-Range', `bytes */${audio.length}`).end();
+      if (range[1] === '') {
+        const suffixLength = Math.min(Number(range[2]), audio.length);
+        start = audio.length - suffixLength;
+      } else {
+        start = Number(range[1]);
+        end = range[2] === '' ? end : Number(range[2]);
+      }
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start > end || start >= audio.length) {
+        return res.status(416).set('Content-Range', `bytes */${audio.length}`).end();
+      }
+      end = Math.min(end, audio.length - 1);
+      status = 206;
+    }
+    const body = audio.subarray(start, end + 1);
+    res.status(status).set('Content-Type', effect.mimeType || 'audio/mpeg');
+    res.set('Content-Length', String(body.length));
+    res.set('Accept-Ranges', 'bytes');
+    res.set('Cache-Control', 'no-store');
+    if (status === 206) res.set('Content-Range', `bytes ${start}-${end}/${audio.length}`);
+    res.set('Content-Disposition', `inline; filename="${effect.filename || 'sound-effect.mp3'}"`);
+    return res.send(body);
+  } catch (error) { return res.status(500).json({ error: 'Не удалось прочитать звуковой эффект' }); }
 });
 
 const bibleContentFields = ['visualStyle', 'visualModes', 'continuityRules', 'characters', 'locations', 'objects'];
