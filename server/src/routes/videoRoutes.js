@@ -10,7 +10,7 @@ import { readVoiceoverAudio } from '../services/voiceoverStorage.js';
 
 import Settings from '../models/Settings.js';
 import { analysisChunks, assertVideoVersion, analysisPrompt, applyAnalysis, preparationPrompt,
-  applyPreparedPrompt, confirmVideoPlan, resetVideoPrompts, classifyVideoError, videoError } from '../services/videoPlanAiService.js';
+  selectionRulesPrompt, beginVideoAnalysis, assertAnalysisCurrent, applyPreparedPrompt, confirmVideoPlan, resetVideoPrompts, classifyVideoError, videoError } from '../services/videoPlanAiService.js';
 const router = express.Router();
 async function response(project, userId) {
   // Backfill duration in memory for legacy MP3s using the same reader as export.
@@ -98,12 +98,17 @@ router.post('/:id/video-plan/:action', ensureAuthenticated, async (req, res) => 
     let plan;
     if (action === 'confirm') plan = confirmVideoPlan(project, body.expectedEditVersion);
     else if (action === 'reset') plan = resetVideoPrompts(project, body.expectedEditVersion);
-    else if (action === 'analyze' || action === 'prepare') {
+    else if (action === 'analyze-start') {
+      const settings = await Settings.findOne({ userId: req.user._id });
+      const text = await videoAi.generate(selectionRulesPrompt(project), settings, true);
+      plan = beginVideoAnalysis(project, text, body.expectedEditVersion);
+    } else if (action === 'analyze' || action === 'prepare') {
       const current = await response(project, req.user._id);
       if (current.timingErrorCode) throw videoError('FRAME_CHANGED', 409);
       const settings = await Settings.findOne({ userId: req.user._id });
       let prompt, chunk;
       if (action === 'analyze') {
+        assertAnalysisCurrent(project);
         if (!Number.isSafeInteger(body.chunkIndex) || !(chunk = current.analysisChunks[body.chunkIndex]))
           throw videoError('INVALID_VIDEO_PLAN');
         prompt = analysisPrompt(project, chunk, current, settings?.prompts?.videoPlanAnalysisPrompt);

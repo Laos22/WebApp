@@ -1,14 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { analysisChunks, analysisPrompt, applyAnalysis, applyPreparedPrompt, confirmVideoPlan,
-  resetVideoPrompts, classifyVideoError, assertVideoVersion, preparationPrompt } from '../src/services/videoPlanAiService.js';
+  resetVideoPrompts, classifyVideoError, assertVideoVersion, preparationPrompt,
+  beginVideoAnalysis, selectionRulesPrompt, assertAnalysisCurrent } from '../src/services/videoPlanAiService.js';
 import { patchVideoPlan, videoPlanResponse } from '../src/services/videoPlanService.js';
 import { pendingVideoFrames, runVideoQueue } from '../../client/src/services/videoPlanQueue.js';
 const fixture = () => ({ title: 'Test', storyboard: { status: 'confirmed', revision: 1, frames:
   ['a', 'b'].map((id, i) => ({ id, sourceVoiceoverBlockId: `block${i}`, scriptText: 'Narration', visualDescription: 'A landscape', prompt: 'Landscape', referenceIds: ['ref'] })) },
   referencePlan: { items: [{ id: 'ref', selected: true, name: 'Mountain', description: 'Snow' }] },
   voiceover: { blocks: [0, 1].map(i => ({ id: `block${i}`, order: i + 1, adaptedText: 'Narration' })) } });
-const result = (frameId, selected = true) => JSON.stringify({ frames: [{ frameId, selected, videoPrompt: selected ? 'Slow camera movement.' : '' }] });
+const result = (frameId, selected = true) => JSON.stringify({ frames: [{ frameId, selected, importanceScore: selected ? 80 : 0, videoPrompt: selected ? 'Slow camera movement.' : '' }] });
 
 test('analysis of one block includes narration, visuals, durations, references and instructions', () => {
   const project = fixture();
@@ -129,6 +130,7 @@ test('POST endpoints persist separate AI results, enforce owner/source/version g
   let fail = false;
   t.mock.method(videoAi, 'generate', async prompt => {
     if (fail) throw { status: 429, message: '<html>provider secret</html>' };
+    if (prompt.includes('extract the maximum number')) return JSON.stringify({ selectionLimit: 1 });
     return result(prompt.includes('block0') ? 'a' : 'b');
   });
   async function post(action, version, chunkIndex = 0) {
@@ -137,21 +139,102 @@ test('POST endpoints persist separate AI results, enforce owner/source/version g
       body: { expectedEditVersion: version, chunkIndex } }, res);
     return res;
   }
-  assert.equal((await post('analyze', 0)).statusCode, 200);
+  assert.equal((await post('analyze', 0)).statusCode, 409);
+  assert.equal((await post('analyze-start', 0)).statusCode, 200);
+  assert.equal(project.videoPlan.analysis.selectionLimit, 1);
+  assert.equal((await post('analyze', 1)).statusCode, 200);
   const first = structuredClone(project.videoPlan);
   fail = true;
-  const failure = await post('analyze', 1, 1);
+  const failure = await post('analyze', 2, 1);
   assert.equal(failure.statusCode, 429);
   assert.equal(JSON.stringify(failure.body).includes('provider secret'), false);
-  assert.deepEqual(project.videoPlan, first); assert.equal(writes, 1);
+  assert.deepEqual(project.videoPlan, first); assert.equal(writes, 2);
   fail = false;
   assert.equal((await post('analyze', 0, 1)).statusCode, 409);
   conflict = true;
-  assert.equal((await post('analyze', 1, 1)).statusCode, 409);
+  assert.equal((await post('analyze', 2, 1)).statusCode, 409);
   assert.deepEqual(project.videoPlan, first);
   conflict = false;
-  assert.equal((await post('analyze', 1, 1)).statusCode, 200);
+  assert.equal((await post('analyze', 2, 1)).statusCode, 200);
   assert.deepEqual(project.videoPlan.frames[0], first.frames[0]);
-  assert.equal((await post('confirm', 2)).statusCode, 400);
-  assert.equal((await post('reset', 2)).statusCode, 200);
+  assert.equal(project.videoPlan.frames.filter(f => f.selected).length, 1);
+  assert.equal((await post('confirm', 3)).statusCode, 400);
+  assert.equal((await post('reset', 3)).statusCode, 200);
+});
+
+test('global limit of five across six chunks survives reload and selects stronger later candidates', () => {
+  let project = fixture();
+  project.storyboard.frames = Array.from({ length: 30 }, (_, i) => ({
+    ...project.storyboard.frames[0], id: `frame${i}`, sourceVoiceoverBlockId: `block${Math.floor(i / 5)}`,
+  }));
+  project.videoPlan = patchVideoPlan(project, { expectedEditVersion: 0, frames: [],
+    instructions: 'Выбери только 5 кадров для анимации.' });
+  assert.ok(selectionRulesPrompt(project).includes('ACROSS THE ENTIRE PROJECT'));
+  assert.ok(selectionRulesPrompt(project).includes('Выбери только 5 кадров'));
+  project.videoPlan = beginVideoAnalysis(project, '{"selectionLimit":5}', 1);
+  const chunks = analysisChunks(project);
+  assert.equal(chunks.length, 6);
+  for (const [i, chunk] of chunks.entries()) {
+    const text = JSON.stringify({ frames: chunk.frameIds.map(frameId => ({ frameId,
+      selected: true, videoPrompt: 'Slow camera motion.', importanceScore: 50 + i })) });
+    project.videoPlan = applyAnalysis(project, chunk, text, project.videoPlan.editVersion);
+    assert.equal(project.videoPlan.frames.filter(f => f.selected).length, 5);
+    assert.equal(project.videoPlan.analysis.completedChunks.length, i + 1);
+    project = structuredClone(project); // reload persisted result before the next request
+  }
+  assert.deepEqual(project.videoPlan.frames.filter(f => f.selected).map(f => f.frameId), chunks[5].frameIds);
+  assert.equal(project.videoPlan.frames.filter(f => f.videoPrompt).length, 30);
+  const before = structuredClone(project.videoPlan);
+  assert.throws(() => applyAnalysis(project, chunks[5], '{"frames":[]}', project.videoPlan.editVersion));
+  assert.deepEqual(project.videoPlan, before);
+});
+test('analysis rules validate limits and zero excludes all candidates', () => {
+  const project = fixture();
+  for (const text of ['{}', 'null', '[]', '<html>', '{"selectionLimit":-1}', '{"selectionLimit":1.5}', '{"selectionLimit":"5"}'])
+    assert.throws(() => beginVideoAnalysis(project, text, 0), { code: 'INVALID_AI_RESPONSE' });
+  assert.equal(beginVideoAnalysis(project, '{"selectionLimit":100}', 0).analysis.selectionLimit, 2);
+  assert.equal(beginVideoAnalysis(project, '{"selectionLimit":null}', 0).analysis.selectionLimit, null);
+  project.videoPlan = beginVideoAnalysis(project, '{"selectionLimit":0}', 0);
+  project.videoPlan = applyAnalysis(project, analysisChunks(project)[0], result('a'), 1);
+  assert.equal(project.videoPlan.frames.filter(f => f.selected).length, 0);
+});
+test('manual edits invalidate analysis resume; drafts stay pending and only their frame changes', () => {
+  const project = fixture();
+  project.videoPlan = beginVideoAnalysis(project, '{"selectionLimit":1}', 0);
+  assert.doesNotThrow(() => assertAnalysisCurrent(project));
+  const other = structuredClone(project.videoPlan.frames[1]);
+  project.videoPlan = patchVideoPlan(project, { expectedEditVersion: 1, frames: [
+    { frameId: 'a', selected: true, videoPrompt: 'Камера приближается.', promptStatus: 'pending' },
+  ] });
+  assert.equal(project.videoPlan.frames[0].promptStatus, 'pending');
+  assert.deepEqual(project.videoPlan.frames[1], other);
+  assert.throws(() => assertAnalysisCurrent(project), { code: 'ANALYSIS_RESTART_REQUIRED' });
+  assert.throws(() => confirmVideoPlan(project, 2), { code: 'PLAN_NOT_READY' });
+  project.videoPlan = applyPreparedPrompt(project, 'a', 'The camera moves closer.', 2);
+  assert.equal(project.videoPlan.frames[0].promptStatus, 'ready');
+  assert.equal(confirmVideoPlan(project, 3).status, 'confirmed');
+});
+test('stale storyboard prevents resuming analysis before spending another AI request', () => {
+  const project = fixture();
+  project.videoPlan = beginVideoAnalysis(project, '{"selectionLimit":1}', 0);
+  project.storyboard.frames[0].prompt = 'Changed';
+  assert.throws(() => assertAnalysisCurrent(project), { code: 'ANALYSIS_RESTART_REQUIRED' });
+});
+test('overview and picker agree on total, selected, ready, drafts and missing images', async () => {
+  const { videoPlanView } = await import('../../client/src/services/videoPlanView.js');
+  const project = fixture();
+  project.videoPlan = patchVideoPlan(project, { expectedEditVersion: 0, frames: [
+    { frameId: 'a', selected: true, videoPrompt: 'Move slowly.' },
+    { frameId: 'b', selected: true, videoPrompt: 'Move slowly.' },
+  ] });
+  const data = videoPlanResponse(project);
+  data.frames[0].hasImage = true;
+  let view = videoPlanView(data);
+  assert.equal(view.total, 2); assert.equal(view.selected, 2); assert.equal(view.ready, 1);
+  view = videoPlanView(data, { a: { ...project.videoPlan.frames[0], selected: false } });
+  assert.equal(view.selected, 1); assert.equal(view.ready, 0);
+  assert.equal(view.frames[0].plan.selected, false);
+  assert.equal(view.frames[0].unsaved, true);
+  data.videoPlan.status = 'stale';
+  assert.equal(videoPlanView(data).ready, 0);
 });

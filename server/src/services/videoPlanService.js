@@ -19,6 +19,7 @@ export function normalizeVideoPlan(project) {
     revision: stored?.revision || 0, editVersion: stored?.editVersion || 0,
     sourceStoryboardRevision: stored?.sourceStoryboardRevision ?? null,
     sourceStoryboardFingerprint: stored?.sourceStoryboardFingerprint || "",
+    analysis: stored?.analysis || null,
     instructions: stored?.instructions || '', updatedAt: stored?.updatedAt || null,
     confirmedAt: stored?.confirmedAt || null,
     frames: frames.map(frame => byId.get(frame.id) || {
@@ -39,9 +40,10 @@ export function patchVideoPlan(project, body, now = new Date()) {
   const ids = new Set(plan.frames.map(frame => frame.frameId));
   for (const frame of body.frames) {
     if (!frame || typeof frame !== 'object' || Array.isArray(frame) ||
-        Object.keys(frame).some(key => !['frameId', 'selected', 'videoPrompt'].includes(key)) ||
+        Object.keys(frame).some(key => !['frameId', 'selected', 'videoPrompt', 'promptStatus'].includes(key)) ||
         typeof frame.frameId !== 'string' || typeof frame.selected !== 'boolean' ||
-        typeof frame.videoPrompt !== 'string' || frame.videoPrompt.length > 12000) fail('INVALID_VIDEO_FRAME');
+        typeof frame.videoPrompt !== 'string' || frame.videoPrompt.length > 12000 ||
+        (frame.promptStatus !== undefined && !['pending', 'ready'].includes(frame.promptStatus))) fail('INVALID_VIDEO_FRAME');
     if (patches.has(frame.frameId)) fail('DUPLICATE_FRAME_ID');
     if (!ids.has(frame.frameId)) fail('UNKNOWN_FRAME_ID');
     patches.set(frame.frameId, frame);
@@ -52,14 +54,14 @@ export function patchVideoPlan(project, body, now = new Date()) {
     sourceStoryboardRevision: project.storyboard?.revision ?? 0,
     sourceStoryboardFingerprint: storyboardFingerprint(project),
     instructions: body.instructions === undefined ? plan.instructions : body.instructions.trim(),
-    updatedAt: now, confirmedAt: null,
+    updatedAt: now, confirmedAt: null, analysis: null,
     frames: plan.frames.map(frame => {
       const patch = patches.get(frame.frameId);
       if (!patch) return frame;
       const videoPrompt = patch.videoPrompt.trim();
       const changed = videoPrompt !== frame.videoPrompt;
       return { ...frame, selected: patch.selected, videoPrompt,
-        ...(changed ? { promptStatus: videoPrompt ? 'ready' : 'pending', promptErrorCode: '', promptUpdatedAt: now } : {}) };
+        ...(changed || patch.promptStatus !== undefined ? { promptStatus: videoPrompt ? (patch.promptStatus || 'ready') : 'pending', promptErrorCode: '', promptUpdatedAt: now } : {}) };
     }),
   };
 }

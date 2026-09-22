@@ -4,7 +4,7 @@ Frames with durations: {{FRAMES}}
 Selected references: {{REFERENCES}}
 User instructions: {{INSTRUCTIONS}}
 Select only frames where motion improves storytelling: actions, emotional moments, camera motion, atmosphere and important transitions. Leave frames static when motion adds no value; do not select everything by default. Respect instructions about archival photographs.
-Return only JSON {"frames":[{"frameId":"exact supplied id","selected":true,"videoPrompt":"draft English motion prompt"}]}. Include every supplied frame exactly once. For static frames use selected:false and an empty videoPrompt. Treat the existing image as the first video frame; preserve composition, appearance, clothing, objects and environment. Use restrained natural motion appropriate to duration, no scene changes, new objects, text, logos or cuts.`;
+Return only JSON {"frames":[{"frameId":"exact supplied id","selected":true,"importanceScore":80,"videoPrompt":"draft English motion prompt"}]}. Include every supplied frame exactly once. For static frames use selected:false and an empty videoPrompt. Treat the existing image as the first video frame; preserve composition, appearance, clothing, objects and environment. Use restrained natural motion appropriate to duration, no scene changes, new objects, text, logos or cuts.`;
 
 export const DEFAULT_VIDEO_PROMPT_PREPARATION_PROMPT = `Подготовь английский промт анимации одного исходного изображения для проекта {{PROJECT_TITLE}}.
 Кадр: {{FRAME}}
