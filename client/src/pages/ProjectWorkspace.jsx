@@ -176,6 +176,14 @@ export default function ProjectWorkspace() {
             </div>
           </Link>}
 
+          {project.voiceover?.status === "confirmed" && project.storyboard?.status === "confirmed" && <Link
+            to={`/projects/${projectId}/music`}
+            className="group p-8 bg-slate-900/80 hover:bg-slate-900 border border-amber-500/20 hover:border-amber-500/60 rounded-2xl transition-all shadow-xl flex flex-col justify-between"
+          >
+            <div><div className="w-12 h-12 rounded-xl bg-amber-600/20 border border-amber-500/30 flex items-center justify-center text-2xl mb-4 group-hover:scale-110 transition-transform">🎵</div><h2 className="text-2xl font-bold mb-2 group-hover:text-amber-300 transition-colors">Фоновая музыка</h2><p className="text-slate-400 text-sm">AI-анализ проекта и генерация инструментальной дорожки.</p></div>
+            <div className="mt-6 flex items-center text-amber-400 font-semibold text-sm group-hover:translate-x-1 transition-transform">Перейти &rarr;</div>
+          </Link>}
+
           {project.script?.status === "confirmed" && <Link
             to={`/projects/${projectId}/sounds`}
             className="group p-8 bg-slate-900/80 hover:bg-slate-900 border border-fuchsia-500/20 hover:border-fuchsia-500/60 rounded-2xl transition-all shadow-xl flex flex-col justify-between"

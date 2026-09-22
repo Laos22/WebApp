@@ -76,9 +76,10 @@ import { safeProjectFolderName } from "../services/projectStorage.js";
 import path from "path";
 import fs from "fs";
 import { randomUUID } from "node:crypto";
-import { generateElevenLabsSoundEffect } from "../services/elevenLabsService.js";
+import { generateElevenLabsSoundEffect, generateElevenLabsMusic } from "../services/elevenLabsService.js";
 import { saveSoundEffectFile, readSoundEffectFile, deleteSoundEffectFile } from "../services/soundEffectStorage.js";
 import { soundDesignPrompt, parseSoundDesign } from "../services/soundDesignService.js";
+import { saveMusicFile, readMusicFile, deleteMusicFile } from "../services/musicStorage.js";
 
 const router = express.Router();
 const configuredFlowArchiveMb = Number(process.env.MAX_FLOW_ARCHIVE_MB || 100);
@@ -726,6 +727,79 @@ function soundPlanResponse(project) {
     sourceVoiceoverRevision: plan.sourceVoiceoverRevision, generatedAt: plan.generatedAt,
     suggestions: (plan.suggestions || []).map(soundSuggestionResponse) };
 }
+
+function musicResponse(project) {
+  const value = project.backgroundMusic?.toObject ? project.backgroundMusic.toObject() : project.backgroundMusic;
+  if (!value) return { status: 'empty' };
+  return { status: value.status, title: value.title, prompt: value.prompt, durationSec: value.durationSec,
+    instrumental: value.instrumental, filename: value.filename, mimeType: value.mimeType, byteSize: value.byteSize,
+    generatedAt: value.generatedAt, sourceStoryboardRevision: value.sourceStoryboardRevision,
+    sourceVoiceoverRevision: value.sourceVoiceoverRevision, errorCode: value.errorCode };
+}
+
+function musicAnalysisPrompt(project) {
+  const frames = (project.storyboard?.frames || []).map(frame => ({ order: frame.order, narration: frame.scriptText, visual: frame.visualDescription }));
+  return `Act as a film composer. Analyze this project's narration and storyboard and propose one cohesive instrumental background music track for the entire video. Return JSON only: {"title":"short title","prompt":"English prompt up to 800 characters","durationSec":number}. The prompt must describe genre, mood, instruments, tempo, emotional arc and that it is instrumental with no vocals. Duration must be between 3 and 600 seconds and should cover the narration. Project: ${JSON.stringify(project.title || '')}. Narration: ${JSON.stringify((project.voiceover?.blocks || []).map(block => block.adaptedText || block.text || ''))}. Storyboard: ${JSON.stringify(frames)}`;
+}
+
+function normalizeMusicPlan(text, project) {
+  let value;
+  try { value = JSON.parse(text); } catch { throw Object.assign(new Error('INVALID_MUSIC_PLAN'), { code: 'INVALID_MUSIC_PLAN', status: 502 }); }
+  const prompt = typeof value?.prompt === 'string' ? value.prompt.trim() : '';
+  const durationSec = Number(value?.durationSec);
+  if (!prompt || prompt.length > 4100 || !Number.isFinite(durationSec) || durationSec < 3 || durationSec > 600) {
+    throw Object.assign(new Error('INVALID_MUSIC_PLAN'), { code: 'INVALID_MUSIC_PLAN', status: 502 });
+  }
+  return { status: 'empty', title: typeof value.title === 'string' ? value.title.trim().slice(0, 160) : 'Фоновая музыка', prompt, durationSec, instrumental: true,
+    sourceStoryboardRevision: project.storyboard.revision, sourceVoiceoverRevision: project.voiceover.revision };
+}
+
+router.post('/:id/music/analyze', ensureAuthenticated, async (req, res) => {
+  try {
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    if (project.storyboard?.status !== 'confirmed' || project.voiceover?.status !== 'confirmed') return res.status(409).json({ error: 'Сначала утвердите раскадровку и текст озвучки' });
+    const settings = await Settings.findOne({ userId: req.user._id });
+    const profile = resolveProfile(settings, 'text');
+    if (!profile) return res.status(503).json({ error: 'Настройте текстовый AI-профиль для анализа музыки' });
+    const plan = normalizeMusicPlan(await generateVideoPlanText(musicAnalysisPrompt(project), profile, true), project);
+    const saved = await Project.findOneAndUpdate({ _id: project._id, userId: req.user._id, 'storyboard.revision': project.storyboard.revision, 'voiceover.revision': project.voiceover.revision }, { $set: { backgroundMusic: plan, updatedAt: new Date() } }, { new: true, runValidators: true });
+    if (!saved) return res.status(409).json({ error: 'Проект изменился во время анализа. Повторите запрос.' });
+    return res.json({ success: true, music: musicResponse(saved) });
+  } catch (error) { return res.status(error.status === 429 ? 429 : 502).json({ error: error.code === 'INVALID_MUSIC_PLAN' ? 'ИИ вернул некорректный музыкальный план. Повторите анализ.' : 'Не удалось проанализировать музыку' }); }
+});
+
+router.post('/:id/music/generate', ensureAuthenticated, async (req, res) => {
+  let stored = null; let projectForStorage = null;
+  try {
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id }).select('+backgroundMusic.storageKey');
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    projectForStorage = project;
+    const music = project.backgroundMusic;
+    const prompt = typeof req.body?.prompt === 'string' && req.body.prompt.trim() ? req.body.prompt.trim() : music?.prompt;
+    const durationSec = req.body?.durationSec == null ? music?.durationSec : Number(req.body.durationSec);
+    const title = typeof req.body?.title === 'string' && req.body.title.trim() ? req.body.title.trim() : (music?.title || 'Фоновая музыка');
+    if (!prompt || !Number.isFinite(Number(durationSec)) || Number(durationSec) < 3 || Number(durationSec) > 600) return res.status(400).json({ error: 'Укажите корректный промт и длительность музыки' });
+    const settings = await Settings.findOne({ userId: req.user._id }); const profile = resolveProfile(settings, 'audio');
+    if (!profile || profile.provider !== 'elevenlabs') return res.status(400).json({ error: 'Настройте профиль ElevenLabs для музыки' });
+    const trackId = randomUUID(); const buffer = await generateElevenLabsMusic({ prompt, profile, durationSec: Number(durationSec), instrumental: true });
+    stored = await saveMusicFile({ project, userId: req.user._id, buffer, trackId });
+    const saved = await Project.findOneAndUpdate({ _id: project._id, userId: req.user._id }, { $set: { backgroundMusic: { status: 'ready', title, prompt, durationSec: Number(durationSec), instrumental: true, ...stored, generatedAt: new Date(), sourceStoryboardRevision: project.storyboard?.revision ?? null, sourceVoiceoverRevision: project.voiceover?.revision ?? null, errorCode: '' }, updatedAt: new Date() } }, { new: true, runValidators: true });
+    if (!saved) throw new Error('MUSIC_SAVE_FAILED');
+    if (music?.storageKey && music.storageKey !== stored.storageKey) deleteMusicFile(music.storageKey, project, req.user._id).catch(() => {});
+    return res.json({ success: true, music: musicResponse(saved) });
+  } catch (error) { if (stored && projectForStorage) await deleteMusicFile(stored.storageKey, projectForStorage, req.user._id).catch(() => {}); return res.status(error.httpStatus === 429 ? 429 : error.code === 'ELEVENLABS_PROFILE_REQUIRED' ? 400 : 500).json({ error: error.httpStatus === 429 ? 'Лимит ElevenLabs исчерпан. Повторите позже.' : 'Не удалось создать фоновую музыку' }); }
+});
+
+router.get('/:id/music/audio', ensureAuthenticated, async (req, res) => {
+  try {
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id }).select('+backgroundMusic.storageKey');
+    if (!project?.backgroundMusic?.storageKey || project.backgroundMusic.status !== 'ready') return res.status(404).json({ error: 'Фоновая музыка не найдена' });
+    const audio = await readMusicFile(project.backgroundMusic.storageKey, project, req.user._id);
+    res.status(200).set({ 'Content-Type': project.backgroundMusic.mimeType || 'audio/mpeg', 'Content-Length': String(audio.length), 'Content-Disposition': `inline; filename="${project.backgroundMusic.filename || 'background-music.mp3'}"`, 'Cache-Control': 'no-store' });
+    return res.send(audio);
+  } catch { return res.status(500).json({ error: 'Не удалось прочитать фоновую музыку' }); }
+});
 
 router.get('/:id/sound-effects', ensureAuthenticated, async (req, res) => {
   try {

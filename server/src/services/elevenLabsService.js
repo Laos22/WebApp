@@ -137,3 +137,24 @@ export async function generateElevenLabsSoundEffect({ text, profile, durationSec
   if (!buffer.length) throw Object.assign(new Error('ElevenLabs returned empty audio'), { code: 'ELEVENLABS_GENERATION_FAILED' });
   return buffer;
 }
+
+export async function generateElevenLabsMusic({ prompt, profile, durationSec = 60, instrumental = true }) {
+  const apiKey = getDecryptedApiKey(profile);
+  if (!apiKey || profile?.type !== 'audio' || profile?.provider !== 'elevenlabs') {
+    throw Object.assign(new Error('ElevenLabs profile is incomplete'), { code: 'ELEVENLABS_PROFILE_REQUIRED' });
+  }
+  const text = String(prompt || '').trim();
+  if (!text || text.length > 4100) throw Object.assign(new Error('Music prompt is invalid'), { code: 'ELEVENLABS_INVALID_MUSIC_PROMPT', httpStatus: 400 });
+  const seconds = Number(durationSec);
+  if (!Number.isFinite(seconds) || seconds < 3 || seconds > 600) throw Object.assign(new Error('Music duration is invalid'), { code: 'ELEVENLABS_INVALID_MUSIC_DURATION', httpStatus: 400 });
+  const response = await fetch('https://api.elevenlabs.io/v1/music?output_format=mp3_44100_128', {
+    method: 'POST', headers: { Accept: 'audio/mpeg', 'Content-Type': 'application/json', 'xi-api-key': apiKey },
+    body: JSON.stringify({ prompt: text, model_id: 'music_v2', music_length_ms: Math.round(seconds * 1000), force_instrumental: Boolean(instrumental) }),
+  });
+  if (!response.ok) {
+    const error = new Error(await readProviderError(response)); error.code = providerErrorCode(response.status); error.httpStatus = response.status; throw error;
+  }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (!buffer.length) throw Object.assign(new Error('ElevenLabs returned empty music'), { code: 'ELEVENLABS_GENERATION_FAILED' });
+  return buffer;
+}

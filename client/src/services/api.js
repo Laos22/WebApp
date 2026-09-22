@@ -89,6 +89,9 @@ export const analyzeSoundDesign = projectId => projectRequest(projectId, '/sound
 export const soundEffectAudioUrl = (projectId, effectId, generatedAt) =>
   `${SERVER_URL}/api/projects/${projectId}/sound-effects/${encodeURIComponent(effectId)}/audio?v=${encodeURIComponent(generatedAt || '0')}`;
 export const createSoundEffect = (projectId, payload) => projectRequest(projectId, '/sound-effects', 'POST', payload);
+export const analyzeBackgroundMusic = projectId => projectRequest(projectId, '/music/analyze', 'POST', {});
+export const generateBackgroundMusic = (projectId, payload = {}) => projectRequest(projectId, '/music/generate', 'POST', payload);
+export const backgroundMusicAudioUrl = (projectId, generatedAt) => `${SERVER_URL}/api/projects/${projectId}/music/audio?v=${encodeURIComponent(generatedAt || '0')}`;
 export const getReferencePlan = (projectId) => projectRequest(projectId, "/reference-plan");
 export const analyzeReferencePlan = (projectId, payload) =>
   projectRequest(projectId, "/reference-plan/analyze", "POST", payload);

@@ -171,6 +171,22 @@ const soundPlanSchema = new mongoose.Schema({
   suggestions: { type: [soundSuggestionSchema], default: [], validate: value => value.length <= 200 },
 }, { _id: false, strict: 'throw' });
 
+const backgroundMusicSchema = new mongoose.Schema({
+  status: { type: String, enum: ['empty', 'generating', 'ready', 'error'], default: 'empty' },
+  title: { type: String, default: '', maxlength: 160 },
+  prompt: { type: String, default: '', maxlength: 4100 },
+  durationSec: { type: Number, min: 3, max: 600, default: null },
+  instrumental: { type: Boolean, default: true },
+  storageKey: { type: String, default: '', maxlength: 1000, select: false },
+  filename: { type: String, default: '' },
+  mimeType: { type: String, default: 'audio/mpeg' },
+  byteSize: { type: Number, default: 0, min: 0 },
+  generatedAt: { type: Date, default: null },
+  sourceStoryboardRevision: { type: Number, default: null },
+  sourceVoiceoverRevision: { type: Number, default: null },
+  errorCode: { type: String, default: '' },
+}, { _id: false, strict: 'throw' });
+
 const storyboardFrameSchema = new mongoose.Schema({
   id: { type: String, required: true, maxlength: 80 },
   order: { type: Number, required: true, min: 1, validate: Number.isSafeInteger },
@@ -270,6 +286,7 @@ const projectSchema = new mongoose.Schema({
   voiceover: { type: voiceoverSchema, default: undefined },
   soundEffects: { type: [soundEffectSchema], default: [] },
   soundPlan: { type: soundPlanSchema, default: undefined },
+  backgroundMusic: { type: backgroundMusicSchema, default: undefined },
   visualBible: { type: visualBibleSchema, default: undefined },
   referencePlan: { type: referencePlanSchema, default: undefined },
   storyboard: { type: storyboardSchema, default: undefined },
