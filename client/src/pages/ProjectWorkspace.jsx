@@ -85,17 +85,18 @@ export default function ProjectWorkspace() {
               </p>
               <br />
               <p>{project.description || "Нет описания"}</p>
+              {project.script && (
+                <section className="p-6 bg-slate-900 rounded-2xl border border-emerald-500/20 space-y-3">
+                  <h2 className="text-xl font-bold">Сценарий · {project.script.status === "confirmed" ? "Подтверждён" : "Черновик"} · Редакция {project.script.revision}</h2>
+                  <pre className="text-slate-300 whitespace-pre-wrap font-sans max-h-72 overflow-y-auto">{project.script.content}</pre>
+                  <Link to={`/projects/${projectId}/script`} className="text-emerald-400 inline-block">Открыть сценарий</Link>
+                </section>
+              )}
             </div>
           )}
         </div>
 
-        {project.script && (
-          <section className="p-6 bg-slate-900 rounded-2xl border border-emerald-500/20 space-y-3">
-            <h2 className="text-xl font-bold">Сценарий · {project.script.status === "confirmed" ? "Подтверждён" : "Черновик"} · Редакция {project.script.revision}</h2>
-            <pre className="text-slate-300 whitespace-pre-wrap font-sans max-h-72 overflow-y-auto">{project.script.content}</pre>
-            <Link to={`/projects/${projectId}/script`} className="text-emerald-400 inline-block">Открыть сценарий</Link>
-          </section>
-        )}
+        
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {project.storyboard?.status === 'confirmed' && videoAvailable && <Link
