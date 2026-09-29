@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { getVisualBible, generateVisualBibleDraft, confirmVisualBible, updateVisualBible, editVisualBiblePreview } from "../services/api";
+import ProfileSelector from "../components/ProfileSelector";
 
 const styleLabels = {
   concept: "Концепция", realism: "Реализм", colorPalette: "Цветовая палитра",
@@ -119,6 +120,7 @@ function BibleViewer({ projectId }) {
   const [originalBible, setOriginalBible] = useState(null);
   const [draftBible, setDraftBible] = useState(null);
   const [aiInstruction, setAiInstruction] = useState("");
+  const [profileId, setProfileId] = useState("");
   const [instructionError, setInstructionError] = useState("");
   const inFlight = useRef(false);
   const mounted = useRef(false);
@@ -144,7 +146,7 @@ function BibleViewer({ projectId }) {
     try {
       const result = action === "load" ? await getVisualBible(projectId)
         : action === "generate"
-          ? await generateVisualBibleDraft(projectId, data.scriptRevision, data.visualBible.editVersion)
+          ? await generateVisualBibleDraft(projectId, data.scriptRevision, data.visualBible.editVersion, profileId)
           : await confirmVisualBible(projectId, data.visualBible.sourceScriptRevision, data.visualBible.editVersion);
       if (mounted.current) {
         setData(result);
@@ -223,7 +225,7 @@ function BibleViewer({ projectId }) {
     setError(null);
     setInstructionError("");
     try {
-      const response = await editVisualBiblePreview(projectId, instruction, bible.editVersion, bible.sourceScriptRevision);
+      const response = await editVisualBiblePreview(projectId, instruction, bible.editVersion, bible.sourceScriptRevision, profileId);
       if (!response.preview || typeof response.preview !== "object" || Array.isArray(response.preview)) {
         throw new Error("Missing Visual Bible preview");
       }
@@ -269,6 +271,7 @@ function BibleViewer({ projectId }) {
             {!scriptConfirmed && <p className="text-amber-300">Сначала сохраните и подтвердите сценарий. Затем можно создать Visual Bible. <Link className="underline" to={`/projects/${projectId}/script`}>Перейти к сценарию</Link></p>}
             {bible.status === "stale" && <p className="text-amber-300">Сценарий изменён. Visual Bible нужно пересоздать</p>}
             <div className="space-y-3">
+              <ProfileSelector type="text" projectId={projectId} operation="visual-bible" value={profileId} onChange={setProfileId} disabled={Boolean(pending)} />
               {bible.status === "draft" && !editing && <button className={button} disabled={Boolean(pending) || error?.status === 409} onClick={beginEdit}>Редактировать</button>}
               {editing && <div className="flex flex-wrap gap-3">
                 <button className={button} disabled={Boolean(pending) || error?.status === 409} onClick={saveEdit}>{pending === "save" ? "Сохраняю изменения…" : "Сохранить изменения"}</button>

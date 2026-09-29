@@ -26,6 +26,7 @@ import {
 } from "../services/geminiService.js";
 import {
   resolveProfile,
+  resolveRequestedProfile,
   logProfileUsage,
 } from "../services/aiProfileResolver.js";
 import Project from "../models/Project.js";
@@ -350,7 +351,7 @@ router.post("/:id/generate-cover", ensureAuthenticated, async (req, res) => {
 router.post("/:id/generate-script", ensureAuthenticated, async (req, res) => {
   try {
     const { id: projectId } = req.params;
-    const { prompt, projectDescription } = req.body;
+    const { prompt, projectDescription, profileId } = req.body;
 
     if (!prompt || !projectDescription) {
       return res.status(400).json({
@@ -373,7 +374,7 @@ router.post("/:id/generate-script", ensureAuthenticated, async (req, res) => {
     const script = await generateScript(
       settings.prompts.script,
       projectDescription,
-      resolveProfile(settings, "text"),
+      resolveRequestedProfile(settings, "text", profileId),
     );
     if (typeof script !== "string" || !script.trim()) {
       return res.status(502).json({ error: "Получен пустой сценарий" });
@@ -530,7 +531,7 @@ router.post('/:id/voiceover/adapt', ensureAuthenticated, async (req, res) => {
   try {
     const body = req.body;
     if (!body || typeof body !== 'object' || Array.isArray(body) ||
-        Object.keys(body).some(key => !['instructions', 'expectedEditVersion', 'sourceScriptRevision'].includes(key)) ||
+        Object.keys(body).some(key => !['instructions', 'expectedEditVersion', 'sourceScriptRevision', 'profileId'].includes(key)) ||
         typeof body.instructions !== 'string' || body.instructions.length > 4000 ||
         !Number.isSafeInteger(body.expectedEditVersion) || body.expectedEditVersion < 0 ||
         !Number.isSafeInteger(body.sourceScriptRevision) || body.sourceScriptRevision < 1) {
@@ -550,7 +551,7 @@ router.post('/:id/voiceover/adapt', ensureAuthenticated, async (req, res) => {
     const raw = await generateVoiceoverAdaptation(
       project, sourceBlocks, body.instructions.trim(),
       settings?.prompts?.audio || DEFAULT_AUDIO_ADAPTATION_PROMPT,
-      resolveProfile(settings, 'text'),
+      resolveRequestedProfile(settings, 'text', body.profileId),
     );
     const previous = (project.voiceover?.blocks || []).map(block => block.toObject?.() ?? block);
     const blocks = parseAdaptedBlocks(raw, sourceBlocks, previous);
@@ -779,7 +780,7 @@ router.post('/:id/music/analyze', ensureAuthenticated, async (req, res) => {
     if (!project) return res.status(404).json({ error: 'Проект не найден' });
     if (project.storyboard?.status !== 'confirmed' || project.voiceover?.status !== 'confirmed') return res.status(409).json({ error: 'Сначала утвердите раскадровку и текст озвучки' });
     const settings = await Settings.findOne({ userId: req.user._id });
-    const profile = resolveProfile(settings, 'text');
+    const profile = resolveRequestedProfile(settings, 'text', req.body?.profileId);
     if (!profile) return res.status(503).json({ error: 'Настройте текстовый AI-профиль для анализа музыки' });
     const plan = normalizeMusicPlan(await generateVideoPlanText(musicAnalysisPrompt(project), profile, true), project);
     const saved = await Project.findOneAndUpdate({ _id: project._id, userId: req.user._id, 'storyboard.revision': project.storyboard.revision, 'voiceover.revision': project.voiceover.revision }, { $set: { backgroundMusic: plan, updatedAt: new Date() } }, { new: true, runValidators: true });
@@ -799,7 +800,7 @@ router.post('/:id/music/generate', ensureAuthenticated, async (req, res) => {
     const durationSec = req.body?.durationSec == null ? music?.durationSec : Number(req.body.durationSec);
     const title = typeof req.body?.title === 'string' && req.body.title.trim() ? req.body.title.trim() : (music?.title || 'Фоновая музыка');
     if (!sourcePrompt || !Number.isFinite(Number(durationSec)) || Number(durationSec) < 3 || Number(durationSec) > 600) return res.status(400).json({ error: 'Укажите корректный промт и длительность музыки' });
-    const settings = await Settings.findOne({ userId: req.user._id }); const profile = resolveProfile(settings, 'audio');
+    const settings = await Settings.findOne({ userId: req.user._id }); const profile = resolveRequestedProfile(settings, 'audio', req.body?.profileId);
     if (!profile || profile.provider !== 'elevenlabs') return res.status(400).json({ error: 'Настройте профиль ElevenLabs для музыки' });
     const prompt = await prepareEnglishAudioPrompt(sourcePrompt, resolveProfile(settings, 'text'));
     const trackId = randomUUID(); const buffer = await generateElevenLabsMusic({ prompt, profile, durationSec: Number(durationSec), instrumental: true });
@@ -837,7 +838,7 @@ router.post('/:id/sound-effects/analyze', ensureAuthenticated, async (req, res) 
       return res.status(409).json({ error: 'Сначала утвердите раскадровку и текст озвучки' });
     }
     const settings = await Settings.findOne({ userId: req.user._id });
-    const profile = resolveProfile(settings, 'text');
+    const profile = resolveRequestedProfile(settings, 'text', req.body?.profileId);
     if (!profile) return res.status(503).json({ error: 'Настройте текстовый AI-профиль для анализа звука' });
     const text = await generateVideoPlanText(soundDesignPrompt(project), profile, true);
     const suggestions = parseSoundDesign(text, project);
@@ -904,7 +905,7 @@ router.post('/:id/sound-effects', ensureAuthenticated, async (req, res) => {
       return res.status(400).json({ error: 'Проверьте название, описание, длительность и влияние промта' });
     }
     const settings = await Settings.findOne({ userId: req.user._id });
-    const profile = resolveProfile(settings, 'audio');
+    const profile = resolveRequestedProfile(settings, 'audio', req.body?.profileId);
     if (!profile || profile.provider !== 'elevenlabs') return res.status(400).json({ error: 'Настройте профиль ElevenLabs для звуковых эффектов' });
     const prompt = await prepareEnglishAudioPrompt(sourcePrompt, resolveProfile(settings, 'text'));
     if (prompt.length > 450) return res.status(400).json({ error: 'Переведённый промт слишком длинный. Сократите описание.' });
@@ -974,7 +975,7 @@ const bibleContentFields = ['visualStyle', 'visualModes', 'continuityRules', 'ch
 function validBibleBody(body, action) {
   const allowed = action === 'save'
     ? ['expectedEditVersion', ...bibleContentFields]
-    : ['expectedEditVersion', 'sourceScriptRevision'];
+    : ['expectedEditVersion', 'sourceScriptRevision', 'profileId'];
   return body && typeof body === 'object' && !Array.isArray(body) &&
     Object.keys(body).every(key => allowed.includes(key)) &&
     Number.isSafeInteger(body.expectedEditVersion) && body.expectedEditVersion >= 0 &&
@@ -1019,7 +1020,7 @@ router.post('/:id/visual-bible/draft', ensureAuthenticated, async (req, res) => 
     const rawText = await generateVisualBibleDraft(
       project.title, project.script.content,
       settings?.prompts?.visualBiblePrompt ?? DEFAULT_VISUAL_BIBLE_PROMPT,
-      resolveProfile(settings, 'text'),
+      resolveRequestedProfile(settings, 'text', req.body?.profileId),
     );
     const normalized = normalizeGeneratedVisualBible(rawText);
     let content;
@@ -1084,7 +1085,7 @@ router.post('/:id/visual-bible/edit', ensureAuthenticated, async (req, res) => {
     const rawResponse = await editVisualBible(
       project.title, project.script.content, bible, body.instruction.trim(),
       settings?.prompts?.visualBibleEditPrompt || DEFAULT_VISUAL_BIBLE_EDIT_PROMPT,
-      resolveProfile(settings, 'text'),
+      resolveRequestedProfile(settings, 'text', body.profileId),
     );
     let preview;
     try {
@@ -1161,7 +1162,7 @@ router.post('/:id/reference-plan/analyze', ensureAuthenticated, async (req, res)
   try {
     const body = req.body;
     if (!body || typeof body !== 'object' || Array.isArray(body) ||
-        Object.keys(body).some(key => !['instructions', 'items', 'expectedEditVersion', 'sourceScriptRevision'].includes(key)) ||
+        Object.keys(body).some(key => !['instructions', 'items', 'expectedEditVersion', 'sourceScriptRevision', 'profileId'].includes(key)) ||
         typeof body.instructions !== 'string' || body.instructions.length > 4000 ||
         !Array.isArray(body.items) ||
         !Number.isSafeInteger(body.expectedEditVersion) || body.expectedEditVersion < 0 ||
@@ -1184,7 +1185,7 @@ router.post('/:id/reference-plan/analyze', ensureAuthenticated, async (req, res)
     const raw = await analyzeScriptReferences(
       project, currentItems, body.instructions.trim(),
       settings?.prompts?.referenceAnalysisPrompt || DEFAULT_REFERENCE_ANALYSIS_PROMPT,
-      resolveProfile(settings, 'text'),
+      resolveRequestedProfile(settings, 'text', body.profileId),
     );
     let items;
     try { items = parseReferenceAnalysis(raw, currentItems); }
@@ -1276,7 +1277,7 @@ router.post('/:id/reference-plan/:referenceId/detail-prompt', ensureAuthenticate
   try {
     const body = req.body;
     if (!body || typeof body !== 'object' || Array.isArray(body) ||
-        Object.keys(body).some(key => !['instruction', 'expectedEditVersion', 'sourceScriptRevision'].includes(key)) ||
+        Object.keys(body).some(key => !['instruction', 'expectedEditVersion', 'sourceScriptRevision', 'profileId'].includes(key)) ||
         typeof body.instruction !== 'string' || body.instruction.length > 2000 ||
         !Number.isSafeInteger(body.expectedEditVersion) || body.expectedEditVersion < 1 ||
         !Number.isSafeInteger(body.sourceScriptRevision) || body.sourceScriptRevision < 1) {
@@ -1297,7 +1298,7 @@ router.post('/:id/reference-plan/:referenceId/detail-prompt', ensureAuthenticate
     const prompt = await detailReferencePrompt(
       project, reference, body.instruction.trim(),
       settings?.prompts?.referenceDetailPrompt || DEFAULT_REFERENCE_DETAIL_PROMPT,
-      resolveProfile(settings, 'text'),
+      resolveRequestedProfile(settings, 'text', body.profileId),
     );
     const saved = await Project.findOneAndUpdate({
       _id: project._id, userId: req.user._id, 'script.status': 'confirmed',
@@ -1394,7 +1395,7 @@ router.post('/:id/storyboard/generate', ensureAuthenticated, async (req, res) =>
   try {
     const body = req.body;
     if (!body || typeof body !== 'object' || Array.isArray(body) ||
-        Object.keys(body).some(key => !['instructions', 'frames', 'expectedEditVersion', 'sourceScriptRevision', 'sourceReferencePlanRevision', 'sourceVoiceoverRevision'].includes(key)) ||
+        Object.keys(body).some(key => !['instructions', 'frames', 'expectedEditVersion', 'sourceScriptRevision', 'sourceReferencePlanRevision', 'sourceVoiceoverRevision', 'profileId'].includes(key)) ||
         typeof body.instructions !== 'string' || body.instructions.length > 4000 || !Array.isArray(body.frames) ||
         !Number.isSafeInteger(body.expectedEditVersion) || body.expectedEditVersion < 0 ||
         !Number.isSafeInteger(body.sourceScriptRevision) || body.sourceScriptRevision < 1 ||
@@ -1434,7 +1435,7 @@ router.post('/:id/storyboard/generate', ensureAuthenticated, async (req, res) =>
     const raw = await generateStoryboard(
       project, references, currentFrames, body.instructions.trim(),
       settings?.prompts?.storyboardPrompt || DEFAULT_STORYBOARD_PROMPT,
-      resolveProfile(settings, 'text'),
+      resolveRequestedProfile(settings, 'text', body.profileId),
     );
     let frames;
     try { frames = parseGeneratedStoryboard(raw, currentFrames, allowedReferenceIds, voiceoverBlocks); }
@@ -1461,6 +1462,8 @@ router.post('/:id/storyboard/generate', ensureAuthenticated, async (req, res) =>
     if (!saved) return res.status(409).json({ error: 'Сценарий, референсы или раскадровка изменились. Обновите страницу.' });
     return res.json(await storyboardResponse(saved, req.user._id));
   } catch (error) {
+    console.warn('[STORYBOARD_GENERATE_FAILED]', { code: error.code || 'UNKNOWN', message: error.message || '' });
+    if (error.code === 'INVALID_AI_PROFILE') return res.status(400).json({ code: error.code, error: error.message });
     if (['STORYBOARD_INPUT_TOO_LONG', 'STORYBOARD_TOO_MANY_FRAMES'].includes(error.code)) return res.status(400).json({ code: error.code });
     if (['STORYBOARD_GENERATION_FAILED', 'INVALID_STORYBOARD_RESPONSE'].includes(error.code)) return res.status(502).json({ code: error.code });
     return res.status(500).json({ error: 'Не удалось создать раскадровку' });
@@ -1512,7 +1515,7 @@ router.post('/:id/storyboard/frames/:frameId/detail-prompt', ensureAuthenticated
   try {
     const body = req.body;
     if (!body || typeof body !== 'object' || Array.isArray(body) ||
-        Object.keys(body).some(key => !['instruction', 'expectedEditVersion', 'sourceScriptRevision', 'sourceReferencePlanRevision', 'sourceVoiceoverRevision'].includes(key)) ||
+        Object.keys(body).some(key => !['instruction', 'expectedEditVersion', 'sourceScriptRevision', 'sourceReferencePlanRevision', 'sourceVoiceoverRevision', 'profileId'].includes(key)) ||
         typeof body.instruction !== 'string' || body.instruction.length > 2000 ||
         !Number.isSafeInteger(body.expectedEditVersion) || body.expectedEditVersion < 1 ||
         !Number.isSafeInteger(body.sourceScriptRevision) || body.sourceScriptRevision < 1 ||
@@ -1539,7 +1542,7 @@ router.post('/:id/storyboard/frames/:frameId/detail-prompt', ensureAuthenticated
     const prompt = await detailStoryboardFramePrompt(
       project, frame, references, body.instruction.trim(),
       settings?.prompts?.storyboardDetailPrompt || DEFAULT_STORYBOARD_DETAIL_PROMPT,
-      resolveProfile(settings, 'text'),
+      resolveRequestedProfile(settings, 'text', body.profileId),
     );
     const saved = await Project.findOneAndUpdate({
       ...owner, 'storyboard.editVersion': body.expectedEditVersion,
@@ -1563,6 +1566,7 @@ router.post('/:id/storyboard/frames/:frameId/detail-prompt', ensureAuthenticated
     if (!saved) return res.status(409).json({ error: 'Кадр изменился во время детализации. Повторите запрос.' });
     return res.json(await storyboardResponse(saved, req.user._id));
   } catch (error) {
+    if (error.code === 'INVALID_AI_PROFILE') return res.status(400).json({ code: error.code, error: error.message });
     if (['STORYBOARD_DETAIL_FAILED', 'STORYBOARD_DETAIL_RATE_LIMIT'].includes(error.code)) {
       if (failureContext) {
         await Project.findOneAndUpdate({

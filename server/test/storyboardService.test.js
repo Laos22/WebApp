@@ -6,6 +6,7 @@ import {
   storyboardImageMatchesFrame, validateStoryboardFrames,
   planStoryboardFrames, generatePlannedStoryboard,
 } from '../src/services/storyboardService.js';
+import { MAX_STORYBOARD_FRAMES } from '../src/constants/projectLimits.js';
 
 const referenceId = 'ref_11111111-1111-4111-8111-111111111111';
 const allowed = new Set([referenceId]);
@@ -19,7 +20,7 @@ test('planning preserves every word and satisfies frame limits across narration 
   for (let length = 1; length <= 3000; length++) {
     const block = { ...voiceBlock, adaptedText: Array.from({ length }, (_, i) => `word${i}`).join(' ') };
     const plan = planStoryboardFrames([block]);
-    assert.ok(plan.length <= 200);
+    assert.ok(plan.length <= MAX_STORYBOARD_FRAMES);
     assert.equal(plan.map(frame => frame.scriptText).join(' '), block.adaptedText);
     assert.equal(new Set(plan.map(frame => frame.slot)).size, plan.length);
     for (const frame of plan) {
@@ -30,10 +31,10 @@ test('planning preserves every word and satisfies frame limits across narration 
 });
 
 test('planning accounts for separate blocks and rejects impossible totals before generation', () => {
-  const blocks = Array.from({ length: 200 }, (_, i) => ({ id: `block${i}`, order: i + 1, adaptedText: 'one two' }));
-  assert.equal(planStoryboardFrames(blocks).length, 200);
+  const blocks = Array.from({ length: MAX_STORYBOARD_FRAMES }, (_, i) => ({ id: `block${i}`, order: i + 1, adaptedText: 'one two' }));
+  assert.equal(planStoryboardFrames(blocks).length, MAX_STORYBOARD_FRAMES);
   assert.throws(() => planStoryboardFrames([...blocks, { ...voiceBlock }]), { code: 'STORYBOARD_TOO_MANY_FRAMES' });
-  assert.throws(() => planStoryboardFrames([{ ...voiceBlock, adaptedText: Array(3001).fill('word').join(' ') }]), { code: 'STORYBOARD_TOO_MANY_FRAMES' });
+  assert.throws(() => planStoryboardFrames([{ ...voiceBlock, adaptedText: Array(MAX_STORYBOARD_FRAMES * 15 + 1).fill('word').join(' ') }]), { code: 'STORYBOARD_TOO_MANY_FRAMES' });
 });
 
 const visualBatch = batch => JSON.stringify({ frames: batch.map(frame => ({

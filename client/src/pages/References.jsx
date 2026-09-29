@@ -5,6 +5,7 @@ import {
   detailReferencePrompt, getReferencePlan, getVisualReferenceImageUrl,
   saveReferencePlan, uploadVisualReference,
 } from "../services/api";
+import ProfileSelector from "../components/ProfileSelector";
 
 const panel = "bg-slate-900/80 border border-slate-800 rounded-2xl p-5 md:p-6 space-y-4";
 const button = "px-4 py-2.5 rounded-xl bg-fuchsia-700 hover:bg-fuchsia-600 disabled:opacity-50 disabled:cursor-not-allowed";
@@ -32,6 +33,7 @@ export default function References() {
   const [data, setData] = useState(null);
   const [items, setItems] = useState([]);
   const [instructions, setInstructions] = useState("");
+  const [profileId, setProfileId] = useState("");
   const [pending, setPending] = useState("load");
   const [itemPending, setItemPending] = useState({});
   const [detailInstructions, setDetailInstructions] = useState({});
@@ -87,7 +89,7 @@ export default function References() {
   const analyze = () => {
     if (items.length && !window.confirm("Повторный анализ обновит текущий список. Продолжить?")) return;
     run("analyze", () => analyzeReferencePlan(projectId, {
-      instructions, items, expectedEditVersion: plan.editVersion, sourceScriptRevision: data.scriptRevision,
+      instructions, items, expectedEditVersion: plan.editVersion, sourceScriptRevision: data.scriptRevision, profileId: profileId || undefined,
     }), "Анализ завершён. Проверьте предложенные референсы.");
   };
 
@@ -117,6 +119,7 @@ export default function References() {
   const detail = (item) => runForItem(item.id, "detail", () => detailReferencePrompt(projectId, item.id, {
     instruction: detailInstructions[item.id] || "",
     expectedEditVersion: plan.editVersion, sourceScriptRevision: data.scriptRevision,
+    profileId: profileId || undefined,
   }));
 
   const upload = async (item) => {
@@ -166,6 +169,7 @@ export default function References() {
             <textarea maxLength={4000} value={instructions} onChange={event => setInstructions(event.target.value)}
               placeholder="Например: сделай акцент на исторических локациях; не добавляй второстепенных персонажей"
               className="w-full min-h-28 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
+          <ProfileSelector type="text" projectId={projectId} operation="references" value={profileId} onChange={setProfileId} disabled={Boolean(pending)} />
           <div className="flex flex-wrap gap-3">
             <button type="button" className={button} disabled={Boolean(pending) || !scriptReady || !voiceoverReady}
               onClick={analyze}>{pending === "analyze" ? "ИИ анализирует…" : items.length ? "Повторить анализ" : "Анализировать сценарий"}</button>

@@ -197,10 +197,10 @@ async function commitPlan(project, userId, videoPlan, sourceSnapshot) {
   return saved;
 }
 export const videoAi = {
-  async generate(prompt, settings, json) {
+  async generate(prompt, settings, json, profileId) {
     const { generateVideoPlanText } = await import('../services/geminiService.js');
-    const { resolveProfile } = await import('../services/aiProfileResolver.js');
-    return generateVideoPlanText(prompt, resolveProfile(settings, 'text'), json);
+    const { resolveRequestedProfile } = await import('../services/aiProfileResolver.js');
+    return generateVideoPlanText(prompt, resolveRequestedProfile(settings, 'text', profileId), json);
   },
 };
 router.post('/:id/video-plan/:action', ensureAuthenticated, async (req, res) => {
@@ -210,7 +210,7 @@ router.post('/:id/video-plan/:action', ensureAuthenticated, async (req, res) => 
     const { action } = req.params;
     const body = req.body;
     if (!body || typeof body !== 'object' || Array.isArray(body) ||
-        Object.keys(body).some(k => !['expectedEditVersion', 'chunkIndex', 'frameId'].includes(k)))
+        Object.keys(body).some(k => !['expectedEditVersion', 'chunkIndex', 'frameId', 'profileId'].includes(k)))
       throw videoError('INVALID_VIDEO_PLAN');
     assertVideoVersion(project, body.expectedEditVersion);
     const sourceSnapshot = { voiceover: project.voiceover?.toObject ? project.voiceover.toObject() : structuredClone(project.voiceover),
@@ -220,7 +220,7 @@ router.post('/:id/video-plan/:action', ensureAuthenticated, async (req, res) => 
     else if (action === 'reset') plan = resetVideoPrompts(project, body.expectedEditVersion);
     else if (action === 'analyze-start') {
       const settings = await Settings.findOne({ userId: req.user._id });
-      const text = await videoAi.generate(selectionRulesPrompt(project), settings, true);
+        const text = await videoAi.generate(selectionRulesPrompt(project), settings, true, body.profileId);
       plan = beginVideoAnalysis(project, text, body.expectedEditVersion);
     } else if (action === 'analyze' || action === 'prepare') {
       const current = await response(project, req.user._id);
@@ -233,7 +233,7 @@ router.post('/:id/video-plan/:action', ensureAuthenticated, async (req, res) => 
           throw videoError('INVALID_VIDEO_PLAN');
         prompt = analysisPrompt(project, chunk, current, settings?.prompts?.videoPlanAnalysisPrompt);
       } else prompt = preparationPrompt(project, body.frameId, current, settings?.prompts?.videoPromptPreparationPrompt);
-      const text = await videoAi.generate(prompt, settings, action === 'analyze');
+      const text = await videoAi.generate(prompt, settings, action === 'analyze', body.profileId);
       plan = action === 'analyze' ? applyAnalysis(project, chunk, text, body.expectedEditVersion)
         : applyPreparedPrompt(project, body.frameId, text, body.expectedEditVersion);
     } else throw videoError('INVALID_VIDEO_PLAN');

@@ -64,10 +64,10 @@ export const getProject = (id) => projectRequest(id);
 export const getVisualBible = (projectId) => projectRequest(projectId, "/visual-bible");
 export const updateVisualBible = (projectId, payload) =>
   projectRequest(projectId, "/visual-bible", "PUT", payload);
-export const editVisualBiblePreview = (projectId, instruction, expectedEditVersion, sourceScriptRevision) =>
-  projectRequest(projectId, "/visual-bible/edit", "POST", { instruction, expectedEditVersion, sourceScriptRevision });
-export const generateVisualBibleDraft = (projectId, sourceScriptRevision, expectedEditVersion) =>
-  projectRequest(projectId, "/visual-bible/draft", "POST", { sourceScriptRevision, expectedEditVersion });
+export const editVisualBiblePreview = (projectId, instruction, expectedEditVersion, sourceScriptRevision, profileId) =>
+  projectRequest(projectId, "/visual-bible/edit", "POST", { instruction, expectedEditVersion, sourceScriptRevision, ...(profileId ? { profileId } : {}) });
+export const generateVisualBibleDraft = (projectId, sourceScriptRevision, expectedEditVersion, profileId) =>
+  projectRequest(projectId, "/visual-bible/draft", "POST", { sourceScriptRevision, expectedEditVersion, ...(profileId ? { profileId } : {}) });
 export const confirmVisualBible = (projectId, sourceScriptRevision, expectedEditVersion) =>
   projectRequest(projectId, "/visual-bible/confirm", "POST", { sourceScriptRevision, expectedEditVersion });
 export const generateProjectScript = (id, payload) => projectRequest(id, "/generate-script", "POST", payload);
@@ -85,13 +85,13 @@ export const generateVoiceoverBlock = (projectId, blockId, payload) =>
 export const getVoiceoverAudioUrl = (projectId, blockId, generatedAt) =>
   `${SERVER_URL}/api/projects/${projectId}/voiceover/blocks/${encodeURIComponent(blockId)}/audio?v=${encodeURIComponent(generatedAt || "0")}`;
 export const getSoundEffects = projectId => projectRequest(projectId, '/sound-effects');
-export const analyzeSoundDesign = projectId => projectRequest(projectId, '/sound-effects/analyze', 'POST', {});
+export const analyzeSoundDesign = (projectId, profileId) => projectRequest(projectId, '/sound-effects/analyze', 'POST', profileId ? { profileId } : {});
 export const addSoundDesignFrame = (projectId, frameId) => projectRequest(projectId, '/sound-effects/frames', 'POST', { frameId });
 export const removeSoundDesignFrame = (projectId, frameId) => projectRequest(projectId, `/sound-effects/frames/${encodeURIComponent(frameId)}`, 'DELETE');
 export const soundEffectAudioUrl = (projectId, effectId, generatedAt) =>
   `${SERVER_URL}/api/projects/${projectId}/sound-effects/${encodeURIComponent(effectId)}/audio?v=${encodeURIComponent(generatedAt || '0')}`;
 export const createSoundEffect = (projectId, payload) => projectRequest(projectId, '/sound-effects', 'POST', payload);
-export const analyzeBackgroundMusic = projectId => projectRequest(projectId, '/music/analyze', 'POST', {});
+export const analyzeBackgroundMusic = (projectId, profileId) => projectRequest(projectId, '/music/analyze', 'POST', profileId ? { profileId } : {});
 export const generateBackgroundMusic = (projectId, payload = {}) => projectRequest(projectId, '/music/generate', 'POST', payload);
 export const backgroundMusicAudioUrl = (projectId, generatedAt) => `${SERVER_URL}/api/projects/${projectId}/music/audio?v=${encodeURIComponent(generatedAt || '0')}`;
 export const getReferencePlan = (projectId) => projectRequest(projectId, "/reference-plan");

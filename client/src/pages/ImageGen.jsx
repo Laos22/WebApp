@@ -9,6 +9,7 @@ import {
   saveStoryboardFrame,
 } from "../services/api";
 import { fetchProfiles } from "../services/profileService";
+import ProfileSelector from "../components/ProfileSelector";
 import { frameLabel } from "../utils/frameLabel";
 
 const panel = "bg-slate-900/80 border border-slate-800 rounded-2xl p-5 md:p-6 space-y-4";
@@ -66,10 +67,11 @@ function readableError(error) {
   if (error?.status === 409) return error.message || "Данные изменились. Обновите страницу.";
   if (error?.code === "STORYBOARD_TEXT_COVERAGE_MISMATCH") return "ИИ изменил текст озвучки при разделении на кадры. Попробуйте создать раскадровку заново.";
   if (error?.code === "STORYBOARD_FRAME_WORD_LIMIT_MISMATCH") return "Текущему тексту не подходит количество кадров: требуется 5–15 слов на кадр. Измените количество кадров или создайте новую раскадровку.";
-  if (error?.code === "STORYBOARD_TOO_MANY_FRAMES") return "Для этого текста нужно больше 200 кадров по 5–15 слов. Разделите материал на несколько проектов или сократите текст озвучки.";
+  if (error?.code === "STORYBOARD_TOO_MANY_FRAMES") return "Для этого текста нужно больше 500 кадров по 5–15 слов. Разделите материал на несколько проектов или сократите текст озвучки.";
   if (error?.code === "INVALID_STORYBOARD_RESPONSE") return "ИИ не заполнил все запланированные кадры даже после автоматической повторной попытки. Раскадровка не сохранена.";
   if (error?.code === "STORYBOARD_DETAIL_FAILED") return "ИИ не смог детализировать prompt кадра. Повторите запрос.";
   if (error?.code === "STORYBOARD_DETAIL_RATE_LIMIT") return "Gemini временно ограничил запросы. Нажмите «Продолжить детализацию» позже.";
+  if (error?.code === "INVALID_AI_PROFILE") return "Выбранный текстовый профиль недоступен. Выберите другой профиль или автоматический режим.";
   if (error?.code === "INVALID_IMAGE_PROFILE") return "Выберите профиль изображения Google Studio.";
   if (error?.code === "IMAGE_PROVIDER_AUTH_FAILED") return "Google Studio отклонил API-ключ или доступ к выбранной модели.";
   if (error?.code === "IMAGE_PROVIDER_RATE_LIMIT") return "Google Studio временно ограничил запросы. Позже нажмите «Продолжить генерацию».";
@@ -85,6 +87,7 @@ export default function ImageGen() {
   const [frames, setFrames] = useState([]);
   const [instructions, setInstructions] = useState("");
   const [detailInstruction, setDetailInstruction] = useState("");
+  const [storyboardProfileId, setStoryboardProfileId] = useState("");
   const [detailProgress, setDetailProgress] = useState(null);
   const [imageProfiles, setImageProfiles] = useState([]);
   const [imageProfileId, setImageProfileId] = useState("");
@@ -203,6 +206,7 @@ export default function ImageGen() {
       sourceScriptRevision: data.scriptRevision,
       sourceReferencePlanRevision: data.referencePlanRevision,
       sourceVoiceoverRevision: data.voiceoverRevision,
+      profileId: storyboardProfileId,
     }), "Раскадровка создана. Проверьте кадры и привязанные референсы.");
   };
 
@@ -213,6 +217,7 @@ export default function ImageGen() {
       sourceScriptRevision: data.scriptRevision,
       sourceReferencePlanRevision: data.referencePlanRevision,
       sourceVoiceoverRevision: data.voiceoverRevision,
+      profileId: storyboardProfileId,
     }), "Раскадровка полностью пересоздана. Проверьте кадры и привязанные референсы.");
   };
 
@@ -222,6 +227,7 @@ export default function ImageGen() {
     sourceScriptRevision: currentData.storyboard.sourceScriptRevision,
     sourceReferencePlanRevision: currentData.storyboard.sourceReferencePlanRevision,
     sourceVoiceoverRevision: currentData.storyboard.sourceVoiceoverRevision,
+    profileId: storyboardProfileId,
   });
 
   const detailFrame = (frameId) => run(`detail:${frameId}`, () => detailOne(frameId, data), "Prompt кадра детализирован.");
@@ -709,6 +715,7 @@ export default function ImageGen() {
       </div>
       <label className="block"><span className="block text-sm text-slate-300 mb-2">Общие инструкции для раскадровки</span>
         <textarea value={instructions} maxLength={4000} onChange={event => setInstructions(event.target.value)} placeholder="Например: больше крупных планов, избегай повторяющихся композиций" className="w-full min-h-24 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
+      <ProfileSelector type="text" projectId={projectId} operation="storyboard" value={storyboardProfileId} onChange={setStoryboardProfileId} disabled={Boolean(pending)} />
       {frames.length > 0 && <label className="block"><span className="block text-sm text-slate-300 mb-2">Общая инструкция для детализации промтов</span>
         <textarea value={detailInstruction} maxLength={2000} onChange={event => setDetailInstruction(event.target.value)} placeholder="Например: фотореализм, кинематографическое освещение" className="w-full min-h-24 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>}
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">

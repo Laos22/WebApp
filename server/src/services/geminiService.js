@@ -191,6 +191,7 @@ export async function generateStoryboard(project, references, currentFrames, ins
     const basePrompt = buildStoryboardPrompt(project, references, currentFrames, instructions, template);
     const { apiKey, model } = resolveTextConfig(profile, 'generate-storyboard');
     const ai = new GoogleGenAI({ apiKey });
+    const longStoryboard = plan.length > 200;
     return await generatePlannedStoryboard(plan, new Set(references.map(reference => reference.id)), async (batch, attempt) => {
       const text = `${basePrompt}\n\nСервер уже разделил утверждённый текст на кадры. Для этого запроса создай только визуальные описания для следующих слотов, ровно по одному на слот. Не объединяй и не добавляй кадры. Верни {"frames":[{"slot":"...","visualDescription":"...","prompt":"...","referenceIds":[]}]}. Поля scriptText и sourceVoiceoverBlockId служат контекстом и не возвращаются. Эта структура ответа заменяет структуру из шаблона выше.\n${JSON.stringify(batch)}${attempt ? '\nПредыдущий ответ не прошёл проверку: проверь все slot, обязательные поля и допустимые referenceIds.' : ''}`;
       if (text.length > 196608) {
@@ -212,8 +213,13 @@ export async function generateStoryboard(project, references, currentFrames, ins
         } },
       });
       return modelText(response);
-    });
+    }, { batchSize: longStoryboard ? 6 : 12, maxAttempts: longStoryboard ? 3 : 2 });
   } catch (cause) {
+    console.error('[STORYBOARD_PROVIDER_ERROR]', {
+      status: cause?.status || cause?.statusCode || cause?.response?.status || null,
+      code: cause?.code || null,
+      message: String(cause?.message || '').slice(0, 500),
+    });
     if (['STORYBOARD_INPUT_TOO_LONG', 'STORYBOARD_TOO_MANY_FRAMES', 'INVALID_STORYBOARD_RESPONSE'].includes(cause.code)) throw cause;
     const error = new Error('Не удалось создать раскадровку');
     error.code = 'STORYBOARD_GENERATION_FAILED';

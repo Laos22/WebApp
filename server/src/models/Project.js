@@ -1,6 +1,7 @@
 // server/src/models/Project.js
 import mongoose from 'mongoose';
 import { videoPlanSchema } from './VideoPlan.js';
+import { MAX_STORYBOARD_FRAMES, MAX_SOUND_SUGGESTIONS } from '../constants/projectLimits.js';
 
 const nested = { _id: false, strict: 'throw' };
 const text = () => ({ type: String, default: '', maxlength: 4000 });
@@ -169,7 +170,7 @@ const soundPlanSchema = new mongoose.Schema({
   sourceStoryboardRevision: { type: Number, default: null, min: 0 },
   sourceVoiceoverRevision: { type: Number, default: null, min: 0 },
   generatedAt: { type: Date, default: null },
-  suggestions: { type: [soundSuggestionSchema], default: [], validate: value => value.length <= 200 },
+  suggestions: { type: [soundSuggestionSchema], default: [], validate: value => value.length <= MAX_SOUND_SUGGESTIONS },
 }, { _id: false, strict: 'throw' });
 
 const backgroundMusicSchema = new mongoose.Schema({
@@ -227,7 +228,7 @@ const storyboardSchema = new mongoose.Schema({
   instructions: { type: String, default: '', maxlength: 4000 },
   frames: {
     type: [storyboardFrameSchema], default: [],
-    validate: value => value.length <= 200 &&
+    validate: value => value.length <= MAX_STORYBOARD_FRAMES &&
       new Set(value.map(frame => frame.id)).size === value.length &&
       value.every((frame, index) => frame.order === index + 1),
   },

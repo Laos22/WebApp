@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { addSoundDesignFrame, analyzeSoundDesign, createSoundEffect, getProject, getSoundEffects, getStoryboardFramePreviewUrl, removeSoundDesignFrame, soundEffectAudioUrl } from '../services/api';
 import { frameLabel } from '../utils/frameLabel';
+import ProfileSelector from '../components/ProfileSelector';
 
 const button = 'rounded-xl bg-purple-700 px-4 py-3 text-white disabled:opacity-40';
 const secondary = 'rounded-xl border border-slate-600 px-4 py-3 text-slate-200';
@@ -24,6 +25,8 @@ export default function SoundEffects() {
   const [frameToAdd, setFrameToAdd] = useState('');
   const [editingSuggestionId, setEditingSuggestionId] = useState('');
   const [editingPrompt, setEditingPrompt] = useState('');
+  const [profileId, setProfileId] = useState('');
+  const [audioProfileId, setAudioProfileId] = useState('');
 
   const load = () => Promise.all([getSoundEffects(projectId), getProject(projectId)]).then(([result, projectResult]) => { setEffects(result.soundEffects || []); setSoundPlan(result.soundPlan || { status: 'empty', suggestions: [] }); const project = projectResult.project || projectResult; setFrames(project.storyboard?.frames || []); setBlocks(project.voiceover?.blocks || []); });
   useEffect(() => { load().catch(err => setError(err.message)); }, [projectId]);
@@ -36,6 +39,7 @@ export default function SoundEffects() {
       const result = await createSoundEffect(projectId, {
         name, prompt, loop, promptInfluence: Number(influence),
         durationSec: durationSec === '' ? null : Number(durationSec),
+        ...(audioProfileId ? { profileId: audioProfileId } : {}),
       });
       setEffects(previous => [result.soundEffect, ...previous]);
       setName(''); setPrompt(''); setDurationSec(''); setLoop(false);
@@ -47,7 +51,7 @@ export default function SoundEffects() {
   async function analyze() {
     if (analyzing) return;
     setAnalyzing(true); setError(''); setMessage('');
-    try { const result = await analyzeSoundDesign(projectId); setSoundPlan(result.soundPlan); setMessage('Анализ завершён. Проверьте предложения звуков.'); }
+    try { const result = await analyzeSoundDesign(projectId, profileId); setSoundPlan(result.soundPlan); setMessage('Анализ завершён. Проверьте предложения звуков.'); }
     catch (err) { setError(err.message); }
     finally { setAnalyzing(false); }
   }
@@ -70,6 +74,7 @@ export default function SoundEffects() {
         name: `${frameLabel(frames.find(item => item.id === suggestion.frameId), frames, blocks)}: звуковой эффект`,
         prompt: customPrompt.trim() || suggestion.prompt, durationSec: suggestion.durationSec,
         loop: suggestion.loop, promptInfluence: suggestion.promptInfluence, suggestionId: suggestion.id,
+        ...(audioProfileId ? { profileId: audioProfileId } : {}),
       });
       setEffects(previous => [result.soundEffect, ...previous]);
       setSoundPlan(previous => ({ ...previous, suggestions: previous.suggestions.map(item => item.id === suggestion.id ? { ...item, status: 'generated', effectId: result.soundEffect.id } : item) }));
@@ -109,6 +114,8 @@ export default function SoundEffects() {
     <section className="rounded-2xl border border-cyan-800/60 bg-cyan-950/20 p-5 space-y-3">
       <div><h2 className="text-xl font-semibold">Предложения по раскадровке</h2><p className="mt-1 text-sm text-slate-400">ИИ найдёт кадры, которым нужен звук, и подготовит английские промты для ElevenLabs.</p></div>
       <div className="flex flex-wrap gap-2"><select value={frameToAdd} onChange={event => setFrameToAdd(event.target.value)} className="min-w-64 flex-1 rounded-xl bg-slate-950 p-3"><option value="">Выберите кадр для добавления</option>{frames.filter(frame => !soundPlan.suggestions?.some(item => item.frameId === frame.id)).map(frame => <option key={frame.id} value={frame.id}>{frameLabel(frame, frames, blocks)}: {(frame.scriptText || '').slice(0, 70)}</option>)}</select><button type="button" className={secondary} disabled={!frameToAdd} onClick={addFrame}>Добавить кадр</button></div>
+      <ProfileSelector type="text" projectId={projectId} operation="sound-analysis" value={profileId} onChange={setProfileId} disabled={analyzing} />
+      <ProfileSelector type="audio" projectId={projectId} operation="sound-generation" value={audioProfileId} onChange={setAudioProfileId} disabled={busy || analyzing} />
       <button type="button" className={`${button} bg-cyan-700 hover:bg-cyan-600`} disabled={analyzing} onClick={analyze}>{analyzing ? 'Анализирую раскадровку…' : 'Проанализировать кадры'}</button>
       {sortedSuggestions.length > 0 && <div className="space-y-3 pt-2">{sortedSuggestions.map(suggestion => { const effect = effectsById.get(suggestion.effectId); const editing = editingSuggestionId === suggestion.id; const frame = frames.find(item => item.id === suggestion.frameId); const imageUrl = frame ? getStoryboardFramePreviewUrl(projectId, frame.id, frame.image?.updatedAt || frame.updatedAt || '0') : ''; const label = frameLabel(frame, frames, blocks); return <article key={suggestion.id} className="rounded-xl border border-slate-700 bg-slate-950/60 p-4 space-y-3"><div className="flex gap-4"><div className="w-48 shrink-0"><div className="aspect-video overflow-hidden rounded-lg bg-slate-900">{imageUrl && <img src={imageUrl} alt={label} className="h-full w-full object-cover" />}</div></div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-start justify-between gap-2"><h3 className="font-semibold">{label}</h3><div className="flex items-center gap-2"><span className="text-xs text-slate-400">{suggestion.status === 'generated' ? 'Сгенерирован' : 'Предложен'}</span><button type="button" className="text-xs text-red-300 hover:text-red-200" onClick={() => removeFrame(suggestion.frameId)}>Удалить</button></div></div><p className="mt-1 text-sm text-slate-200">{frame?.scriptText || 'Текст кадра недоступен'}</p><p className="mt-1 text-sm text-slate-400">{suggestion.reason}</p></div></div>{effect?.status === 'ready' ? <div className="flex flex-wrap items-center gap-3"><audio controls preload="none" src={soundEffectAudioUrl(projectId, effect.id, effect.generatedAt)} className="h-9 max-w-full" /><a className={secondary} href={soundEffectAudioUrl(projectId, effect.id, effect.generatedAt)} download={effect.filename}>Скачать MP3</a></div> : null}{editing ? <div className="space-y-2"><textarea autoFocus value={editingPrompt} onChange={event => setEditingPrompt(event.target.value)} placeholder="Опишите звук по-русски" className="min-h-20 w-full rounded-lg bg-slate-900 p-2.5" /><div className="flex gap-2"><button type="button" className={button} disabled={!editingPrompt.trim()} onClick={() => generateSuggestion(suggestion, editingPrompt)}>Пересоздать звук</button><button type="button" className={secondary} onClick={() => setEditingSuggestionId('')}>Отмена</button></div></div> : <div className="flex flex-wrap gap-2">{suggestion.status !== 'generated' && <button type="button" className={button} onClick={() => generateSuggestion(suggestion)}>Сгенерировать звук</button>}<button type="button" className={secondary} onClick={() => startSuggestionEdit(suggestion, effect)}>Редактировать и пересоздать</button></div>}</article>; })}</div>}
       {soundPlan.status === 'ready' && !soundPlan.suggestions?.length && <p className="text-sm text-slate-400">Подходящих звуковых событий не найдено.</p>}

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { MAX_STORYBOARD_FRAMES } from '../constants/projectLimits.js';
 
 const frameIdPattern = /^frame_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -12,6 +13,17 @@ function cleanText(value, max) {
   if (typeof value !== 'string') return '';
   const text = value.trim();
   return text.length <= max ? text : text.slice(0, max);
+}
+
+function parseModelJson(raw) {
+  if (typeof raw !== 'string') return null;
+  const text = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  try { return JSON.parse(text); } catch {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start < 0 || end <= start) return null;
+    try { return JSON.parse(text.slice(start, end + 1)); } catch { return null; }
+  }
 }
 
 export function emptyStoryboard() {
@@ -60,9 +72,9 @@ export function planStoryboardFrames(blocks) {
     return { block, words, count: Math.ceil(words.length / 15), target: Math.ceil(words.length / 12) };
   });
   let total = plans.reduce((sum, plan) => sum + plan.count, 0);
-  if (total > 200) invalid('STORYBOARD_TOO_MANY_FRAMES');
+  if (total > MAX_STORYBOARD_FRAMES) invalid('STORYBOARD_TOO_MANY_FRAMES');
   for (const plan of plans) {
-    const extra = Math.min(plan.target - plan.count, 200 - total);
+    const extra = Math.min(plan.target - plan.count, MAX_STORYBOARD_FRAMES - total);
     plan.count += extra;
     total += extra;
   }
@@ -79,15 +91,17 @@ export function planStoryboardFrames(blocks) {
 }
 
 // Only complete, validated batches are assembled; callers save after all succeed.
-export async function generatePlannedStoryboard(plan, allowedReferenceIds, requestBatch) {
+export async function generatePlannedStoryboard(plan, allowedReferenceIds, requestBatch, options = {}) {
+  const batchSize = Number.isSafeInteger(options.batchSize) && options.batchSize >= 1 ? options.batchSize : 12;
+  const maxAttempts = Number.isSafeInteger(options.maxAttempts) && options.maxAttempts >= 1 ? options.maxAttempts : 2;
   const frames = [];
-  for (let offset = 0; offset < plan.length; offset += 12) {
-    const batch = plan.slice(offset, offset + 12);
+  for (let offset = 0; offset < plan.length; offset += batchSize) {
+    const batch = plan.slice(offset, offset + batchSize);
     let validated;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const raw = await requestBatch(batch, attempt);
       try {
-        const values = JSON.parse(raw)?.frames;
+        const values = parseModelJson(raw)?.frames;
         if (!Array.isArray(values) || values.length !== batch.length) throw new Error();
         const bySlot = new Map(values.map(value => [value.slot, value]));
         if (bySlot.size !== batch.length) throw new Error();
@@ -101,7 +115,7 @@ export async function generatePlannedStoryboard(plan, allowedReferenceIds, reque
         });
         break;
       } catch {
-        if (attempt === 1) invalid('INVALID_STORYBOARD_RESPONSE');
+        if (attempt === maxAttempts - 1) invalid('INVALID_STORYBOARD_RESPONSE');
       }
     }
     frames.push(...validated);
@@ -127,7 +141,7 @@ function restoreGeneratedNarration(frames, voiceoverBlocks) {
 }
 
 function normalizeFrames(input, currentFrames, allowedReferenceIds, voiceoverBlocks, generated) {
-  if (!Array.isArray(input) || input.length === 0 || input.length > 200) invalid(generated ? 'INVALID_STORYBOARD_RESPONSE' : 'INVALID_STORYBOARD');
+  if (!Array.isArray(input) || input.length === 0 || input.length > MAX_STORYBOARD_FRAMES) invalid(generated ? 'INVALID_STORYBOARD_RESPONSE' : 'INVALID_STORYBOARD');
   const existing = new Map(currentFrames.map(frame => [frame.id, frame]));
   const allowedBlocks = new Map(voiceoverBlocks.map(block => [block.id, block]));
   const used = new Set();

@@ -4,6 +4,7 @@ import { getVideoPlan, saveVideoPlanFrame, videoPreviewUrl, videoPlanAction, sav
   exportFlowVideoPackage, importFlowVideo, videoFileUrl } from '../services/api';
 import { pendingVideoFrames, runVideoQueue } from '../services/videoPlanQueue';
 import { videoPlanView, filterVideoFrames } from '../services/videoPlanView';
+import ProfileSelector from '../components/ProfileSelector';
 
 const button = 'rounded-xl bg-purple-700 px-4 py-3 text-white disabled:opacity-40';
 const secondary = 'rounded-xl border border-slate-600 px-4 py-3 text-slate-200 disabled:opacity-40';
@@ -28,6 +29,7 @@ function VideoPlanEditor({ projectId }) {
   const [conflict, setConflict] = useState(false);
   const [reload, setReload] = useState(0);
   const [flowBusy, setFlowBusy] = useState('');
+  const [profileId, setProfileId] = useState('');
   useEffect(() => {
     let active = true;
     getVideoPlan(projectId).then(result => { if (active) { setData(result); setInstructions(result.videoPlan.instructions); } })
@@ -101,7 +103,7 @@ function VideoPlanEditor({ projectId }) {
     let current = data;
     const accept = result => { current = result; setData(result); };
     const request = (kind, extra = {}) => videoPlanAction(projectId, kind,
-      { expectedEditVersion: current.videoPlan.editVersion, ...extra });
+      { expectedEditVersion: current.videoPlan.editVersion, ...(profileId ? { profileId } : {}), ...extra });
     try {
       // Always send the instructions currently visible to the user.
       if (instructions !== current.videoPlan.instructions) {
@@ -176,6 +178,7 @@ function VideoPlanEditor({ projectId }) {
       className="text-purple-300" to={`/projects/${projectId}`}>← К проекту</Link>
     <h1 className="text-2xl sm:text-3xl font-bold">Работа с видео</h1>
     {data && <p className="break-words text-slate-400">{data.projectTitle}</p>}
+    {data && <ProfileSelector type="text" projectId={projectId} operation="video-plan" value={profileId} onChange={setProfileId} disabled={busy || flowBusy} />}
     {data && <div className="sticky top-0 z-10 rounded-xl bg-slate-900 p-3 sm:p-4 shadow-lg space-y-3" role="status">
       <div className="grid grid-cols-3 gap-2 sm:gap-5">
         {[[view.total, 'Всего кадров'], [view.selected, 'Выбрано для анимации'], [view.ready, 'Готово к генерации']].map(([count, label]) =>

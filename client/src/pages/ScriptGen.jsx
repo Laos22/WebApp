@@ -3,6 +3,7 @@ import { useParams, Link } from "react-router-dom";
 import axios from "axios";
 
 import { getProject, generateProjectScript, saveProjectScript, confirmProjectScript, editProjectScript } from "../services/api";
+import ProfileSelector from "../components/ProfileSelector";
 
 const API_URL = String(import.meta.env.VITE_SERVER_URL || "").replace(/\/$/, "");
 
@@ -16,6 +17,7 @@ function ScriptEditor({ projectId }) {
 
   const [project, setProject] = useState(null);
   const [prompt, setPrompt] = useState("");
+  const [profileId, setProfileId] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [content, setContent] = useState("");
@@ -147,6 +149,7 @@ function ScriptEditor({ projectId }) {
       const data = await generateProjectScript(projectId, {
         prompt,
         projectDescription: project?.description,
+        profileId: profileId || undefined,
       });
       setResult(data.savedScript);
       setContent(data.savedScript.content);
@@ -218,6 +221,8 @@ function ScriptEditor({ projectId }) {
               required
             />
           </div>
+
+          <ProfileSelector type="text" projectId={projectId} operation="script" value={profileId} onChange={setProfileId} disabled={busy} />
 
           {error && (
             <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-sm">

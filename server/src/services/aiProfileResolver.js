@@ -31,6 +31,24 @@ export function resolveProfile(settings, type) {
   return ofType.find((p) => p.isDefault) ?? ofType[0];
 }
 
+export function resolveRequestedProfile(settings, type, profileId) {
+  if (profileId === undefined || profileId === null || profileId === '') return resolveProfile(settings, type);
+  if (typeof profileId !== 'string') {
+    const error = new Error('Некорректный профиль генерации');
+    error.code = 'INVALID_AI_PROFILE';
+    error.status = 400;
+    throw error;
+  }
+  const profile = (settings?.profiles || []).find(item => String(item._id || item.id) === profileId);
+  if (!profile || profile.type !== type) {
+    const error = new Error('Выбранный профиль недоступен для этой операции');
+    error.code = 'INVALID_AI_PROFILE';
+    error.status = 400;
+    throw error;
+  }
+  return profile;
+}
+
 /**
  * Расшифровывает apiKey профиля для фактического исходящего вызова к внешнему API.
  *
