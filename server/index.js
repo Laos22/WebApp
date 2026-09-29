@@ -14,6 +14,7 @@ import connectDB from "./src/config/database.js";
 import authRoutes from "./src/routes/authRoutes.js";
 import configRoutes from "./src/routes/configRoutes.js";
 import projectRoutes from "./src/routes/projectRoutes.js";
+import { startStoryboardGenerationWorker } from './src/services/storyboardGenerationService.js';
 import videoRoutes from "./src/routes/videoRoutes.js";
 import { ensureAuthenticated } from "./src/middleware/auth.js";
 import User from "./src/models/User.js";
@@ -66,6 +67,7 @@ if (!isProduction) {
 
 // Подключаем базу данных
 await connectDB();
+await startStoryboardGenerationWorker();
 
 // Middleware
 console.log("CORS origins:", allowedOrigins.join(", "));

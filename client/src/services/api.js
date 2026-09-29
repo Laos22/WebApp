@@ -129,6 +129,9 @@ export const getVisualReferenceImageUrl = (projectId, imageId, updatedAt) =>
 export const getStoryboard = (projectId) => projectRequest(projectId, "/storyboard");
 export const generateStoryboard = (projectId, payload) =>
   projectRequest(projectId, "/storyboard/generate", "POST", payload);
+export const getStoryboardGeneration = projectId => projectRequest(projectId, '/storyboard/generation');
+export const resumeStoryboardGeneration = (projectId, payload) =>
+  projectRequest(projectId, '/storyboard/generation/resume', 'POST', payload);
 export const detailStoryboardFramePrompt = (projectId, frameId, payload) =>
   projectRequest(projectId, `/storyboard/frames/${encodeURIComponent(frameId)}/detail-prompt`, "POST", payload);
 export const resetStoryboardPromptDetails = (projectId, payload) =>

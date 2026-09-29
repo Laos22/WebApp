@@ -1,4 +1,5 @@
 import StoryboardVideo from '../models/StoryboardVideo.js';
+import StoryboardGeneration from '../models/StoryboardGeneration.js';
 import { readStoryboardVideoFile } from '../services/storyboardVideoStorage.js';
 import { videoPlanResponse } from '../services/videoPlanService.js';
 import { checkDriveFile } from '../services/driveSync.js';
@@ -19,7 +20,6 @@ import {
   editVisualBible,
   analyzeScriptReferences,
   detailReferencePrompt,
-  generateStoryboard,
   detailStoryboardFramePrompt,
   generateVoiceoverAdaptation,
   generateVideoPlanText,
@@ -45,10 +45,11 @@ import {
   normalizeReferencePlan, parseReferenceAnalysis, validateReferenceItems,
 } from "../services/referencePlanService.js";
 import {
-  normalizeStoryboard, parseGeneratedStoryboard, rebaseStoryboardNarration,
+  normalizeStoryboard, rebaseStoryboardNarration,
   storyboardEditableFrame, storyboardIsCurrent,
   storyboardImageMatchesFrame, validateStoryboardFrames,
 } from "../services/storyboardService.js";
+import { storyboardGeneration } from '../services/storyboardGenerationService.js';
 import {
   splitScenarioBlocks, parseAdaptedBlocks, normalizeVoiceover,
   validateManualVoiceoverBlocks, voiceoverIsCurrent,
@@ -227,6 +228,7 @@ router.delete("/:id", ensureAuthenticated, async (req, res) => {
     await deleteProjectWorkspace({ project, userId: req.user._id });
 
     await project.deleteOne();
+    await StoryboardGeneration.deleteMany({ projectId: project._id, userId: req.user._id });
     await VisualReference.deleteMany({ projectId: project._id, userId: req.user._id });
     await StoryboardImage.deleteMany({ projectId: project._id, userId: req.user._id });
     await StoryboardVideo.deleteMany({ projectId: project._id, userId: req.user._id });
@@ -1324,6 +1326,11 @@ router.post('/:id/reference-plan/:referenceId/detail-prompt', ensureAuthenticate
 
 async function storyboardResponse(project, userId) {
   const stored = normalizeStoryboard(project);
+  const generation = await storyboardGeneration.summary(project._id, userId);
+  // The worker may have committed after this request read the project.
+  if (generation?.status === 'completed' && project.storyboardGenerationRunId !== generation.runId) {
+    generation.status = 'running';
+  }
   const selected = (project.referencePlan?.items || []).filter(item => item.selected);
   const assets = await VisualReference.find({
     projectId: project._id, userId, referenceId: { $in: selected.map(item => item.id) },
@@ -1357,6 +1364,7 @@ async function storyboardResponse(project, userId) {
     success: true,
     scriptStatus: project.script?.status ?? null,
     scriptRevision: project.script?.revision ?? null,
+    generation,
     referencePlanStatus: project.referencePlan?.status ?? 'empty',
     referencePlanRevision: project.referencePlan?.revision ?? 0,
     voiceoverStatus: project.voiceover?.status ?? 'empty',
@@ -1395,7 +1403,8 @@ router.post('/:id/storyboard/generate', ensureAuthenticated, async (req, res) =>
   try {
     const body = req.body;
     if (!body || typeof body !== 'object' || Array.isArray(body) ||
-        Object.keys(body).some(key => !['instructions', 'frames', 'expectedEditVersion', 'sourceScriptRevision', 'sourceReferencePlanRevision', 'sourceVoiceoverRevision', 'profileId'].includes(key)) ||
+        Object.keys(body).some(key => !['instructions', 'frames', 'expectedEditVersion', 'sourceScriptRevision', 'sourceReferencePlanRevision', 'sourceVoiceoverRevision', 'profileId', 'restartGeneration'].includes(key)) ||
+        (body.restartGeneration !== undefined && typeof body.restartGeneration !== 'boolean') ||
         typeof body.instructions !== 'string' || body.instructions.length > 4000 || !Array.isArray(body.frames) ||
         !Number.isSafeInteger(body.expectedEditVersion) || body.expectedEditVersion < 0 ||
         !Number.isSafeInteger(body.sourceScriptRevision) || body.sourceScriptRevision < 1 ||
@@ -1432,41 +1441,44 @@ router.post('/:id/storyboard/generate', ensureAuthenticated, async (req, res) =>
       return res.status(400).json({ error: 'Некорректные карточки кадров' });
     }
     const settings = await Settings.findOne({ userId: req.user._id });
-    const raw = await generateStoryboard(
-      project, references, currentFrames, body.instructions.trim(),
-      settings?.prompts?.storyboardPrompt || DEFAULT_STORYBOARD_PROMPT,
-      resolveRequestedProfile(settings, 'text', body.profileId),
-    );
-    let frames;
-    try { frames = parseGeneratedStoryboard(raw, currentFrames, allowedReferenceIds, voiceoverBlocks); }
-    catch (error) { return res.status(502).json({ code: error.code || 'INVALID_STORYBOARD_RESPONSE' }); }
-    const now = new Date();
-    const versionFilter = body.expectedEditVersion === 0
-      ? { $or: [{ 'storyboard.editVersion': 0 }, { 'storyboard.editVersion': { $exists: false } }] }
-      : { 'storyboard.editVersion': body.expectedEditVersion };
-    const saved = await Project.findOneAndUpdate({
-      ...owner, 'script.status': 'confirmed', 'script.revision': body.sourceScriptRevision,
-      'voiceover.status': 'confirmed', 'voiceover.revision': body.sourceVoiceoverRevision,
-      'referencePlan.status': 'confirmed', 'referencePlan.revision': body.sourceReferencePlanRevision,
-      ...versionFilter,
-    }, { $set: {
-      storyboard: {
-        status: 'draft', revision: storyboard.revision || 0,
-        editVersion: body.expectedEditVersion + 1,
-        sourceScriptRevision: body.sourceScriptRevision,
-        sourceReferencePlanRevision: body.sourceReferencePlanRevision,
-        sourceVoiceoverRevision: body.sourceVoiceoverRevision,
-        instructions: body.instructions.trim(), frames, updatedAt: now, confirmedAt: null,
-      }, updatedAt: now,
-    } }, { new: true, runValidators: true });
-    if (!saved) return res.status(409).json({ error: 'Сценарий, референсы или раскадровка изменились. Обновите страницу.' });
-    return res.json(await storyboardResponse(saved, req.user._id));
+    const generation = await storyboardGeneration.enqueue(project, req.user._id, body, currentFrames, settings);
+    return res.status(202).json({ success: true, generation });
   } catch (error) {
     console.warn('[STORYBOARD_GENERATE_FAILED]', { code: error.code || 'UNKNOWN', message: error.message || '' });
     if (error.code === 'INVALID_AI_PROFILE') return res.status(400).json({ code: error.code, error: error.message });
+    if (error.status === 409) return res.status(409).json({ code: error.code, error: error.message });
     if (['STORYBOARD_INPUT_TOO_LONG', 'STORYBOARD_TOO_MANY_FRAMES'].includes(error.code)) return res.status(400).json({ code: error.code });
     if (['STORYBOARD_GENERATION_FAILED', 'INVALID_STORYBOARD_RESPONSE'].includes(error.code)) return res.status(502).json({ code: error.code });
     return res.status(500).json({ error: 'Не удалось создать раскадровку' });
+  }
+});
+
+router.get('/:id/storyboard/generation', ensureAuthenticated, async (req, res) => {
+  try {
+    if (!/^[a-f\d]{24}$/i.test(req.params.id) || !await Project.exists({ _id: req.params.id, userId: req.user._id })) {
+      return res.status(404).json({ error: 'Проект не найден' });
+    }
+    res.set('Cache-Control', 'no-store');
+    return res.json({ success: true, generation: await storyboardGeneration.summary(req.params.id, req.user._id) });
+  } catch { return res.status(500).json({ error: 'Не удалось проверить прогресс генерации' }); }
+});
+
+router.post('/:id/storyboard/generation/resume', ensureAuthenticated, async (req, res) => {
+  try {
+    const body = req.body;
+    if (!body || typeof body.runId !== 'string' ||
+        Object.keys(body).some(key => !['runId', 'profileId'].includes(key))) {
+      return res.status(400).json({ error: 'Некорректные параметры продолжения' });
+    }
+    if (!/^[a-f\d]{24}$/i.test(req.params.id) || !await Project.exists({ _id: req.params.id, userId: req.user._id })) {
+      return res.status(404).json({ error: 'Проект не найден' });
+    }
+    const generation = await storyboardGeneration.resume(req.params.id, req.user._id, body.runId, body.profileId);
+    return res.status(202).json({ success: true, generation });
+  } catch (error) {
+    return res.status([400, 404, 409].includes(error.status) ? error.status : 500).json({
+      code: error.code, error: error.status ? error.message : 'Не удалось продолжить генерацию',
+    });
   }
 });
 

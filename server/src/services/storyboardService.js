@@ -90,15 +90,20 @@ export function planStoryboardFrames(blocks) {
   return frames;
 }
 
-// Only complete, validated batches are assembled; callers save after all succeed.
+// Persist only validated batches; a resumed run skips its saved prefix.
 export async function generatePlannedStoryboard(plan, allowedReferenceIds, requestBatch, options = {}) {
   const batchSize = Number.isSafeInteger(options.batchSize) && options.batchSize >= 1 ? options.batchSize : 12;
   const maxAttempts = Number.isSafeInteger(options.maxAttempts) && options.maxAttempts >= 1 ? options.maxAttempts : 2;
-  const frames = [];
-  for (let offset = 0; offset < plan.length; offset += batchSize) {
+  const frames = [...(options.completedFrames || [])];
+  if (frames.length > plan.length || frames.some((frame, index) =>
+    frame.scriptText !== plan[index].scriptText || frame.sourceVoiceoverBlockId !== plan[index].sourceVoiceoverBlockId)) {
+    invalid('INVALID_STORYBOARD_CHECKPOINT');
+  }
+  for (let offset = frames.length; offset < plan.length; offset += batchSize) {
     const batch = plan.slice(offset, offset + batchSize);
     let validated;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      await options.beforeBatch?.();
       const raw = await requestBatch(batch, attempt);
       try {
         const values = parseModelJson(raw)?.frames;
@@ -119,6 +124,7 @@ export async function generatePlannedStoryboard(plan, allowedReferenceIds, reque
       }
     }
     frames.push(...validated);
+    await options.onBatch?.(frames);
   }
   return JSON.stringify({ frames });
 }

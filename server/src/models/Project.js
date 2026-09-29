@@ -293,6 +293,7 @@ const projectSchema = new mongoose.Schema({
   visualBible: { type: visualBibleSchema, default: undefined },
   referencePlan: { type: referencePlanSchema, default: undefined },
   storyboard: { type: storyboardSchema, default: undefined },
+  storyboardGenerationRunId: { type: String, default: '' },
   videoPlan: { type: videoPlanSchema, default: undefined },
   scriptPath: {
     type: String,

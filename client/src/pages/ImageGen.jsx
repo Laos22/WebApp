@@ -7,6 +7,7 @@ import {
   importStoryboardFlowFrameImage,
   reconcileStoryboardImages, resetStoryboardImages, resetStoryboardPromptDetails, saveStoryboard,
   saveStoryboardFrame,
+  getStoryboardGeneration, resumeStoryboardGeneration,
 } from "../services/api";
 import { fetchProfiles } from "../services/profileService";
 import ProfileSelector from "../components/ProfileSelector";
@@ -63,6 +64,24 @@ function editableFrame(frame = {}) {
   };
 }
 
+function GenerationProgress({ generation, connectionError, busy, onResume }) {
+  if (!generation || generation.status === 'completed') return null;
+  const failed = generation.status === 'failed';
+  const stale = generation.errorCode === 'STORYBOARD_JOB_CONFLICT';
+  return <section className="p-4 rounded-xl border border-purple-500/40 bg-slate-900 space-y-3" aria-label="Прогресс создания раскадровки">
+    <div className="flex flex-wrap justify-between gap-2">
+      <strong>{failed ? 'Генерация приостановлена' : generation.status === 'queued' ? 'Раскадровка в очереди' : 'Создаётся раскадровка'}</strong>
+      <span>Сохранено {generation.completed} из {generation.total} кадров</span>
+    </div>
+    <progress className="w-full h-3 accent-purple-500" value={generation.completed} max={generation.total} />
+    <p className="text-sm text-slate-300">{stale ? 'Сценарий, озвучка, референсы или раскадровка изменились. Начните генерацию заново.'
+      : failed ? 'Не удалось завершить запрос. Готовые части сохранены. Можно продолжить, при необходимости выбрав другой профиль в управлении раскадровкой.'
+        : 'Можно уходить со страницы. Сервер сохранит каждую готовую часть; кадры появятся после завершения всей раскадровки.'}</p>
+    {connectionError && <p className="text-sm text-amber-300">Не удалось обновить прогресс. Проверяем соединение…</p>}
+    {failed && !stale && <button type="button" className={button} disabled={busy} onClick={onResume}>Продолжить генерацию</button>}
+  </section>;
+}
+
 function readableError(error) {
   if (error?.status === 409) return error.message || "Данные изменились. Обновите страницу.";
   if (error?.code === "STORYBOARD_TEXT_COVERAGE_MISMATCH") return "ИИ изменил текст озвучки при разделении на кадры. Попробуйте создать раскадровку заново.";
@@ -97,7 +116,13 @@ export default function ImageGen() {
   const [currentFrameIndex, setCurrentFrameIndex] = useState(0);
   const [openPanel, setOpenPanel] = useState("");
   const [frameMenuOpen, setFrameMenuOpen] = useState(false);
-  const [pending, setPending] = useState("load");
+  const [requestPending, setPending] = useState("load");
+  const [generation, setGeneration] = useState(null);
+  const [generationConnectionError, setGenerationConnectionError] = useState(false);
+  const generationActive = ['queued', 'running'].includes(generation?.status);
+  const pending = requestPending || (generationActive ? 'storyboard-background' : '');
+  const loadedGeneration = useRef('');
+  const localDraft = useRef({ dirty: false, acceptedRunId: '' });
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [imageLoading, setImageLoading] = useState(false);
@@ -120,6 +145,8 @@ export default function ImageGen() {
     Promise.all([getStoryboard(projectId), fetchProfiles()]).then(([result, profiles]) => {
       if (active) {
         setData(result);
+        setGeneration(result.generation || null);
+        loadedGeneration.current = result.generation?.status === 'completed' ? result.generation.runId : '';
         setFrames(result.storyboard.frames.map(editableFrame));
         setInstructions(result.storyboard.instructions || "");
         const available = profiles.filter(profile => profile.type === "image" && profile.provider === "google_studio");
@@ -132,11 +159,43 @@ export default function ImageGen() {
   }, [projectId]);
 
   const storyboard = data?.storyboard;
+  const hasLoaded = Boolean(data);
+  useEffect(() => {
+    if (!hasLoaded) return undefined;
+    let active = true;
+    let timer;
+    const poll = async () => {
+      try {
+        const result = await getStoryboardGeneration(projectId);
+        if (!active) return;
+        setGeneration(result.generation);
+        setGenerationConnectionError(false);
+        if (result.generation?.status === 'completed' && loadedGeneration.current !== result.generation.runId) {
+          if (localDraft.current.dirty && localDraft.current.acceptedRunId !== result.generation.runId) {
+            loadedGeneration.current = result.generation.runId;
+            setMessage('Раскадровка сохранена на сервере. На странице есть локальные правки; обновите страницу, чтобы загрузить результат.');
+            return;
+          }
+          const latest = await getStoryboard(projectId);
+          if (!active) return;
+          applyData(latest);
+          loadedGeneration.current = result.generation.runId;
+          setMessage('Раскадровка готова и сохранена. Проверьте кадры.');
+        }
+      } catch { if (active) setGenerationConnectionError(true); }
+      finally { if (active) timer = setTimeout(poll, 3000); }
+    };
+    void poll();
+    return () => { active = false; clearTimeout(timer); };
+  // applyData uses only stable React setters; polling must survive progress renders.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, hasLoaded]);
   const baseline = useMemo(() => storyboard ? JSON.stringify({
     instructions: storyboard.instructions || "",
     frames: storyboard.frames.map(editableFrame),
   }) : "", [storyboard]);
   const dirty = Boolean(storyboard) && JSON.stringify({ instructions, frames }) !== baseline;
+  useEffect(() => { localDraft.current.dirty = dirty; }, [dirty]);
   const changedFrameIds = useMemo(() => {
     if (!storyboard || frames.length !== storyboard.frames.length) return [];
     return frames.reduce((changed, frame, index) => {
@@ -162,11 +221,11 @@ export default function ImageGen() {
   }, [storyboard]);
 
   useEffect(() => {
-    if (!dirty) return undefined;
+    if (!dirty || generationActive) return undefined;
     const warn = event => { event.preventDefault(); event.returnValue = ""; };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty]);
+  }, [dirty, generationActive]);
 
   useEffect(() => {
     if (!openPanel && !frameMenuOpen) return undefined;
@@ -199,26 +258,47 @@ export default function ImageGen() {
     }
   };
 
+  const startGeneration = async (payload, resume = false) => {
+    if (pending) return;
+    setPending('generate'); setError(''); setMessage('');
+    try {
+      const result = await (resume ? resumeStoryboardGeneration(projectId, payload) : generateStoryboard(projectId, payload));
+      if (mounted.current) {
+        localDraft.current.acceptedRunId = result.generation.runId;
+        setGeneration(result.generation);
+        setMessage('Фоновая генерация запущена. Можно уходить со страницы.');
+      }
+    } catch (err) { if (mounted.current) setError(readableError(err)); }
+    finally { if (mounted.current) setPending(''); }
+  };
+
+  const resumeGeneration = () => startGeneration({ runId: generation.runId,
+    ...(storyboardProfileId ? { profileId: storyboardProfileId } : {}),
+  }, true);
+
   const generate = () => {
+    if (generation?.status === 'failed' && !window.confirm('Начать заново? Сохранённые части незавершённой генерации будут заменены.')) return;
     if (frames.length && !window.confirm("ИИ обновит текущую раскадровку с учётом ваших правок. Продолжить?")) return;
-    run("generate", () => generateStoryboard(projectId, {
+    startGeneration({
       instructions, frames, expectedEditVersion: storyboard.editVersion,
       sourceScriptRevision: data.scriptRevision,
       sourceReferencePlanRevision: data.referencePlanRevision,
       sourceVoiceoverRevision: data.voiceoverRevision,
       profileId: storyboardProfileId,
-    }), "Раскадровка создана. Проверьте кадры и привязанные референсы.");
+      restartGeneration: generation?.status === 'failed',
+    });
   };
 
   const generateFromScratch = () => {
     if (!window.confirm("Полностью пересоздать раскадровку? Текущие карточки не будут переданы ИИ.")) return;
-    run("regenerate", () => generateStoryboard(projectId, {
+    startGeneration({
       instructions, frames: [], expectedEditVersion: storyboard.editVersion,
       sourceScriptRevision: data.scriptRevision,
       sourceReferencePlanRevision: data.referencePlanRevision,
       sourceVoiceoverRevision: data.voiceoverRevision,
       profileId: storyboardProfileId,
-    }), "Раскадровка полностью пересоздана. Проверьте кадры и привязанные референсы.");
+      restartGeneration: generation?.status === 'failed',
+    });
   };
 
   const detailOne = (frameId, currentData) => detailStoryboardFramePrompt(projectId, frameId, {
@@ -533,8 +613,10 @@ export default function ImageGen() {
     } catch { setError("Не удалось скопировать prompt. Разрешите браузеру доступ к буферу обмена."); }
   };
 
-  const updateFrame = (index, field, value) => setFrames(current =>
-    current.map((frame, i) => i === index ? { ...frame, [field]: value } : frame));
+  const updateFrame = (index, field, value) => {
+    if (generationActive) return;
+    setFrames(current => current.map((frame, i) => i === index ? { ...frame, [field]: value } : frame));
+  };
   const moveFrame = (index, direction) => {
     const target = index + direction;
     if (target < 0 || target >= frames.length) return;
@@ -630,6 +712,8 @@ export default function ImageGen() {
       </header>
 
       <main className="pt-3 md:pt-5">
+        <div className="mb-3"><GenerationProgress generation={generation} connectionError={generationConnectionError}
+          busy={Boolean(pending)} onResume={resumeGeneration} /></div>
         {!prerequisitesReady && <div className="p-4 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-300 space-y-2">
           <p>Нужны утверждённый текст озвучки и набор референсов.</p>
           <Link className="underline" to={`/projects/${projectId}/references`}>Перейти к референсам</Link>
@@ -687,8 +771,8 @@ export default function ImageGen() {
             </div>
           </div>
         </article> : <section className={`${panel} text-center py-12`}>
-          <h2 className="text-xl font-bold">Кадров пока нет</h2>
-          <p className="text-slate-400">Откройте управление раскадровкой и запустите создание кадров.</p>
+          <h2 className="text-xl font-bold">{generationActive ? 'Раскадровка создаётся' : 'Кадров пока нет'}</h2>
+          <p className="text-slate-400">{generationActive ? 'Готовая раскадровка появится здесь автоматически.' : 'Откройте управление раскадровкой и запустите создание кадров.'}</p>
           <button type="button" className={button} onClick={() => setOpenPanel("storyboard")}>Открыть управление</button>
         </section>}
       </main>
@@ -709,12 +793,14 @@ export default function ImageGen() {
     </Drawer>}
 
     {openPanel === "storyboard" && <Drawer title="Управление раскадровкой" wide onClose={() => setOpenPanel("")}>
+      <GenerationProgress generation={generation} connectionError={generationConnectionError}
+        busy={Boolean(pending)} onResume={resumeGeneration} />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-slate-400">Статус: <span className="text-white font-semibold">{statuses[storyboard.status] || storyboard.status}</span> · кадров {frames.length}</p>
         {dirty && <span className="text-sm text-amber-300">Есть несохранённые изменения</span>}
       </div>
       <label className="block"><span className="block text-sm text-slate-300 mb-2">Общие инструкции для раскадровки</span>
-        <textarea value={instructions} maxLength={4000} onChange={event => setInstructions(event.target.value)} placeholder="Например: больше крупных планов, избегай повторяющихся композиций" className="w-full min-h-24 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
+        <textarea disabled={generationActive} value={instructions} maxLength={4000} onChange={event => setInstructions(event.target.value)} placeholder="Например: больше крупных планов, избегай повторяющихся композиций" className="w-full min-h-24 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
       <ProfileSelector type="text" projectId={projectId} operation="storyboard" value={storyboardProfileId} onChange={setStoryboardProfileId} disabled={Boolean(pending)} />
       {frames.length > 0 && <label className="block"><span className="block text-sm text-slate-300 mb-2">Общая инструкция для детализации промтов</span>
         <textarea value={detailInstruction} maxLength={2000} onChange={event => setDetailInstruction(event.target.value)} placeholder="Например: фотореализм, кинематографическое освещение" className="w-full min-h-24 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>}

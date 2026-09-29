@@ -11,12 +11,13 @@ function modelText(response) {
   return text.trim();
 }
 
-async function generateOpenRouterText(prompt, profile, json = false) {
+async function generateOpenRouterText(prompt, profile, json = false, timeoutMs) {
   const apiKey = getDecryptedApiKey(profile);
   if (!apiKey) throw new Error('API-ключ OpenRouter не найден');
   const model = profile?.textSettings?.primaryModel?.trim() || 'openrouter/free';
   const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
+    ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
@@ -185,12 +186,12 @@ export function buildStoryboardPrompt(project, references, currentFrames, instru
   return prompt;
 }
 
-export async function generateStoryboard(project, references, currentFrames, instructions, template, profile) {
+export async function generateStoryboard(project, references, currentFrames, instructions, template, profile, options = {}) {
   try {
     const plan = planStoryboardFrames(project.voiceover?.blocks || []);
     const basePrompt = buildStoryboardPrompt(project, references, currentFrames, instructions, template);
-    const { apiKey, model } = resolveTextConfig(profile, 'generate-storyboard');
-    const ai = new GoogleGenAI({ apiKey });
+    const config = profile?.provider === 'openrouter' ? null : resolveTextConfig(profile, 'generate-storyboard');
+    const ai = config ? new GoogleGenAI({ apiKey: config.apiKey }) : null;
     const longStoryboard = plan.length > 200;
     return await generatePlannedStoryboard(plan, new Set(references.map(reference => reference.id)), async (batch, attempt) => {
       const text = `${basePrompt}\n\nСервер уже разделил утверждённый текст на кадры. Для этого запроса создай только визуальные описания для следующих слотов, ровно по одному на слот. Не объединяй и не добавляй кадры. Верни {"frames":[{"slot":"...","visualDescription":"...","prompt":"...","referenceIds":[]}]}. Поля scriptText и sourceVoiceoverBlockId служат контекстом и не возвращаются. Эта структура ответа заменяет структуру из шаблона выше.\n${JSON.stringify(batch)}${attempt ? '\nПредыдущий ответ не прошёл проверку: проверь все slot, обязательные поля и допустимые referenceIds.' : ''}`;
@@ -199,9 +200,10 @@ export async function generateStoryboard(project, references, currentFrames, ins
         error.code = 'STORYBOARD_INPUT_TOO_LONG';
         throw error;
       }
+      if (!ai) return generateOpenRouterText(text, profile, true, 120_000);
       const response = await ai.models.generateContent({
-        model, contents: [{ role: 'user', parts: [{ text }] }],
-        config: { responseMimeType: 'application/json', responseJsonSchema: {
+        model: config.model, contents: [{ role: 'user', parts: [{ text }] }],
+        config: { httpOptions: { timeout: 120_000 }, responseMimeType: 'application/json', responseJsonSchema: {
           type: 'object', required: ['frames'], properties: { frames: {
             type: 'array', minItems: batch.length, maxItems: batch.length,
             items: { type: 'object', required: ['slot', 'visualDescription', 'prompt', 'referenceIds'], properties: {
@@ -213,14 +215,15 @@ export async function generateStoryboard(project, references, currentFrames, ins
         } },
       });
       return modelText(response);
-    }, { batchSize: longStoryboard ? 6 : 12, maxAttempts: longStoryboard ? 3 : 2 });
+    }, { batchSize: longStoryboard ? 6 : 12, maxAttempts: longStoryboard ? 3 : 2, ...options });
   } catch (cause) {
     console.error('[STORYBOARD_PROVIDER_ERROR]', {
       status: cause?.status || cause?.statusCode || cause?.response?.status || null,
       code: cause?.code || null,
       message: String(cause?.message || '').slice(0, 500),
     });
-    if (['STORYBOARD_INPUT_TOO_LONG', 'STORYBOARD_TOO_MANY_FRAMES', 'INVALID_STORYBOARD_RESPONSE'].includes(cause.code)) throw cause;
+    if (['STORYBOARD_INPUT_TOO_LONG', 'STORYBOARD_TOO_MANY_FRAMES', 'INVALID_STORYBOARD_RESPONSE',
+      'STORYBOARD_JOB_CONFLICT', 'STORYBOARD_LEASE_LOST', 'INVALID_STORYBOARD_CHECKPOINT'].includes(cause.code)) throw cause;
     const error = new Error('Не удалось создать раскадровку');
     error.code = 'STORYBOARD_GENERATION_FAILED';
     throw error;
