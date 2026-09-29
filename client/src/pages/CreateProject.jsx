@@ -11,6 +11,10 @@ export default function CreateProject() {
   const { generateTopic, isLoading, error, topics, setTopics } = useGenerateTopic();
   const [systemPrompt, setSystemPrompt] = useState("");
   const [keywords, setKeywords] = useState("");
+  const [mode, setMode] = useState("generate");
+  const [manualTopic, setManualTopic] = useState("");
+  const [manualDescription, setManualDescription] = useState("");
+  const [manualShortTitle, setManualShortTitle] = useState("");
   const [creatingProject, setCreatingProject] = useState(false);
 
   // 👈 Храним редактируемые названия для каждой темы
@@ -38,6 +42,38 @@ export default function CreateProject() {
     setEditedTitles({});
   };
 
+  const createProject = async ({ topic, description, shortTitle }) => {
+    setCreatingProject(true);
+    try {
+      const response = await fetch(`${SERVER_URL}/api/projects/create-from-topic`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          topic,
+          description,
+          short_title: shortTitle,
+          keywords,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Ошибка при создании проекта");
+      alert(
+        `✅ Проект успешно создан!\n\n` +
+        `📁 Название: ${data.shortTitle}\n` +
+        `☁️ Хранилище: ${data.storageProvider === "google_drive" ? "Google Drive" : "локальное"}\n` +
+        `🆔 ID: ${data.projectId}\n` +
+        `💡 Теперь можно перейти к созданию сценария.`
+      );
+      navigate(`/projects/${data.projectId}`);
+    } catch (err) {
+      alert(`❌ Ошибка: ${err.message || "Неизвестная ошибка"}`);
+      console.error("Ошибка создания проекта:", err);
+    } finally {
+      setCreatingProject(false);
+    }
+  };
+
   // 👈 Обработчик изменения названия темы
   const handleTitleChange = (index, newTitle) => {
     setEditedTitles(prev => ({
@@ -48,48 +84,15 @@ export default function CreateProject() {
 
   // 👈 Обработчик создания проекта из темы
   const handleCreateProject = async (topicItem, index) => {
-    setCreatingProject(true);
-    
     // Используем отредактированное название или исходное
     const finalShortTitle = editedTitles[index] || topicItem.short_title;
-    
-    try {
-      const response = await fetch(`${SERVER_URL}/api/projects/create-from-topic`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-        body: JSON.stringify({
-          topic: topicItem.full_topic,
-          description: topicItem.full_description,
-          short_title: finalShortTitle,
-          keywords: keywords,
-        }),
-      });
+    await createProject({ topic: topicItem.full_topic, description: topicItem.full_description, shortTitle: finalShortTitle });
+  };
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "Ошибка при создании проекта");
-      }
-
-      alert(
-        `✅ Проект успешно создан!\n\n` +
-        `📁 Название: ${data.shortTitle}\n` +
-        `☁️ Хранилище: ${data.storageProvider === "google_drive" ? "Google Drive" : "локальное"}\n` +
-        `🆔 ID: ${data.projectId}\n` +
-        `💡 Теперь вы можете писать сценарий для этой темы.`
-      );
-      navigate(`/projects/${data.projectId}`);
-
-    } catch (err) {
-      const errorMessage = err.message || "Неизвестная ошибка";
-      alert(`❌ Ошибка: ${errorMessage}`);
-      console.error("Ошибка:", err);
-    } finally {
-      setCreatingProject(false);
-    }
+  const handleCreateManualProject = async () => {
+    const topic = manualTopic.trim();
+    if (!topic || creatingProject) return;
+    await createProject({ topic, description: manualDescription.trim(), shortTitle: manualShortTitle.trim() });
   };
 
   return (
@@ -113,6 +116,35 @@ export default function CreateProject() {
             <p className="line-clamp-2">{systemPrompt}</p>
           </div>
         )}
+
+        <div className="grid grid-cols-2 gap-2 rounded-xl bg-slate-950 p-1 border border-slate-800">
+          <button type="button" onClick={() => setMode("generate")} className={`rounded-lg py-2.5 text-sm font-semibold transition-colors ${mode === "generate" ? "bg-purple-600 text-white" : "text-slate-400 hover:text-white"}`}>
+            ✨ Предложить темы
+          </button>
+          <button type="button" onClick={() => setMode("manual")} className={`rounded-lg py-2.5 text-sm font-semibold transition-colors ${mode === "manual" ? "bg-purple-600 text-white" : "text-slate-400 hover:text-white"}`}>
+            ✍️ Ввести свою тему
+          </button>
+        </div>
+
+        {mode === "manual" ? (
+          <div className="space-y-4">
+            <label className="block space-y-2">
+              <span className="text-sm font-medium text-slate-300">Тема видео <span className="text-purple-300">*</span></span>
+              <textarea value={manualTopic} onChange={(e) => setManualTopic(e.target.value)} maxLength={4000} rows={3} placeholder="Например: Почему люди слышат звуки во сне" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white text-sm focus:outline-none focus:border-purple-500 transition-colors resize-none" />
+            </label>
+            <label className="block space-y-2">
+              <span className="text-sm font-medium text-slate-300">Описание или контекст <span className="text-slate-500">(необязательно)</span></span>
+              <textarea value={manualDescription} onChange={(e) => setManualDescription(e.target.value)} maxLength={4000} rows={4} placeholder="Что важно раскрыть, для кого ролик и в каком стиле его сделать" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white text-sm focus:outline-none focus:border-purple-500 transition-colors resize-none" />
+            </label>
+            <label className="block space-y-2">
+              <span className="text-sm font-medium text-slate-300">Короткое название проекта <span className="text-slate-500">(необязательно)</span></span>
+              <input value={manualShortTitle} onChange={(e) => setManualShortTitle(e.target.value)} maxLength={200} placeholder="Например: Звуки во сне" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white text-sm focus:outline-none focus:border-purple-500 transition-colors" />
+            </label>
+            <button type="button" onClick={handleCreateManualProject} disabled={!manualTopic.trim() || creatingProject} className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-700 text-white py-3 rounded-xl font-semibold transition-colors">
+              {creatingProject ? "Создание..." : "📁 Создать проект из своей темы"}
+            </button>
+          </div>
+        ) : <>
 
         <div className="space-y-2">
           <div className="flex justify-between items-center">
@@ -217,6 +249,7 @@ export default function CreateProject() {
             </div>
           </div>
         )}
+        </>}
       </div>
     </div>
   );

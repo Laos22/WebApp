@@ -243,34 +243,50 @@ router.delete("/:id", ensureAuthenticated, async (req, res) => {
 router.post("/create-from-topic", ensureAuthenticated, async (req, res) => {
   try {
     const { topic, description, short_title, keywords } = req.body;
+    const normalizedTopic = typeof topic === "string" ? topic.trim() : "";
+    const normalizedDescription = typeof description === "string" ? description.trim() : "";
+    const normalizedKeywords = typeof keywords === "string" ? keywords.trim() : "";
+    const normalizedShortTitle = typeof short_title === "string" ? short_title.trim() : "";
 
-    if (!topic || !description) {
+    if (!normalizedTopic) {
       return res.status(400).json({
-        error: "Тема и описание темы обязательны",
+        error: "Тема обязательна",
       });
     }
+    if (normalizedTopic.length > 4000 || normalizedDescription.length > 4000 || normalizedKeywords.length > 4000 || normalizedShortTitle.length > 200) {
+      return res.status(400).json({ error: "Текст темы или описания слишком длинный" });
+    }
+
+    // Для ручного режима описание можно не заполнять: тема остаётся достаточным
+    // контекстом для последующей генерации сценария и обложки.
+    const projectDescription = normalizedDescription || normalizedTopic;
+    const projectShortTitle = normalizedShortTitle || normalizedTopic.slice(0, 80).trim();
 
     const project = new Project({
       userId: req.user._id,
-      title: topic,
-      description: description,
-      shortTitle: short_title,
-      keywords: keywords || "",
+      title: normalizedTopic,
+      description: projectDescription,
+      videoTopic: normalizedTopic,
+      videoTopicDescription: projectDescription,
+      shortTitle: projectShortTitle,
+      keywords: normalizedKeywords,
     });
     const initializedStorage = await initializeProjectStorage({
-      title: short_title || topic,
+      title: projectShortTitle,
       projectId: project._id.toString(),
       userId: req.user._id,
     });
     project.projectPath = initializedStorage.projectPath;
     project.storage = initializedStorage.storage;
     await project.save();
-    await writeProjectState({ project, userId: req.user._id, state: { short_title, topic, description } });
+    await writeProjectState({ project, userId: req.user._id, state: {
+      short_title: projectShortTitle, topic: normalizedTopic, description: projectDescription,
+    } });
 
     res.json({
       success: true,
       projectId: project._id,
-      shortTitle: short_title,
+      shortTitle: projectShortTitle,
       storageProvider: project.storage.provider,
       message: "Проект успешно создан",
     });
