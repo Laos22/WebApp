@@ -162,6 +162,18 @@ export default function ProjectWorkspace() {
             </div>
           </Link>
 
+          <Link
+            to={`/projects/${projectId}/description`}
+            className="group p-8 bg-slate-900/80 hover:bg-slate-900 border border-rose-500/20 hover:border-rose-500/60 rounded-2xl transition-all shadow-xl flex flex-col justify-between"
+          >
+            <div>
+              <div className="w-12 h-12 rounded-xl bg-rose-600/20 border border-rose-500/30 flex items-center justify-center text-2xl mb-4 group-hover:scale-110 transition-transform">📄</div>
+              <h2 className="text-2xl font-bold mb-2 group-hover:text-rose-300 transition-colors">Описание для YouTube</h2>
+              <p className="text-slate-400 text-sm">Описание по сценарию, главы с таймкодами и правки по вашей инструкции.</p>
+            </div>
+            <div className="mt-6 flex items-center text-rose-400 font-semibold text-sm group-hover:translate-x-1 transition-transform">Перейти &rarr;</div>
+          </Link>
+
           {project.script?.status === "confirmed" && <Link
             to={`/projects/${projectId}/audio`}
             className="group p-8 bg-slate-900/80 hover:bg-slate-900 border border-indigo-500/20 hover:border-indigo-500/60 rounded-2xl transition-all shadow-xl flex flex-col justify-between"

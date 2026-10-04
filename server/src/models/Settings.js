@@ -16,6 +16,7 @@ export const DEFAULT_VIDEO_PROMPT_PREPARATION_PROMPT = `Подготовь ан�
 Опиши выполнимое за указанное время действие, движение камеры и темп. Сохраняй композицию, внешность персонажей, предметы и визуальный стиль исходного изображения. Не добавляй текст, звук или новые сцены. Верни только готовый видеопромт.`;
 
 import mongoose from "mongoose";
+import { DEFAULT_YOUTUBE_DESCRIPTION_PROMPT } from '../services/youtubeDescriptionService.js';
 
 // Единый дефолтный системный промпт.
 // Экспортируем, чтобы роуты/сервисы не дублировали строку и не расходились.
@@ -289,6 +290,7 @@ const settingsSchema = new mongoose.Schema(
       theme: { type: String, default: "" },
       script: { type: String, default: "" },
       cover: { type: String, default: "" },
+      youtubeDescription: { type: String, default: DEFAULT_YOUTUBE_DESCRIPTION_PROMPT },
       audio: { type: String, default: DEFAULT_AUDIO_ADAPTATION_PROMPT },
       timelineDavinci: { type: String, default: "" },
       visualBiblePrompt: { type: String, default: DEFAULT_VISUAL_BIBLE_PROMPT },

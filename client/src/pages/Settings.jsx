@@ -25,8 +25,9 @@ const PROMPTS = [
   { key: "storyboardDetailPrompt", title: "Детализация кадра", description: "Подробный промт для одного кадра." },
   { key: "videoPlanAnalysisPrompt", title: "Анализ кадров для видео", description: "План движения и длительности видео." },
   { key: "videoPromptPreparationPrompt", title: "Подготовка промта движения", description: "Английский промт для видеогенерации." },
-  { key: "cover", title: "Генерация обложки", description: "Системные инструкции для создания обложки." },
+  { key: "cover", title: "Генерация обложки", description: "Общие правила заголовков и готовой обложки с текстом. Применяются в Google Studio и пакете Google Flow вместе с сохранённым примером." },
   { key: "timelineDavinci", title: "Экспорт таймлайна", description: "Правила подготовки материалов для DaVinci Resolve." },
+  { key: "youtubeDescription", title: "Описание для YouTube", description: "Стиль описания, язык, главы и хештеги. Сценарий и таймлайн добавляются автоматически." },
 ];
 const emptyPrompts = Object.fromEntries(PROMPTS.map(({ key }) => [key, ""]));
 

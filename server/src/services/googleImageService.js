@@ -25,33 +25,36 @@ export function normalizeGoogleImageSettings(profile) {
   return { apiKey, model, mimeType: requestedFormat, aspectRatio, imageSize };
 }
 
-export function buildGoogleImageInput(frame, references) {
+export function buildGoogleImageInput(frame, references, purpose = 'storyboard') {
+  const finishedCover = purpose === 'cover-final';
   const input = [{
     type: "text",
-    text: `Create one final storyboard image. Follow the image prompt exactly. Do not create a collage, split screen, captions, logos, interface elements, or watermarks.\n\nIMAGE PROMPT:\n${frame.prompt}`,
+    text: finishedCover
+      ? `Create one finished YouTube thumbnail WITH the exact requested title and subtitle. Follow the approved design specification and attached neutral typography layout. Create a new scene for the project topic.\n\n${frame.prompt}`
+      : `Create one final ${purpose === 'reference' ? 'visual reference' : 'storyboard'} image. Follow the image prompt exactly. Do not create a collage, split screen, captions, logos, interface elements, or watermarks.\n\nIMAGE PROMPT:\n${frame.prompt}`,
   }];
   references.forEach((reference, index) => {
     input.push({
       type: "text",
-      text: `Reference image ${index + 1}: ${reference.name} (${reference.type}). Preserve the relevant identity, appearance and design when this entity is visible in the frame.`,
+      text: finishedCover ? 'Neutral typography guide: preserve the text placement and hierarchy. Replace the plain background with the NEW project scene. This is not a finished background.' : `Reference image ${index + 1}: ${reference.name} (${reference.type}). Preserve the relevant identity, appearance and design when this entity is visible in the frame.`,
     });
     input.push({ type: "image", mime_type: reference.mimeType, data: reference.buffer.toString("base64") });
   });
   return input;
 }
 
-export async function generateGoogleStoryboardImage({ frame, references = [], profile, clientFactory }) {
+export async function generateGoogleStoryboardImage({ frame, references = [], profile, clientFactory, purpose = 'storyboard', aspectRatio }) {
   const settings = normalizeGoogleImageSettings(profile);
   const createClient = clientFactory || (apiKey => new GoogleGenAI({ apiKey }));
   try {
     const client = createClient(settings.apiKey);
     const interaction = await client.interactions.create({
       model: settings.model,
-      input: buildGoogleImageInput(frame, references),
+      input: buildGoogleImageInput(frame, references, purpose),
       response_format: {
         type: "image",
         mime_type: settings.mimeType,
-        aspect_ratio: settings.aspectRatio,
+        aspect_ratio: aspectRatio || settings.aspectRatio,
         image_size: settings.imageSize,
       },
     });
@@ -67,6 +70,6 @@ export async function generateGoogleStoryboardImage({ frame, references = [], pr
       throw generationError("IMAGE_PROVIDER_AUTH_FAILED", "Google Studio отклонил API-ключ или доступ к модели.", error);
     }
     if (status === 429) throw generationError("IMAGE_PROVIDER_RATE_LIMIT", "Google Studio временно ограничил запросы. Продолжите генерацию позже.", error);
-    throw generationError("IMAGE_GENERATION_FAILED", "Google Studio не смог сгенерировать изображение кадра.", error);
+    throw generationError("IMAGE_GENERATION_FAILED", "Google Studio не смог сгенерировать изображение.", error);
   }
 }

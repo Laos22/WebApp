@@ -61,6 +61,9 @@ async function projectRequest(projectId, suffix = "", method = "GET", body) {
 }
 
 export const getProject = (id) => projectRequest(id);
+export const getYoutubeDescription = id => projectRequest(id, '/youtube-description');
+export const generateYoutubeDescription = (id, payload) => projectRequest(id, '/youtube-description/generate', 'POST', payload);
+export const saveYoutubeDescription = (id, content) => projectRequest(id, '/youtube-description', 'PUT', { content });
 export const getVisualBible = (projectId) => projectRequest(projectId, "/visual-bible");
 export const updateVisualBible = (projectId, payload) =>
   projectRequest(projectId, "/visual-bible", "PUT", payload);
@@ -124,6 +127,21 @@ export async function uploadVisualReference(projectId, referenceId, { file, prom
 
 export const deleteVisualReference = (projectId, referenceId) =>
   projectRequest(projectId, `/visual-references/${encodeURIComponent(referenceId)}`, "DELETE");
+export const generateReferenceImage = (projectId, item, profileId) =>
+  projectRequest(projectId, `/reference-plan/images/${encodeURIComponent(item.id)}/generate`, 'POST', {
+    sourceReferenceVersion: item.version, prompt: item.prompt, profileId: profileId || undefined,
+  });
+export async function exportReferenceFlowPackage(projectId, all = false) {
+  const response = await flowFileRequest(`${SERVER_URL}/api/projects/${projectId}/reference-plan/flow/export?all=${all ? '1' : '0'}`);
+  return response.blob();
+}
+export async function importReferenceFlowImage(projectId, item, file) {
+  const form = new FormData();
+  form.append('image', file, file.name || 'reference.png');
+  form.append('inputFingerprint', item.inputFingerprint);
+  const response = await flowFileRequest(`${SERVER_URL}/api/projects/${projectId}/reference-plan/images/${encodeURIComponent(item.referenceId)}/import`, { method: 'POST', body: form });
+  return response.json();
+}
 export const getVisualReferenceImageUrl = (projectId, imageId, updatedAt) =>
   `${SERVER_URL}/api/projects/${projectId}/visual-references/${encodeURIComponent(imageId)}/image?v=${encodeURIComponent(updatedAt || "0")}`;
 export const getStoryboard = (projectId) => projectRequest(projectId, "/storyboard");

@@ -58,7 +58,7 @@ export async function saveVisualReferenceFile({ projectId, projectPath, project,
   const safeReferenceId = safeSegment(referenceId, referenceIdPattern);
   const format = detectImageFormat(buffer);
   if (projectUsesDrive(project)) {
-    const filename = `${safeReferenceId}.${format.extension}`;
+    const filename = `${safeReferenceId}__${randomUUID()}.${format.extension}`;
     const stored = await saveProjectAsset({
       project, userId, directory: "references", filename, mimeType: format.mimeType, buffer,
     });

@@ -1,294 +1,185 @@
-import React, { useState, useEffect } from "react";
-import { useParams, Link } from "react-router-dom";
-import axios from "axios";
+import { useEffect, useRef, useState } from 'react';
+import { Link, useParams } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+import ProfileSelector from '../components/ProfileSelector';
+import CoverStylePanel from '../components/CoverStylePanel';
+import { getProject } from '../services/api';
+import { getCoverDraft, saveCoverDraft } from '../services/coverDesignStorage';
+import { coverRequest, savedCoverUrl, coverImageBlob, downloadCoverFile } from '../services/coverApi';
 
-const API_URL = String(import.meta.env.VITE_SERVER_URL || "").replace(/\/$/, "");
+const inputClass = 'w-full rounded-xl border border-slate-700 bg-slate-950 p-3 disabled:opacity-60';
+const buttonClass = 'rounded-xl bg-purple-600 px-5 py-3 font-semibold text-white hover:bg-purple-500 disabled:opacity-50';
+const emptyDraft = { title: '', subtitle: '', titleInstruction: '', instruction: '', image: null, workflow: 2 };
 
 export default function CoverGen() {
   const { projectId } = useParams();
+  const { user } = useAuth();
+  return <CoverWorkflow key={`${user?._id || user?.id}:${projectId}`} projectId={projectId} userId={user?._id || user?.id || ''} />;
+}
+
+function CoverWorkflow({ projectId, userId }) {
+  const storageId = `${userId}:${projectId}`;
   const [project, setProject] = useState(null);
-  const [prompt, setPrompt] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [error, setError] = useState(null);
+  const [style, setStyle] = useState(null);
+  const [draft, setDraft] = useState(emptyDraft);
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState('');
+  const [provider, setProvider] = useState('studio');
+  const [textProfile, setTextProfile] = useState('');
+  const [imageProfile, setImageProfile] = useState('');
+  const [analysisProfile, setAnalysisProfile] = useState('');
+  const [styleInstruction, setStyleInstruction] = useState('');
+  const [savedCover, setSavedCover] = useState(null);
+  const [resultUrl, setResultUrl] = useState('');
+  const alive = useRef(false);
+  const lock = useRef(false);
+  const importInput = useRef(null);
 
   useEffect(() => {
-    fetchProject();
-  }, [projectId]);
+    alive.current = true;
+    let current = true;
+    Promise.all([getProject(projectId), coverRequest(projectId, 'style'),
+      getCoverDraft(storageId).then(value => value || getCoverDraft(projectId)).catch(() => null),
+    ]).then(([data, savedStyle, savedDraft]) => {
+      if (!current) return;
+      setProject(data.project); setStyle(savedStyle.style);
+      setSavedCover(data.project.coverImage || null);
+      setDraft(savedDraft ? {
+        ...emptyDraft, title: savedDraft.title || '', subtitle: savedDraft.subtitle || '',
+        titleInstruction: savedDraft.titleInstruction || '', instruction: savedDraft.instruction || savedDraft.direction || '',
+        image: data.project.coverImage ? null : savedDraft.image || null, workflow: savedDraft.workflow || 1,
+      } : { ...emptyDraft, title: data.project.coverData?.title || '' });
+      setLoaded(true);
+    }).catch(err => { if (current) setError(err.message); });
+    return () => { current = false; alive.current = false; };
+  }, [projectId, storageId]);
 
-  const fetchProject = async () => {
-    try {
-      const response = await axios.get(`${API_URL}/api/projects/${projectId}`, {
-        withCredentials: true,
+  useEffect(() => {
+    if (!loaded || busy) return;
+    const timer = setTimeout(() => {
+      saveCoverDraft({ ...draft, image: null, projectId: storageId }).catch(() => {
+        if (alive.current) setError('Не удалось сохранить текстовый черновик в браузере.');
       });
-      setProject(response.data.project);
-    } catch (err) {
-      console.error("Ошибка при загрузке проекта:", err);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [draft, loaded, busy, storageId]);
+
+  useEffect(() => {
+    if (!draft.image) { setResultUrl(savedCover ? savedCoverUrl(projectId, savedCover.savedAt) : ''); return; }
+    const url = URL.createObjectURL(draft.image); setResultUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [draft.image, savedCover, projectId]);
+
+  const edit = (key, value) => setDraft(current => ({ ...current, [key]: value }));
+  const run = async (name, action) => {
+    if (lock.current) return;
+    lock.current = true; setBusy(name); setError(''); setMessage('');
+    try { await action(); }
+    catch (err) { if (alive.current) setError(err.message || 'Не удалось выполнить действие.'); }
+    finally { lock.current = false; if (alive.current) setBusy(''); }
+  };
+  const storeDraft = async next => {
+    if (alive.current) setDraft(next);
+    await saveCoverDraft({ ...next, image: null, projectId: storageId });
+  };
+  const uploadStyle = event => {
+    const file = event.target.files?.[0]; event.target.value = '';
+    if (!file) return;
+    run('style', async () => {
+      if (file.size > 15 * 1024 * 1024) throw new Error('Пример должен быть не больше 15 МБ.');
+      const result = await coverRequest(projectId, 'style', { method: 'PUT', file, field: 'image' });
+      if (alive.current) setStyle(result.style);
+      const analyzed = await coverRequest(projectId, 'style/analyze', { method: 'POST', body: { revision: result.style.revision, profileId: analysisProfile || undefined } });
+      if (alive.current) { setStyle(analyzed.style); setStyleInstruction(''); setMessage('Анализ готов. Проверьте макет и примените шаблон или уточните его.'); }
+    });
+  };
+  const analyzeStyle = () => run('analysis', async () => {
+    const result = await coverRequest(projectId, 'style/analyze', { method: 'POST', body: { revision: style.revision, instruction: styleInstruction, profileId: analysisProfile || undefined } });
+    if (alive.current) { setStyle(result.style); setStyleInstruction(''); setMessage('Шаблон подготовлен. Проверьте предпросмотр и подтвердите.'); }
+  });
+  const confirmStyle = () => run('confirm', async () => {
+    const result = await coverRequest(projectId, 'style/confirm', { method: 'POST', body: { revision: style.revision } });
+    if (alive.current) { setStyle(result.style); setMessage('Шаблон сохранён для всех проектов.'); }
+  });
+  const saveResult = () => run('save', async () => {
+    const file = new File([draft.image], 'cover', { type: draft.image.type });
+    const result = await coverRequest(projectId, 'save', { method: 'POST', file, field: 'image' });
+    if (alive.current) { setSavedCover(result.cover); setMessage(`Обложка сохранена в папке проекта: cover/${result.cover.filename}`); }
+    await storeDraft({ ...draft, image: null });
+  });
+  const propose = () => run('titles', async () => {
+    const result = await coverRequest(projectId, 'headlines', { method: 'POST', body: {
+      title: draft.title, subtitle: draft.subtitle, instruction: draft.titleInstruction, profileId: textProfile || undefined,
+    } });
+    await storeDraft({ ...draft, title: result.title, subtitle: result.subtitle });
+    if (alive.current) setMessage('Заголовок и подзаголовок готовы. Их можно исправить вручную или уточнить инструкцию.');
+  });
+  const generate = () => run(provider, async () => {
+    const body = { title: draft.title, subtitle: draft.subtitle, instruction: draft.instruction,
+      styleRevision: style?.confirmed?.revision, profileId: imageProfile || undefined };
+    if (provider === 'flow') {
+      const zip = await coverRequest(projectId, 'flow/export', { method: 'POST', body, blob: true });
+      downloadCoverFile(zip, `cover-flow-${projectId}.zip`);
+      if (alive.current) setMessage('Пакет скачан: загрузите template.png в Google Flow и вставьте prompt.txt. Затем импортируйте результат и сохраните в проект.');
+    } else {
+      const result = await coverRequest(projectId, 'generate', { method: 'POST', body });
+      await storeDraft({ ...draft, image: coverImageBlob(result), workflow: 2 });
+      if (alive.current) setMessage('Обложка готова. Проверьте написание заголовка и подзаголовка на изображении.');
     }
+  });
+  const importResult = event => {
+    const file = event.target.files?.[0]; event.target.value = '';
+    if (!file) return;
+    run('import', async () => {
+      if (file.size > 20 * 1024 * 1024) throw new Error('Файл для импорта должен быть не больше 20 МБ.');
+      const result = await coverRequest(projectId, 'import', { method: 'POST', file });
+      await storeDraft({ ...draft, image: coverImageBlob(result), workflow: 2 });
+      if (alive.current) setMessage('Готовая обложка импортирована.');
+    });
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!prompt.trim()) return;
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      // 🚀 Отправляем запрос на генерацию обложки
-      const response = await axios.post(
-        `${API_URL}/api/projects/${projectId}/generate-cover`,
-        {
-          prompt,
-          projectTitle: project?.title,
-          projectDescription: project?.description,
-        },
-        { withCredentials: true },
-      );
-
-      const coverResult = {
-        title: "Сгенерированные данные обложки",
-        titleText: response.data.coverData.title,
-        visualDescription: response.data.coverData.visual_description,
-        colorPalette: response.data.coverData.color_palette || [],
-        keyElements: response.data.coverData.key_elements || [],
-        mainEmotion: response.data.coverData.main_emotion,
-        timestamp: new Date().toISOString(),
-      };
-
-      setResult(coverResult);
-      setIsModalOpen(true);
-      setPrompt("");
-    } catch (err) {
-      setError(
-        err.response?.data?.error ||
-          err.message ||
-          "Не удалось сгенерировать обложку. Проверьте настройки.",
-      );
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  if (!project) {
-    return <div className="text-white p-12">Загрузка проекта...</div>;
-  }
-
-  return (
-    <div className="min-h-[calc(100vh-4rem)] bg-slate-950 text-white p-6 md:p-12">
-      <div className="max-w-3xl mx-auto space-y-8">
-        {/* Шапка */}
-        <div className="flex items-center justify-between">
-          <div>
-            <Link
-              to={`/projects/${projectId}`}
-              className="text-sm text-yellow-400 hover:text-yellow-300 transition-colors mb-2 inline-block"
-            >
-              &larr; Назад к проекту
-            </Link>
-            <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight bg-gradient-to-r from-white to-yellow-300 bg-clip-text text-transparent">
-              Генерация обложки 🖼️
-            </h1>
-            <p className="text-slate-400 text-sm mt-1">
-              Создавайте название и изображение обложки для видео "
-              {project.shortTitle}".
-            </p>
-          </div>
+  return <main className="min-h-screen bg-slate-950 text-white px-4 py-8 sm:p-8">
+    <div className="mx-auto max-w-5xl space-y-6 text-left">
+      <header><Link to={`/projects/${projectId}`} className="text-sm text-purple-300">← Назад к проекту</Link><h1 className="mt-3 text-3xl font-bold">Обложка видео</h1><p className="mt-1 text-slate-400">{project?.shortTitle || project?.title || 'Загрузка проекта…'}</p></header>
+      {!loaded && error && <div role="alert" className="rounded-xl border border-red-500/40 p-4 text-red-200">{error}<button onClick={() => window.location.reload()} className="block mt-3 underline">Повторить загрузку</button></div>}
+      {loaded && <>
+        {error && <p role="alert" className="rounded-xl border border-red-500/40 bg-red-950/40 p-3 text-red-200">{error}</p>}
+        {message && <p role="status" className="text-sm text-emerald-300">{message}</p>}
+        <div className="grid gap-5 md:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)]">
+          <CoverStylePanel projectId={projectId} style={style} busy={busy} profile={analysisProfile} setProfile={setAnalysisProfile} instruction={styleInstruction} setInstruction={setStyleInstruction} upload={uploadStyle} analyze={analyzeStyle} confirm={confirmStyle} />
+          <section className="rounded-2xl border border-slate-700 bg-slate-900 p-5 space-y-4">
+            <h2 className="text-lg font-semibold">2. Заголовок и подзаголовок</h2>
+            <label className="block text-sm text-slate-300">Заголовок<input value={draft.title} maxLength={120} disabled={!!busy} onChange={event => edit('title', event.target.value)} className={`${inputClass} mt-1`} placeholder="НЕСАМОВИТЕ" /></label>
+            <label className="block text-sm text-slate-300">Подзаголовок<input value={draft.subtitle} maxLength={180} disabled={!!busy} onChange={event => edit('subtitle', event.target.value)} className={`${inputClass} mt-1`} placeholder="ТАЄМНИЦЯ КАРПАТ" /></label>
+            <label className="block text-sm text-slate-300">Инструкция для текста · необязательно<textarea rows={2} maxLength={4000} disabled={!!busy} value={draft.titleInstruction} onChange={event => edit('titleInstruction', event.target.value)} className={`${inputClass} mt-1`} placeholder="Например: сделай заголовок короче, добавь интригу в подзаголовок" /></label>
+            <button type="button" disabled={!!busy} onClick={propose} className={`${buttonClass} w-full`}>{busy === 'titles' ? 'Предлагаем тексты…' : 'Предложить заголовок и подзаголовок'}</button>
+            <details className="text-sm text-slate-400"><summary className="cursor-pointer">Профиль для текста</summary><div className="mt-3"><ProfileSelector type="text" value={textProfile} onChange={setTextProfile} projectId={projectId} operation="cover-text" disabled={!!busy} /></div></details>
+          </section>
         </div>
-
-        {/* Форма */}
-        <form
-          onSubmit={handleSubmit}
-          className="bg-slate-900/80 border border-yellow-500/20 rounded-2xl p-6 md:p-8 shadow-2xl backdrop-blur-md space-y-6"
-        >
-          <div>
-            <label className="block text-sm font-medium text-slate-300 mb-2">
-              Описание для генерации обложки
-            </label>
-            <textarea
-              rows="5"
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              placeholder="Например: Создай яркую обложку для видео о путешествии в Японию. Включи традиционные элементы японской культуры, горы, храмы и закат. Стиль: современный минимализм с яркими цветами."
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl p-4 text-white placeholder-slate-500 focus:outline-none focus:border-yellow-500 focus:ring-1 focus:ring-yellow-500 transition-all resize-none"
-              required
-            />
+        <section className="rounded-2xl border border-slate-700 bg-slate-900 p-5 space-y-4">
+          <h2 className="text-lg font-semibold">3. Сгенерировать обложку</h2>
+          <label className="block text-sm text-slate-300">Пожелания к обложке · необязательно<textarea rows={3} maxLength={4000} disabled={!!busy} value={draft.instruction} onChange={event => edit('instruction', event.target.value)} className={`${inputClass} mt-1`} placeholder="Например: озеро крупнее, светлый рассвет, сохранить расположение текста как на примере" /></label>
+          <div className="flex flex-wrap gap-3">{[['studio', 'Google Studio'], ['flow', 'Google Flow']].map(([value, label]) => <label key={value} className={`cursor-pointer rounded-xl border px-4 py-3 ${provider === value ? 'border-purple-400 bg-purple-950' : 'border-slate-700'}`}><input type="radio" name="coverProvider" value={value} checked={provider === value} disabled={!!busy} onChange={() => setProvider(value)} className="mr-2" />{label}</label>)}</div>
+          {provider === 'studio' ? <details className="text-sm text-slate-400"><summary className="cursor-pointer">Профиль Google Studio</summary><div className="mt-3"><ProfileSelector type="image" provider="google_studio" value={imageProfile} onChange={setImageProfile} projectId={projectId} operation="cover-image" disabled={!!busy} /></div></details> : <p className="text-sm text-slate-400">Скачайте пакет с промптом и примером, сгенерируйте изображение в Google Flow и импортируйте результат. В ZIP результат должен называться cover.png, cover.jpg или cover.webp.</p>}
+          <p className="text-xs text-slate-400">Используется промпт «Генерация обложки» из <Link to="/settings" className="text-purple-300 underline">настроек</Link>, утверждённый шаблон, тема проекта, оба текста и ваши пожелания. Исходное фото не передаётся. Заголовок и подзаголовок рисует сама модель.</p>
+          {!style?.confirmed && <p className="text-sm text-amber-300">Сначала проанализируйте пример и примените шаблон.</p>}
+          <div className="flex flex-col sm:flex-row gap-3">
+            <button type="button" disabled={!!busy || !style?.confirmed || !draft.title.trim()} onClick={generate} className={buttonClass}>{busy === 'studio' ? 'Генерируем обложку…' : busy === 'flow' ? 'Готовим пакет…' : provider === 'studio' ? 'Сгенерировать обложку' : 'Скачать пакет Google Flow'}</button>
+            <button type="button" disabled={!!busy} onClick={() => importInput.current?.click()} className="rounded-xl bg-slate-700 px-5 py-3 disabled:opacity-50">{busy === 'import' ? 'Импортируем…' : 'Импортировать результат · картинка / ZIP'}</button>
+            <input ref={importInput} type="file" accept="image/png,image/jpeg,image/webp,.zip" onChange={importResult} className="hidden" />
           </div>
-
-          {error && (
-            <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-sm">
-              {error}
-            </div>
-          )}
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-4 bg-gradient-to-r from-yellow-600 to-orange-600 hover:from-yellow-500 hover:to-orange-500 text-white font-semibold rounded-xl shadow-lg shadow-yellow-600/25 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
-          >
-            {loading ? (
-              <>
-                <svg
-                  className="animate-spin -ml-1 mr-3 h-5 w-5 text-white"
-                  xmlns="http://www.w3.org/2000/svg"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                >
-                  <circle
-                    className="opacity-25"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    strokeWidth="4"
-                  ></circle>
-                  <path
-                    className="opacity-75"
-                    fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                  ></path>
-                </svg>
-                <span>Генерируем обложку...</span>
-              </>
-            ) : (
-              <span>🖼️ Сгенерировать обложку</span>
-            )}
-          </button>
-        </form>
-
-        {/* Инфо блок */}
-        <div className="bg-yellow-500/5 border border-yellow-500/20 rounded-xl p-4 text-slate-300 text-sm space-y-2">
-          <p className="font-semibold text-yellow-300">💡 Совет:</p>
-          <ul className="space-y-1 list-disc list-inside">
-            <li>Опишите желаемый стиль и цветовую схему</li>
-            <li>Укажите ключевые элементы, которые должны быть на обложке</li>
-            <li>Упомяните тему и целевую аудиторию видео</li>
-          </ul>
-        </div>
-      </div>
-
-      {/* Модальное окно результата */}
-      {isModalOpen && result && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-slate-900 border border-yellow-500/30 rounded-2xl max-w-3xl w-full overflow-hidden shadow-2xl">
-            <div className="p-6 border-b border-slate-800 flex items-center justify-between">
-              <h3 className="text-xl font-bold text-white flex items-center space-x-2">
-                <span>🖼️ Ваша обложка</span>
-              </h3>
-              <button
-                onClick={() => setIsModalOpen(false)}
-                className="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-slate-800 transition-colors"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="p-6 space-y-4 max-h-96 overflow-y-auto">
-              {/* Название обложки */}
-              <div>
-                <label className="text-sm font-semibold text-yellow-300 mb-2 block">
-                  Название обложки:
-                </label>
-                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
-                  <p className="text-slate-200 text-lg font-bold">
-                    {result.titleText}
-                  </p>
-                </div>
-              </div>
-
-              {/* Визуальное описание */}
-              {result.visualDescription && (
-                <div>
-                  <label className="text-sm font-semibold text-yellow-300 mb-2 block">
-                    Визуальное описание:
-                  </label>
-                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 max-h-32 overflow-y-auto">
-                    <p className="text-slate-300 text-sm whitespace-pre-wrap">
-                      {result.visualDescription}
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {/* Цветовая палитра */}
-              {result.colorPalette && Array.isArray(result.colorPalette) && (
-                <div>
-                  <label className="text-sm font-semibold text-yellow-300 mb-2 block">
-                    Цветовая палитра:
-                  </label>
-                  <div className="flex gap-3">
-                    {result.colorPalette.map((color, idx) => (
-                      <div
-                        key={idx}
-                        className="flex-1 flex flex-col items-center gap-2"
-                      >
-                        <div
-                          className="w-full h-20 rounded-lg border-2 border-slate-700 shadow-lg"
-                          style={{ backgroundColor: color }}
-                        />
-                        <code className="text-xs text-slate-400 font-mono">
-                          {color}
-                        </code>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Ключевые элементы */}
-              {result.keyElements && Array.isArray(result.keyElements) && (
-                <div>
-                  <label className="text-sm font-semibold text-yellow-300 mb-2 block">
-                    Ключевые элементы:
-                  </label>
-                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
-                    <div className="flex flex-wrap gap-2">
-                      {result.keyElements.map((element, idx) => (
-                        <span
-                          key={idx}
-                          className="px-3 py-1.5 bg-yellow-500/20 text-yellow-300 border border-yellow-500/30 rounded-full text-sm"
-                        >
-                          {element}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Главное эмоциональное воздействие */}
-              {result.mainEmotion && (
-                <div>
-                  <label className="text-sm font-semibold text-yellow-300 mb-2 block">
-                    Главное эмоциональное воздействие:
-                  </label>
-                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
-                    <p className="text-slate-200 text-lg font-semibold capitalize">
-                      {result.mainEmotion}
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              <div className="text-xs text-slate-400 bg-slate-950/50 p-3 rounded-xl border border-slate-800">
-                <span>
-                  Создано: {new Date(result.timestamp).toLocaleString("ru-RU")}
-                </span>
-              </div>
-            </div>
-
-            <div className="p-6 border-t border-slate-800 bg-slate-950/50 flex justify-end space-x-3">
-              <button
-                onClick={() => setIsModalOpen(false)}
-                className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-white text-sm font-medium rounded-xl transition-colors"
-              >
-                Закрыть
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+          {busy === 'studio' && <p role="status" className="text-sm text-purple-200">Генерация может занять несколько минут. Дождитесь результата перед закрытием вкладки.</p>}
+        </section>
+        {resultUrl && <section className="rounded-2xl border border-slate-700 bg-slate-900 p-5 space-y-4">
+          <h2 className="text-lg font-semibold">{!draft.image || draft.workflow === 2 ? 'Готовая обложка' : 'Изображение из предыдущего редактора'}</h2>
+          <img src={resultUrl} alt="Результат генерации обложки" className="w-full max-h-[70vh] object-contain rounded-xl" />
+          <button type="button" disabled={!!busy || !draft.image} onClick={saveResult} className={buttonClass}>{busy === 'save' ? 'Сохраняем…' : draft.image ? 'Сохранить в проект' : 'Сохранено в проекте'}</button>
+          {savedCover && <p className="text-sm text-emerald-300">Сохранённый файл: {project?.projectPath ? `${project.projectPath}/cover/${savedCover.filename}` : `Google Drive / cover/${savedCover.filename}`}</p>}
+          <p className="text-xs text-slate-400">{draft.image ? 'Новый результат ещё не сохранён. Нажмите «Сохранить в проект» перед закрытием страницы.' : 'При следующем открытии обложка загрузится из папки проекта.'} После изменения текста нужна повторная генерация.</p>
+        </section>}
+      </>}
     </div>
-  );
+  </main>;
 }

@@ -47,3 +47,10 @@ test('rejects a non-Google image profile before generation', () => {
   assert.throws(() => normalizeGoogleImageSettings({ ...profile, provider: 'openrouter' }),
     error => error.code === 'INVALID_IMAGE_PROFILE');
 });
+
+test('reference generation requests a standalone visual reference', () => {
+  const input = buildGoogleImageInput({ prompt: 'Mountain lake' }, [], 'reference');
+  assert.match(input[0].text, /visual reference image/);
+  assert.match(input[0].text, /Mountain lake/);
+  assert.doesNotMatch(input[0].text, /storyboard image/);
+});

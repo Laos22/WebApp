@@ -7,13 +7,15 @@ import { normalizeMediaRoot } from '../../../shared/davinciMediaPaths.js';
 import { validateAudioTrim, audioTrimSeconds } from '../../../shared/davinciAudioTrim.js';
 // server/src/routes/projectRoutes.js
 import express from "express";
+import referenceImageRoutes from './referenceImageRoutes.js';
+import coverRoutes from './coverRoutes.js';
+import youtubeDescriptionRoutes from './youtubeDescriptionRoutes.js';
 import multer from "multer";
 import JSZip from "jszip";
 import { ensureAuthenticated } from "../middleware/auth.js";
 import Settings, { DEFAULT_VISUAL_BIBLE_PROMPT, DEFAULT_VISUAL_BIBLE_EDIT_PROMPT, DEFAULT_REFERENCE_ANALYSIS_PROMPT, DEFAULT_REFERENCE_DETAIL_PROMPT, DEFAULT_STORYBOARD_PROMPT, DEFAULT_STORYBOARD_DETAIL_PROMPT, DEFAULT_AUDIO_ADAPTATION_PROMPT } from "../models/Settings.js";
 import {
   generateVideoTopic,
-  generateCoverData,
   generateScript,
   editScript,
   generateVisualBibleDraft,
@@ -87,6 +89,9 @@ import { saveMusicFile, readMusicFile, deleteMusicFile } from "../services/music
 import { prepareEnglishAudioPrompt } from "../services/audioPromptTranslation.js";
 
 const router = express.Router();
+router.use(referenceImageRoutes);
+router.use(coverRoutes);
+router.use(youtubeDescriptionRoutes);
 const configuredFlowArchiveMb = Number(process.env.MAX_FLOW_ARCHIVE_MB || 100);
 const maxFlowArchiveBytes = Math.min(
   250,
@@ -302,53 +307,6 @@ router.post("/create-from-topic", ensureAuthenticated, async (req, res) => {
 });
 
 // 👈 НОВЫЙ Route: Генерация данных обложки
-router.post("/:id/generate-cover", ensureAuthenticated, async (req, res) => {
-  try {
-    const { id: projectId } = req.params;
-    const project = await Project.findOne({
-      _id: projectId,
-      userId: req.user._id,
-    });
-
-    if (!project) {
-      return res.status(404).json({ error: "Проект не найден" });
-    }
-
-    const settings = await Settings.findOne({ userId: req.user._id });
-
-    if (!settings?.systemPrompt) {
-      return res.status(400).json({
-        error: "Системный промпт не найден. Установите его в настройках.",
-      });
-    }
-
-    // Выбираем дефолтный текстовый профиль и логируем, что именно применяется
-    const textProfile = resolveProfile(settings, "text");
-    logProfileUsage("generate-cover", textProfile, "text");
-
-    // Генерируем данные обложки
-    const coverData = await generateCoverData(
-      settings.systemPrompt,
-      project.title,
-      project.description,
-      textProfile,
-    );
-
-    await updateProjectState({ project, userId: req.user._id, patch: { coverData } });
-
-    res.json({
-      success: true,
-      coverData,
-      message: "Данные обложки успешно сгенерированы",
-    });
-  } catch (error) {
-    console.error("❌ Ошибка генерации обложки:", error);
-    res.status(500).json({
-      error: error.message || "Ошибка при генерации данных обложки",
-    });
-  }
-});
-
 // 👈 НОВЫЙ Route: Генерация сценария
 router.post("/:id/generate-script", ensureAuthenticated, async (req, res) => {
   try {

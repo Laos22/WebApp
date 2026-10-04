@@ -1,4 +1,5 @@
 import express from "express";
+import { DEFAULT_YOUTUBE_DESCRIPTION_PROMPT } from '../services/youtubeDescriptionService.js';
 import { ensureAuthenticated } from "../middleware/auth.js";
 import Settings, { DEFAULT_SYSTEM_PROMPT, DEFAULT_VIDEO_PLAN_ANALYSIS_PROMPT, DEFAULT_VIDEO_PROMPT_PREPARATION_PROMPT, DEFAULT_VISUAL_BIBLE_PROMPT, DEFAULT_VISUAL_BIBLE_EDIT_PROMPT, DEFAULT_VISUAL_REFERENCE_PROMPT, DEFAULT_REFERENCE_ANALYSIS_PROMPT, DEFAULT_REFERENCE_DETAIL_PROMPT, DEFAULT_STORYBOARD_PROMPT, DEFAULT_STORYBOARD_DETAIL_PROMPT, DEFAULT_AUDIO_ADAPTATION_PROMPT } from "../models/Settings.js";
 import {
@@ -52,6 +53,7 @@ router.get("/", ensureAuthenticated, async (req, res) => {
         videoPlanAnalysisPrompt: settings.prompts?.videoPlanAnalysisPrompt ?? DEFAULT_VIDEO_PLAN_ANALYSIS_PROMPT,
         videoPromptPreparationPrompt: settings.prompts?.videoPromptPreparationPrompt ?? DEFAULT_VIDEO_PROMPT_PREPARATION_PROMPT,
         audio: settings.prompts?.audio || DEFAULT_AUDIO_ADAPTATION_PROMPT,
+        youtubeDescription: settings.prompts?.youtubeDescription || DEFAULT_YOUTUBE_DESCRIPTION_PROMPT,
       },
       driveConnected: await getDriveConnectionStatus(req.user._id),
       driveFileId: settings.driveFileId || null,
@@ -69,7 +71,8 @@ router.post("/", ensureAuthenticated, async (req, res) => {
   try {
     const body = req.body;
     const promptFields = ["theme", "script", "cover", "audio", "timelineDavinci", "visualBiblePrompt", "visualBibleEditPrompt", "visualReferencePrompt", "referenceAnalysisPrompt", "referenceDetailPrompt", "storyboardPrompt", "storyboardDetailPrompt", "videoPromptPreparationPrompt", "videoPlanAnalysisPrompt"];
-    const optionalPromptFields = ["visualBiblePrompt", "visualBibleEditPrompt", "visualReferencePrompt", "referenceAnalysisPrompt", "referenceDetailPrompt", "storyboardPrompt", "storyboardDetailPrompt", "videoPromptPreparationPrompt", "videoPlanAnalysisPrompt"];
+    promptFields.push('youtubeDescription');
+    const optionalPromptFields = ["youtubeDescription", "visualBiblePrompt", "visualBibleEditPrompt", "visualReferencePrompt", "referenceAnalysisPrompt", "referenceDetailPrompt", "storyboardPrompt", "storyboardDetailPrompt", "videoPromptPreparationPrompt", "videoPlanAnalysisPrompt"];
 
     if (
       !body || typeof body !== "object" || Array.isArray(body) ||
@@ -103,7 +106,7 @@ router.post("/", ensureAuthenticated, async (req, res) => {
     settings.prompts = Object.fromEntries(promptFields.map((key) => [
       key,
       optionalPromptFields.includes(key) && !Object.hasOwn(prompts, key)
-        ? settings.prompts?.[key] ?? ({ videoPlanAnalysisPrompt: DEFAULT_VIDEO_PLAN_ANALYSIS_PROMPT, videoPromptPreparationPrompt: DEFAULT_VIDEO_PROMPT_PREPARATION_PROMPT, visualBiblePrompt: DEFAULT_VISUAL_BIBLE_PROMPT, visualBibleEditPrompt: DEFAULT_VISUAL_BIBLE_EDIT_PROMPT, visualReferencePrompt: DEFAULT_VISUAL_REFERENCE_PROMPT, referenceAnalysisPrompt: DEFAULT_REFERENCE_ANALYSIS_PROMPT, referenceDetailPrompt: DEFAULT_REFERENCE_DETAIL_PROMPT, storyboardPrompt: DEFAULT_STORYBOARD_PROMPT, storyboardDetailPrompt: DEFAULT_STORYBOARD_DETAIL_PROMPT }[key])
+        ? settings.prompts?.[key] ?? ({ youtubeDescription: DEFAULT_YOUTUBE_DESCRIPTION_PROMPT, videoPlanAnalysisPrompt: DEFAULT_VIDEO_PLAN_ANALYSIS_PROMPT, videoPromptPreparationPrompt: DEFAULT_VIDEO_PROMPT_PREPARATION_PROMPT, visualBiblePrompt: DEFAULT_VISUAL_BIBLE_PROMPT, visualBibleEditPrompt: DEFAULT_VISUAL_BIBLE_EDIT_PROMPT, visualReferencePrompt: DEFAULT_VISUAL_REFERENCE_PROMPT, referenceAnalysisPrompt: DEFAULT_REFERENCE_ANALYSIS_PROMPT, referenceDetailPrompt: DEFAULT_REFERENCE_DETAIL_PROMPT, storyboardPrompt: DEFAULT_STORYBOARD_PROMPT, storyboardDetailPrompt: DEFAULT_STORYBOARD_DETAIL_PROMPT }[key])
         : prompts[key],
     ]));
 

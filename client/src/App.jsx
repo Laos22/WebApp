@@ -22,6 +22,7 @@ import VideoPlan from "./pages/VideoPlan";
 import DavinciExport from "./pages/DavinciExport";
 import SoundEffects from "./pages/SoundEffects";
 import BackgroundMusic from "./pages/BackgroundMusic";
+import YoutubeDescription from "./pages/YoutubeDescription";
 
 function AppContent() {
   const { user } = useAuth(); // Получаем состояние пользователя
@@ -101,6 +102,7 @@ function AppContent() {
           <Route path="/projects/:projectId/video" element={<ProtectedRoute><VideoPlan /></ProtectedRoute>} />
           <Route path="/projects/:projectId/sounds" element={<ProtectedRoute><SoundEffects /></ProtectedRoute>} />
           <Route path="/projects/:projectId/music" element={<ProtectedRoute><BackgroundMusic /></ProtectedRoute>} />
+          <Route path="/projects/:projectId/description" element={<ProtectedRoute><YoutubeDescription /></ProtectedRoute>} />
           <Route
             path="/projects/:projectId/davinci"
             element={<ProtectedRoute><DavinciExport /></ProtectedRoute>}

@@ -285,6 +285,13 @@ const projectSchema = new mongoose.Schema({
     default: ""
   },
   storage: { type: projectStorageSchema, default: () => ({ provider: "local" }) },
+  coverImage: { type: new mongoose.Schema({
+    storageKey: { type: String, required: true },
+    filename: { type: String, required: true },
+    mimeType: { type: String, required: true },
+    byteSize: { type: Number, required: true },
+    savedAt: { type: Date, required: true },
+  }, { _id: false }), default: undefined },
   script: { type: scriptSchema, default: undefined },
   voiceover: { type: voiceoverSchema, default: undefined },
   soundEffects: { type: [soundEffectSchema], default: [] },

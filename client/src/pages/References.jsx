@@ -6,6 +6,8 @@ import {
   saveReferencePlan, uploadVisualReference,
 } from "../services/api";
 import ProfileSelector from "../components/ProfileSelector";
+import ReferenceImageControls from '../components/ReferenceImageControls';
+import useReferenceImages from '../hooks/useReferenceImages';
 
 const panel = "bg-slate-900/80 border border-slate-800 rounded-2xl p-5 md:p-6 space-y-4";
 const button = "px-4 py-2.5 rounded-xl bg-fuchsia-700 hover:bg-fuchsia-600 disabled:opacity-50 disabled:cursor-not-allowed";
@@ -70,6 +72,8 @@ export default function References() {
   const confirmed = plan?.status === "confirmed";
   const scriptReady = data?.scriptStatus === "confirmed";
   const voiceoverReady = data?.voiceoverStatus === "confirmed";
+  const images = useReferenceImages({ projectId, plan, applyData, setError, setMessage });
+  const busy = Boolean(pending) || Object.values(itemPending).some(Boolean) || Boolean(images.progress);
 
   useEffect(() => {
     if (!dirty) return undefined;
@@ -79,7 +83,7 @@ export default function References() {
   }, [dirty]);
 
   const run = async (name, action, success) => {
-    if (pending) return;
+    if (busy) return;
     setPending(name); setError(""); setMessage("");
     try { const result = await action(); if (mounted.current) { applyData(result); setMessage(success); } }
     catch (err) { if (mounted.current) setError(readableError(err)); }
@@ -109,7 +113,7 @@ export default function References() {
   };
 
   const runForItem = async (id, name, action) => {
-    if (itemPending[id]) return;
+    if (busy) return;
     setItemPending(current => ({ ...current, [id]: name })); setError(""); setMessage("");
     try { const result = await action(); if (mounted.current) applyData(result); }
     catch (err) { if (mounted.current) setError(readableError(err)); }
@@ -154,11 +158,13 @@ export default function References() {
       </nav>
       <div><h1 className="text-3xl font-extrabold">Работа с референсами</h1>
         <p className="text-slate-400 mt-2">ИИ предлагает только значимые визуальные опоры. Финальный выбор остаётся за вами.</p></div>
-      {error && <div role="alert" className="p-4 rounded-xl border border-red-500/30 bg-red-500/10">{error}</div>}
+      {error && <div role="alert" className="p-4 rounded-xl border border-red-500/30 bg-red-500/10 whitespace-pre-line">{error}</div>}
       {message && <div role="status" className="p-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-300">{message}</div>}
       {!scriptReady && <div className="p-4 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-300">Сначала подтвердите сценарий.</div>}
       {scriptReady && !voiceoverReady && <div className="p-4 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-300">Сначала адаптируйте и утвердите текст в разделе «Озвучка».</div>}
       {plan && <>
+        {items.length > 0 && <ReferenceImageControls images={images} projectId={projectId} disabled={busy} ready={confirmed && !dirty && items.some(item => item.selected)} />}
+        <fieldset disabled={busy} className="min-w-0 space-y-6">
         <section className={panel}>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-xl font-bold">{statuses[plan.status] || plan.status}</h2>
@@ -197,7 +203,7 @@ export default function References() {
               <label className="block"><span className="text-sm text-slate-400">Почему нужен референс</span><textarea value={item.reason} maxLength={2000} onChange={event => updateItem(index, "reason", event.target.value)} className="w-full min-h-20 mt-1 bg-slate-950 border border-slate-700 rounded-lg p-3" /></label>
               <label className="block"><span className="text-sm text-slate-400">Упоминаний</span><input type="number" min="0" step="1" value={item.mentions} onChange={event => updateItem(index, "mentions", Math.max(0, Number.parseInt(event.target.value || "0", 10)))} className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg p-3" /></label>
             </div>
-            <label className="block"><span className="text-sm text-slate-400">Prompt для Google Flow</span><textarea value={item.prompt} maxLength={12000} onChange={event => updateItem(index, "prompt", event.target.value)} placeholder="Можно оставить пустым и нажать «Детализировать prompt»" className="w-full min-h-40 mt-1 bg-slate-950 border border-slate-700 rounded-lg p-3" /></label>
+            <label className="block"><span className="text-sm text-slate-400">Промпт для изображения · Google Studio / Flow</span><textarea value={item.prompt} maxLength={12000} onChange={event => updateItem(index, "prompt", event.target.value)} placeholder="Можно оставить пустым и нажать «Детализировать prompt»" className="w-full min-h-40 mt-1 bg-slate-950 border border-slate-700 rounded-lg p-3" /></label>
             {item.id && <div className="border border-slate-700 rounded-xl p-4 space-y-3">
               <label className="block"><span className="text-sm text-slate-400">Дополнение для детализации (необязательно)</span><input value={detailInstructions[item.id] || ""} maxLength={2000} onChange={event => setDetailInstructions(current => ({ ...current, [item.id]: event.target.value }))} className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg p-3" placeholder="Например: подробнее про одежду и обувь" /></label>
               <button type="button" className={button} disabled={Boolean(pending) || Boolean(working) || dirty || plan.status === "stale"} onClick={() => detail(persisted)}>{working === "detail" ? "ИИ детализирует…" : "Детализировать prompt"}</button>
@@ -207,19 +213,22 @@ export default function References() {
               <div className="space-y-2 text-sm text-slate-300"><p>{image.stale ? "Изображение устарело после изменения карточки" : "Изображение готово"}</p><p>{(image.byteSize / 1024 / 1024).toFixed(2)} МБ</p><button type="button" className={`${button} bg-red-700 hover:bg-red-600`} disabled={Boolean(working)} onClick={() => removeImage(persisted)}>{working === "delete" ? "Удаление…" : "Удалить изображение"}</button></div>
             </div>}
             {confirmed && item.selected && item.id && <div className="border border-fuchsia-500/20 rounded-xl p-4 space-y-3">
-              <p className="font-semibold">Google Flow</p>
+              <button type="button" className={button} disabled={busy || dirty || !item.prompt.trim()} onClick={() => images.generate(persisted)}>{image ? 'Создать заново · Google Studio' : 'Сгенерировать изображение · Google Studio'}</button>
+              <p className="text-sm text-slate-400">Используется профиль Google Studio, выбранный над карточками.</p>
+              <p className="font-semibold">Google Flow / загрузка своего изображения</p>
               <div className="flex flex-wrap gap-3">
                 <button type="button" className={button} disabled={!item.prompt} onClick={async () => { try { await navigator.clipboard.writeText(item.prompt); setMessage("Prompt скопирован."); } catch { setError("Не удалось скопировать prompt."); } }}>Скопировать prompt</button>
                 <button type="button" className={`${button} bg-slate-700 hover:bg-slate-600`} onClick={() => window.open("https://flow.google.com/", "_blank", "noopener,noreferrer")}>Открыть Google Flow</button>
               </div>
               <ol className="list-decimal pl-5 text-sm text-slate-400 space-y-1"><li>Скопируйте prompt.</li><li>Создайте и скачайте изображение в Flow.</li><li>Загрузите лучший вариант сюда.</li></ol>
               <input type="file" accept="image/png,image/jpeg,image/webp" onChange={event => setFiles(current => ({ ...current, [item.id]: event.target.files?.[0] || null }))} />
-              <button type="button" className={button} disabled={!files[item.id] || !item.prompt || Boolean(working)} onClick={() => upload(persisted)}>{working === "upload" ? "Загрузка…" : image ? "Заменить изображение" : "Загрузить изображение"}</button>
+              <button type="button" className={button} disabled={dirty || !files[item.id] || !item.prompt || Boolean(working)} onClick={() => upload(persisted)}>{working === "upload" ? "Загрузка…" : image ? "Заменить изображение" : "Загрузить изображение"}</button>
             </div>}
             <button type="button" className={`${button} bg-red-800 hover:bg-red-700`} disabled={Boolean(pending) || Boolean(working)} onClick={() => removeItem(index)}>Удалить карточку</button>
           </article>;
         })}
         {items.length > 0 && <button type="button" className={button} disabled={Boolean(pending)} onClick={() => setItems(current => [...current, editableItem({ selected: true })])}>Добавить референс</button>}
+        </fieldset>
       </>}
     </div>
   </div>;
