@@ -75,7 +75,8 @@ export function buildFlowVideoReadme() {
   ].join('\n');
 }
 
-export function selectPendingFlowVideoFrames({ project, images = [], videos = [] }) {
+export function selectPendingFlowVideoFrames({ project, images = [], videos = [], frameId = '' }) {
+  if (frameId && !FRAME_ID_PATTERN.test(frameId)) throw errorWithCode('INVALID_FRAME_ID', 400, 'Некорректный идентификатор кадра');
   const storyboard = normalizeStoryboard(project);
   if (storyboard.status !== 'confirmed' || !storyboardIsCurrent(project, storyboard)) {
     throw errorWithCode('STORYBOARD_NOT_CONFIRMED', 409, 'Раскадровка должна быть актуальной и подтверждённой');
@@ -115,6 +116,7 @@ export function selectPendingFlowVideoFrames({ project, images = [], videos = []
   for (const planFrame of videoPlan.frames) {
     if (!planFrame.selected) continue;
     selectedFrameIds.push(planFrame.frameId);
+    if (frameId && planFrame.frameId !== frameId) continue;
 
     const frame = frames.find(f => f.id === planFrame.frameId);
     if (!frame || !FRAME_ID_PATTERN.test(frame.id)) {
@@ -272,8 +274,8 @@ export function verifyFlowVideoExportSnapshot({
   }
 }
 
-export async function createFlowVideoExportPackage({ project, images = [], videos = [], readImageFile }) {
-  const { storyboardRevision, videoPlanRevision, editVersion, selectedFrameIds, frames } = selectPendingFlowVideoFrames({ project, images, videos });
+export async function createFlowVideoExportPackage({ project, images = [], videos = [], readImageFile, frameId = '' }) {
+  const { storyboardRevision, videoPlanRevision, editVersion, selectedFrameIds, frames } = selectPendingFlowVideoFrames({ project, images, videos, frameId });
 
   let totalImagesBytes = 0;
   const processedFrames = [];

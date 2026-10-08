@@ -8,12 +8,63 @@ import ProfileSelector from '../components/ProfileSelector';
 
 const button = 'rounded-xl bg-purple-700 px-4 py-3 text-white disabled:opacity-40';
 const secondary = 'rounded-xl border border-slate-600 px-4 py-3 text-slate-200 disabled:opacity-40';
+const VIDEO_BRIDGE_IMAGE_LIMIT = 15 * 1024 * 1024;
+const VIDEO_BRIDGE_MP4_LIMIT = 64 * 1024 * 1024;
+
+function requestFlowVideoBridge(type, payload, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const requestId = crypto.randomUUID();
+    const timer = setTimeout(() => {
+      window.removeEventListener('message', onMessage);
+      reject(new Error('Нет ответа от расширения Google Flow ↔ WebApp. Обновите расширение и страницы WebApp и Flow.'));
+    }, timeoutMs);
+    function onMessage(event) {
+      if (event.source !== window || event.origin !== window.location.origin ||
+          event.data?.source !== 'flow-webapp-bridge-extension' ||
+          event.data?.type !== `${type}_RESULT` || event.data?.requestId !== requestId) return;
+      clearTimeout(timer);
+      window.removeEventListener('message', onMessage);
+      if (event.data.ok) resolve(event.data);
+      else reject(new Error(event.data.error || 'Видеоинструмент Google Flow не принял задание.'));
+    }
+    window.addEventListener('message', onMessage);
+    window.postMessage({ source: 'webapp-flow-bridge', type, requestId, payload }, window.location.origin);
+  });
+}
+
+function blobBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Не удалось прочитать исходное изображение.'));
+    reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+    reader.readAsDataURL(blob);
+  });
+}
+
+function videoBase64File(base64, name) {
+  if (typeof base64 !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(base64) ||
+      base64.length % 4 !== 0 || base64.length * 3 / 4 > VIDEO_BRIDGE_MP4_LIMIT + 2) {
+    throw new Error('Видео от Flow имеет недопустимый формат или превышает лимит 64 МБ.');
+  }
+  const chunks = [];
+  let bytesCount = 0;
+  for (let offset = 0; offset < base64.length; offset += 32768) {
+    const binary = atob(base64.slice(offset, offset + 32768));
+    const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+    chunks.push(bytes);
+    bytesCount += bytes.length;
+    if (bytesCount > VIDEO_BRIDGE_MP4_LIMIT) throw new Error('Видео от Flow превышает лимит 64 МБ.');
+  }
+  return new File(chunks, name, { type: 'video/mp4' });
+}
 export default function VideoPlan() {
   const { projectId } = useParams();
   return <VideoPlanEditor key={projectId} projectId={projectId} />;
 }
 function VideoPlanEditor({ projectId }) {
   const stop = useRef(false);
+  const flowVideoImport = useRef(false);
+  const currentData = useRef(null);
   const pickerToggle = useRef(null);
   const [instructions, setInstructions] = useState('');
   const [progress, setProgress] = useState('');
@@ -30,6 +81,7 @@ function VideoPlanEditor({ projectId }) {
   const [reload, setReload] = useState(0);
   const [flowBusy, setFlowBusy] = useState('');
   const [profileId, setProfileId] = useState('');
+  useEffect(() => { currentData.current = data; }, [data]);
   useEffect(() => {
     let active = true;
     getVideoPlan(projectId).then(result => { if (active) { setData(result); setInstructions(result.videoPlan.instructions); } })
@@ -169,6 +221,94 @@ function VideoPlanEditor({ projectId }) {
     } catch (err) { setError(err.message); }
     finally { setFlowBusy(''); }
   }
+  async function launchFlowVideo() {
+    if (!frame || flowBusy || busy || unsaved || data.videoPlan.status !== 'confirmed' ||
+        !frame.videoInputFingerprint || !saved?.videoPrompt || saved.promptStatus !== 'ready') return;
+    setFlowBusy(`start:${frame.frameId}`); setError(''); setMessage('');
+    try {
+      await requestFlowVideoBridge('FLOW_BRIDGE_PING', {}, 4000);
+      const { blob } = await exportFlowVideoPackage(projectId, data.videoPlan.editVersion, frame.frameId);
+      const { BlobReader, BlobWriter, TextWriter, ZipReader } = await import('@zip.js/zip.js');
+      const zip = new ZipReader(new BlobReader(blob), { strictness: 'balanced' });
+      let image, prompt, manifest;
+      try {
+        const entries = await zip.getEntries();
+        const byName = new Map(entries.filter(entry => !entry.directory).map(entry => [entry.filename, entry]));
+        const manifestEntry = byName.get('manifest.json');
+        if (!manifestEntry) throw new Error('В пакете Flow отсутствует manifest.json.');
+        manifest = JSON.parse(await manifestEntry.getData(new TextWriter()));
+        if (manifest.projectId !== projectId || manifest.frames?.length !== 1 ||
+            manifest.frames[0]?.frameId !== frame.frameId ||
+            manifest.frames[0]?.inputFingerprint !== frame.videoInputFingerprint) {
+          throw new Error('Пакет Flow не соответствует текущему кадру. Обновите видеоплан.');
+        }
+        const item = manifest.frames[0];
+        if (!/^images\/video_frame_[0-9a-f-]+__[0-9a-f]{64}\.(png|jpg|jpeg|webp)$/i.test(item.imageFile) ||
+            !/^prompts\/video_frame_[0-9a-f-]+__[0-9a-f]{64}\.txt$/i.test(item.promptFile)) {
+          throw new Error('Небезопасные пути файлов в пакете Flow.');
+        }
+        const imageEntry = byName.get(item.imageFile);
+        const promptEntry = byName.get(item.promptFile);
+        if (!imageEntry || !promptEntry) throw new Error('В пакете Flow отсутствует изображение или промпт.');
+        image = await imageEntry.getData(new BlobWriter());
+        prompt = (await promptEntry.getData(new TextWriter())).trim();
+        if (!prompt || prompt.length > 12000) throw new Error('Промпт видео пустой или слишком длинный.');
+      } finally { await zip.close(); }
+      if (!image.size || image.size > VIDEO_BRIDGE_IMAGE_LIMIT) throw new Error('Исходное изображение превышает лимит 15 МБ.');
+      const extension = manifest.frames[0].imageFile.split('.').at(-1).toLowerCase();
+      const imageMimeType = extension === 'jpg' || extension === 'jpeg' ? 'image/jpeg'
+        : extension === 'webp' ? 'image/webp' : 'image/png';
+      const imageBase64 = await blobBase64(image);
+      await requestFlowVideoBridge('START_FLOW_VIDEO', {
+        projectId, frameId: frame.frameId, inputFingerprint: frame.videoInputFingerprint,
+        imageMimeType, imageBase64, prompt,
+      }, 75000);
+      setMessage(`Кадр ${frame.blockNumber}–${frame.frameInBlock} передан в Google Flow. После генерации MP4 появится здесь автоматически.`);
+    } catch (err) { setError(err.message); }
+    finally { setFlowBusy(value => value === `start:${frame.frameId}` ? '' : value); }
+  }
+
+  useEffect(() => {
+    const onVideo = async event => {
+      if (event.source !== window || event.origin !== window.location.origin ||
+          event.data?.source !== 'flow-webapp-bridge-extension' ||
+          event.data?.type !== 'IMPORT_FLOW_VIDEO' || typeof event.data.requestId !== 'string') return;
+      const { requestId, payload } = event.data;
+      const reply = (ok, error = '') => window.postMessage({
+        source: 'webapp-flow-bridge', type: 'IMPORT_RESULT', requestId, ok, error,
+      }, window.location.origin);
+      const latest = currentData.current;
+      const target = latest?.frames?.find(item => item.frameId === payload?.frameId);
+      if (payload?.projectId !== projectId || !target ||
+          payload.inputFingerprint !== target.videoInputFingerprint ||
+          latest.videoPlan.status !== 'confirmed') {
+        reply(false, 'Кадр или версия видеоплана изменились. Обновите страницу и проверьте задание.');
+        return;
+      }
+      if (flowVideoImport.current) { reply(false, 'WebApp уже импортирует видео.'); return; }
+      if (payload.mimeType !== 'video/mp4') { reply(false, 'Flow вернул неподдерживаемый формат видео.'); return; }
+      flowVideoImport.current = true;
+      setFlowBusy(`import:${payload.frameId}`); setError('');
+      try {
+        const filename = `video_${payload.frameId}__${payload.inputFingerprint}.mp4`;
+        const file = videoBase64File(payload.base64, filename);
+        await importFlowVideo(projectId, payload.frameId, file, payload.inputFingerprint);
+        const result = await getVideoPlan(projectId);
+        currentData.current = result;
+        setData(result);
+        setMessage(`Видео кадра ${target.blockNumber}–${target.frameInBlock} получено из Google Flow и импортировано.`);
+        reply(true);
+      } catch (err) {
+        setError(err.message);
+        reply(false, err.message);
+      } finally {
+        flowVideoImport.current = false;
+        setFlowBusy('');
+      }
+    };
+    window.addEventListener('message', onVideo);
+    return () => window.removeEventListener('message', onVideo);
+  }, [projectId]);
   const analysis = data?.videoPlan.analysis;
   const canResumeAnalysis = analysis && data.videoPlan.status !== 'stale' && analysis.completedChunks.length < data.analysisChunks.length;
   const scopeBlocks = analysis?.allowedBlockIds ? [...new Set(data.frames.filter(f =>
@@ -268,6 +408,11 @@ function VideoPlanEditor({ projectId }) {
           <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-3 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p>Видео: {({ pending: 'ожидает', generating: 'создаётся', ready: 'готово', stale: 'устарело', error: 'ошибка' })[frame.video?.status || 'pending']}</p>
+              <button className={button} disabled={busy || Boolean(flowBusy) || unsaved || conflict ||
+                data.videoPlan.status !== 'confirmed' || !frame.hasImage || !frame.videoInputFingerprint ||
+                saved?.promptStatus !== 'ready' || frame.video?.status === 'ready'} onClick={launchFlowVideo}>
+                {flowBusy === `start:${frame.frameId}` ? 'Передаём в Flow…' : 'Создать в Google Flow'}
+              </button>
               <label className={`${secondary} cursor-pointer ${flowBusy ? 'pointer-events-none opacity-40' : ''}`}>
                 {flowBusy === `import:${frame.frameId}` ? 'Импортируем…' : frame.video?.status === 'ready' ? 'Заменить MP4' : 'Импортировать MP4'}
                 <input type="file" accept="video/mp4,.mp4" className="sr-only" disabled={Boolean(flowBusy)}
@@ -302,6 +447,6 @@ function VideoPlanEditor({ projectId }) {
         </section>
       </div>
     </>}
-    <p className="text-xs text-slate-500">Сгенерируйте ролики в Google Flow по скачанному пакету, затем импортируйте MP4 для каждого кадра.</p>
+    <p className="text-xs text-slate-500">Кнопка «Создать в Google Flow» передаёт один кадр без скачивания ZIP; модель и длительность выбираются в Flow. Ручной пакет и импорт MP4 остаются доступны.</p>
   </div>;
 }

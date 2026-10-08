@@ -1,7 +1,7 @@
 const pending = new Map();
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type !== "IMPORT_FLOW_FRAME") return;
+  if (message?.type !== "IMPORT_FLOW_FRAME" && message?.type !== "IMPORT_FLOW_VIDEO") return;
   const requestId = crypto.randomUUID();
   const timeout = setTimeout(() => {
     pending.delete(requestId);
@@ -13,7 +13,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   });
   window.postMessage({
     source: "flow-webapp-bridge-extension",
-    type: "IMPORT_FLOW_FRAME",
+    type: message.type,
     requestId,
     payload: message.payload
   }, location.origin);
@@ -32,14 +32,15 @@ window.addEventListener("message", event => {
 window.addEventListener("message", event => {
   if (event.source !== window || event.origin !== location.origin ||
       event.data?.source !== "webapp-flow-bridge" ||
-      event.data?.type !== "START_FLOW_BATCH" ||
+      !["START_FLOW_BATCH", "START_FLOW_VIDEO"].includes(event.data?.type) ||
       typeof event.data.requestId !== "string" || !event.data.requestId) return;
   const { requestId, payload } = event.data;
-  chrome.runtime.sendMessage({ type: "START_FLOW_BATCH", payload }, response => {
+  const video = event.data.type === "START_FLOW_VIDEO";
+  chrome.runtime.sendMessage({ type: event.data.type, payload }, response => {
     const error = chrome.runtime.lastError;
     window.postMessage({
       source: "flow-webapp-bridge-extension",
-      type: "START_FLOW_BATCH_RESULT",
+      type: video ? "START_FLOW_VIDEO_RESULT" : "START_FLOW_BATCH_RESULT",
       requestId,
       ok: !error && response?.ok === true,
       error: error ? "Расширение не смогло связаться с Google Flow." : response?.error || "",

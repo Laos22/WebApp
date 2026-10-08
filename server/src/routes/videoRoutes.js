@@ -123,6 +123,10 @@ router.get('/:id/video-plan/flow/export', ensureAuthenticated, async (req, res) 
     if (currentPlan.editVersion !== expectedEditVersion) {
       return res.status(409).json({ success: false, code: 'VIDEO_PLAN_CONFLICT', error: 'Видеоплан изменился. Обновите данные.' });
     }
+    if (req.query.frameId !== undefined && typeof req.query.frameId !== 'string') {
+      return res.status(400).json({ success: false, code: 'INVALID_FRAME_ID', error: 'Некорректный идентификатор кадра' });
+    }
+    const frameId = req.query.frameId || '';
 
     const owner = { projectId: project._id, userId: req.user._id };
     const [images, videos] = await Promise.all([
@@ -134,6 +138,7 @@ router.get('/:id/video-plan/flow/export', ensureAuthenticated, async (req, res) 
       project,
       images,
       videos,
+      frameId,
       readImageFile: key => readStoryboardImageFile(key, project.projectPath, req.user._id),
     });
 

@@ -245,8 +245,9 @@ export const videoPlanAction = (projectId, action, body) =>
 export const saveVideoInstructions = (projectId, instructions, expectedEditVersion) =>
   projectRequest(projectId, '/video-plan', 'PATCH', { instructions, expectedEditVersion, frames: [] });
 
-export async function exportFlowVideoPackage(projectId, expectedEditVersion) {
+export async function exportFlowVideoPackage(projectId, expectedEditVersion, frameId = '') {
   const params = new URLSearchParams({ expectedEditVersion: String(expectedEditVersion) });
+  if (frameId) params.set('frameId', frameId);
   const response = await flowFileRequest(
     `${SERVER_URL}/api/projects/${projectId}/video-plan/flow/export?${params}`,
   );

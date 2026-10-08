@@ -121,6 +121,18 @@ test('selectPendingFlowVideoFrames selects only frames needing generation and sk
   assert.equal(result.frames[0].frameId, FIXTURE_FRAME_ID_2);
 });
 
+test('single-frame video export selects the requested frame without requiring other selected images', () => {
+  const project = createFixtureProject();
+  const source = project.storyboard.frames[0];
+  const images = [{ frameId: source.id, status: 'ready', storageKey: 'project/images/frame_1_1.png',
+    sourcePrompt: source.prompt, sourceReferenceIds: [], generatedAt: new Date() }];
+  const result = selectPendingFlowVideoFrames({ project, images, videos: [], frameId: FIXTURE_FRAME_ID_1 });
+  assert.deepEqual(result.frames.map(item => item.frameId), [FIXTURE_FRAME_ID_1]);
+  assert.deepEqual(result.selectedFrameIds, [FIXTURE_FRAME_ID_1, FIXTURE_FRAME_ID_2]);
+  assert.throws(() => selectPendingFlowVideoFrames({ project, images, videos: [], frameId: '../bad' }),
+    { code: 'INVALID_FRAME_ID' });
+});
+
 test('selectPendingFlowVideoFrames throws NO_PENDING_VIDEOS (409) when all videos are ready', () => {
   const project = createFixtureProject();
   const f1 = project.storyboard.frames[0];
