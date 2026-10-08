@@ -38,11 +38,23 @@ function setup() {
 test('production video page accepts a valid frame task', async () => {
   const { api, storage, delivered } = setup();
   const payload = { projectId, frameId, inputFingerprint, imageMimeType: 'image/png',
-    imageBase64: 'aGVsbG8=', prompt: 'Slow camera movement.' };
+    imageBase64: 'aGVsbG8=', prompt: 'Slow camera movement.', modelDisplayName: 'Omni 1.1 Flash',
+    resolution: '360p', durationSeconds: 4, aspectRatio: '16:9' };
   assert.equal(api.videoStartPayloadError(payload), '');
   assert.equal((await api.handleStartVideo(payload, { url: webAppUrl, tab: { id: 7, url: webAppUrl } })).ok, true);
   assert.equal(storage.flowVideoRoute.tabId, 7);
   assert.equal(delivered[0].message.type, 'START_FLOW_VIDEO');
+  assert.deepEqual(delivered[0].message.payload, payload);
+});
+
+test('video settings reject combinations unavailable in Flow', () => {
+  const { api } = setup();
+  const payload = { projectId, frameId, inputFingerprint, imageMimeType: 'image/png',
+    imageBase64: 'aGVsbG8=', prompt: 'Slow camera movement.', modelDisplayName: 'Veo 3.1 - Fast',
+    resolution: '720p', durationSeconds: 8, aspectRatio: '9:16' };
+  assert.equal(api.videoStartPayloadError(payload), '');
+  assert.match(api.videoStartPayloadError({ ...payload, durationSeconds: 10 }), /длительность/i);
+  assert.match(api.videoStartPayloadError({ ...payload, resolution: '360p' }), /качество/i);
 });
 
 test('finished video finds the project page after extension session state is lost', async () => {

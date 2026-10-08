@@ -212,6 +212,15 @@ function videoStartPayloadError(value) {
     return "Исходное изображение отсутствует или превышает лимит передачи.";
   if (typeof value.prompt !== "string" || !value.prompt.trim() || value.prompt.length > 12_000)
     return "Промпт видео пустой или слишком длинный.";
+  const omni = value.modelDisplayName === "Omni 1.1 Flash";
+  if (!omni && !["Veo 3.1 - Lite", "Veo 3.1 - Fast"].includes(value.modelDisplayName))
+    return "Неподдерживаемая модель видео Google Flow.";
+  if (omni ? !["360p", "720p"].includes(value.resolution) : value.resolution !== "720p")
+    return "Выбранное качество недоступно для этой модели.";
+  if (!(omni ? [4, 6, 8, 10] : [4, 6, 8]).includes(value.durationSeconds))
+    return "Выбранная длительность недоступна для этой модели.";
+  if (!["16:9", "9:16"].includes(value.aspectRatio))
+    return "Неподдерживаемое соотношение сторон видео.";
   return "";
 }
 function validVideoResultPayload(value) {

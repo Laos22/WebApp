@@ -10,6 +10,29 @@ const button = 'rounded-xl bg-purple-700 px-4 py-3 text-white disabled:opacity-4
 const secondary = 'rounded-xl border border-slate-600 px-4 py-3 text-slate-200 disabled:opacity-40';
 const VIDEO_BRIDGE_IMAGE_LIMIT = 15 * 1024 * 1024;
 const VIDEO_BRIDGE_MP4_LIMIT = 64 * 1024 * 1024;
+const FLOW_VIDEO_SETTINGS_KEY = 'flow-video-generation-settings-v1';
+const FLOW_VIDEO_MODELS = ['Omni 1.1 Flash', 'Veo 3.1 - Lite', 'Veo 3.1 - Fast'];
+const DEFAULT_FLOW_VIDEO_SETTINGS = { modelDisplayName: 'Omni 1.1 Flash', resolution: '360p', durationSeconds: 4, aspectRatio: '16:9' };
+
+function normalizeFlowVideoSettings(value) {
+  const modelDisplayName = FLOW_VIDEO_MODELS.includes(value?.modelDisplayName)
+    ? value.modelDisplayName : DEFAULT_FLOW_VIDEO_SETTINGS.modelDisplayName;
+  const omni = modelDisplayName === 'Omni 1.1 Flash';
+  return {
+    modelDisplayName,
+    resolution: omni && value?.resolution === '360p' ? '360p' : '720p',
+    durationSeconds: (omni ? [4, 6, 8, 10] : [4, 6, 8]).includes(Number(value?.durationSeconds))
+      ? Number(value.durationSeconds) : 4,
+    aspectRatio: ['16:9', '9:16'].includes(value?.aspectRatio) ? value.aspectRatio : '16:9',
+  };
+}
+
+function readFlowVideoSettings() {
+  try {
+    const saved = localStorage.getItem(FLOW_VIDEO_SETTINGS_KEY);
+    return saved ? normalizeFlowVideoSettings(JSON.parse(saved)) : DEFAULT_FLOW_VIDEO_SETTINGS;
+  } catch { return DEFAULT_FLOW_VIDEO_SETTINGS; }
+}
 
 function requestFlowVideoBridge(type, payload, timeoutMs) {
   return new Promise((resolve, reject) => {
@@ -81,6 +104,10 @@ function VideoPlanEditor({ projectId }) {
   const [reload, setReload] = useState(0);
   const [flowBusy, setFlowBusy] = useState('');
   const [profileId, setProfileId] = useState('');
+  const [flowSettings, setFlowSettings] = useState(readFlowVideoSettings);
+  useEffect(() => {
+    try { localStorage.setItem(FLOW_VIDEO_SETTINGS_KEY, JSON.stringify(flowSettings)); } catch { /* Storage can be disabled. */ }
+  }, [flowSettings]);
   useEffect(() => { currentData.current = data; }, [data]);
   useEffect(() => {
     let active = true;
@@ -261,9 +288,9 @@ function VideoPlanEditor({ projectId }) {
       const imageBase64 = await blobBase64(image);
       await requestFlowVideoBridge('START_FLOW_VIDEO', {
         projectId, frameId: frame.frameId, inputFingerprint: frame.videoInputFingerprint,
-        imageMimeType, imageBase64, prompt,
+        imageMimeType, imageBase64, prompt, ...flowSettings,
       }, 75000);
-      setMessage(`Кадр ${frame.blockNumber}–${frame.frameInBlock} передан в Google Flow. После генерации MP4 появится здесь автоматически.`);
+      setMessage(`Кадр ${frame.blockNumber}–${frame.frameInBlock} передан в Google Flow (${flowSettings.modelDisplayName}, ${flowSettings.resolution}, ${flowSettings.durationSeconds} с, ${flowSettings.aspectRatio}). После генерации MP4 появится здесь автоматически.`);
     } catch (err) { setError(err.message); }
     finally { setFlowBusy(value => value === `start:${frame.frameId}` ? '' : value); }
   }
@@ -406,6 +433,36 @@ function VideoPlanEditor({ projectId }) {
           <p className="whitespace-pre-wrap break-words text-sm">{frame.text}</p>
           <p className="text-sm text-slate-400">Длительность: {frame.targetDurationSec === null ? 'недоступна — проверьте раскадровку и озвучку' : `${frame.targetDurationSec.toFixed(2)} с${frame.durationExact ? '' : ' (оценка)'}`}</p>
           <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-3 space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2" aria-label="Настройки генерации Google Flow">
+              <label className="text-sm text-slate-300">Модель
+                <select className="mt-1 block w-full rounded-lg border border-slate-600 bg-slate-950 p-2 text-white" value={flowSettings.modelDisplayName}
+                  disabled={Boolean(flowBusy)} onChange={event => setFlowSettings(current => normalizeFlowVideoSettings({ ...current, modelDisplayName: event.target.value }))}>
+                  {FLOW_VIDEO_MODELS.map(model => <option key={model} value={model}>{model}</option>)}
+                </select>
+              </label>
+              <label className="text-sm text-slate-300">Качество
+                <select className="mt-1 block w-full rounded-lg border border-slate-600 bg-slate-950 p-2 text-white" value={flowSettings.resolution}
+                  disabled={Boolean(flowBusy) || flowSettings.modelDisplayName !== 'Omni 1.1 Flash'}
+                  onChange={event => setFlowSettings(current => normalizeFlowVideoSettings({ ...current, resolution: event.target.value }))}>
+                  <option value="360p">360p · черновик</option>
+                  <option value="720p">720p · стандарт</option>
+                </select>
+              </label>
+              <label className="text-sm text-slate-300">Длительность
+                <select className="mt-1 block w-full rounded-lg border border-slate-600 bg-slate-950 p-2 text-white" value={flowSettings.durationSeconds}
+                  disabled={Boolean(flowBusy)} onChange={event => setFlowSettings(current => normalizeFlowVideoSettings({ ...current, durationSeconds: event.target.value }))}>
+                  {[4, 6, 8, ...(flowSettings.modelDisplayName === 'Omni 1.1 Flash' ? [10] : [])].map(seconds =>
+                    <option key={seconds} value={seconds}>{seconds} с</option>)}
+                </select>
+              </label>
+              <label className="text-sm text-slate-300">Соотношение сторон
+                <select className="mt-1 block w-full rounded-lg border border-slate-600 bg-slate-950 p-2 text-white" value={flowSettings.aspectRatio}
+                  disabled={Boolean(flowBusy)} onChange={event => setFlowSettings(current => normalizeFlowVideoSettings({ ...current, aspectRatio: event.target.value }))}>
+                  <option value="16:9">16:9 · горизонтально</option>
+                  <option value="9:16">9:16 · вертикально</option>
+                </select>
+              </label>
+            </div>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p>Видео: {({ pending: 'ожидает', generating: 'создаётся', ready: 'готово', stale: 'устарело', error: 'ошибка' })[frame.video?.status || 'pending']}</p>
               <button className={button} disabled={busy || Boolean(flowBusy) || unsaved || conflict ||
@@ -447,6 +504,6 @@ function VideoPlanEditor({ projectId }) {
         </section>
       </div>
     </>}
-    <p className="text-xs text-slate-500">Кнопка «Создать в Google Flow» передаёт один кадр без скачивания ZIP; модель и длительность выбираются в Flow. Ручной пакет и импорт MP4 остаются доступны.</p>
+    <p className="text-xs text-slate-500">Кнопка «Создать в Google Flow» передаёт один кадр с выбранными настройками без скачивания ZIP. Ручной пакет и импорт MP4 остаются доступны.</p>
   </div>;
 }
