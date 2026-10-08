@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Google Flow ↔ WebApp",
+  "version": "0.3.0",
+  "description": "Запускает генерацию Flow из WebApp и возвращает готовые изображения в проект.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://flow.google.com/*",
+    "http://localhost:5173/*",
+    "https://aihub-webapp.onrender.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://flow.google.com/*"],
+      "js": ["flow-content.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "http://localhost:5173/projects/*",
+        "https://aihub-webapp.onrender.com/projects/*"
+      ],
+      "js": ["webapp-content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

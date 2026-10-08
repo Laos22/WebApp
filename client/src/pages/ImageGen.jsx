@@ -20,6 +20,15 @@ const DETAIL_REQUEST_INTERVAL_MS = 4_000;
 const DETAIL_RATE_LIMIT_RETRIES = 4;
 const MAX_FLOW_ENTRIES = 1_000;
 const MAX_FLOW_IMAGE_BYTES = 15 * 1024 * 1024;
+const MAX_FLOW_BRIDGE_PACKAGE_BYTES = 16 * 1024 * 1024;
+const FLOW_TOOL_URL = "https://flow.google.com/project/de86267f-f3e0-4767-b161-3e297c3cbe5a/tool/d4ee684e-ea93-4d1e-bbf3-40cf4b35f0dc";
+const FLOW_MODELS = [
+  { value: "🍌 Nano Banana 2 Lite", label: "Nano Banana 2 Lite" },
+  { value: "🍌 Nano Banana 2.1", label: "Nano Banana 2.1" },
+  { value: "🍌 Nano Banana Pro", label: "Nano Banana Pro" },
+];
+const FLOW_OUTPUT_FORMAT_KEY = "webapp-flow-output-format";
+const FLOW_MODEL_KEY = "webapp-flow-model";
 const FLOW_FRAME_ID_PATTERN = /frame_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i;
 const FLOW_IMAGE_EXTENSION_PATTERN = /\.(png|jpe?g|webp)$/i;
 
@@ -35,6 +44,49 @@ function flowImageMimeType(filename) {
   if (/\.png$/i.test(filename)) return "image/png";
   if (/\.webp$/i.test(filename)) return "image/webp";
   return "image/jpeg";
+}
+
+async function convertFlowImage(image, targetMimeType) {
+  if (image.type === targetMimeType) return image;
+  const bitmap = await createImageBitmap(image);
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Браузер не смог преобразовать изображение.");
+    if (targetMimeType === "image/jpeg") {
+      context.fillStyle = "#fff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    context.drawImage(bitmap, 0, 0);
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, targetMimeType, 0.92));
+    if (!blob || blob.type !== targetMimeType) throw new Error("Не удалось сохранить выбранный формат изображения.");
+    return new File([blob], `${image.name.replace(/\.[^.]+$/, "")}.${targetMimeType === "image/jpeg" ? "jpg" : "png"}`, { type: targetMimeType });
+  } finally {
+    bitmap.close();
+  }
+}
+
+function requestFlowBridge(type, payload, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const requestId = crypto.randomUUID();
+    const timer = setTimeout(() => {
+      window.removeEventListener("message", onMessage);
+      reject(new Error("Нет ответа от расширения Google Flow ↔ WebApp. Установите или обновите расширение Chrome и обновите страницу WebApp."));
+    }, timeoutMs);
+    function onMessage(event) {
+      if (event.source !== window || event.origin !== window.location.origin ||
+          event.data?.source !== "flow-webapp-bridge-extension" ||
+          event.data?.type !== `${type}_RESULT` || event.data?.requestId !== requestId) return;
+      clearTimeout(timer);
+      window.removeEventListener("message", onMessage);
+      if (event.data.ok) resolve(event.data);
+      else reject(new Error(event.data.error || "Google Flow не принял пакет."));
+    }
+    window.addEventListener("message", onMessage);
+    window.postMessage({ source: "webapp-flow-bridge", type, requestId, payload }, window.location.origin);
+  });
 }
 
 function Drawer({ title, onClose, children, wide = false }) {
@@ -112,6 +164,16 @@ export default function ImageGen() {
   const [imageProfileId, setImageProfileId] = useState("");
   const [imageProgress, setImageProgress] = useState(null);
   const [flowImportProgress, setFlowImportProgress] = useState(null);
+  const [flowBatchSize, setFlowBatchSize] = useState(1);
+  const [flowAspectRatio, setFlowAspectRatio] = useState("16:9");
+  const [flowModel, setFlowModel] = useState(() => {
+    const saved = localStorage.getItem(FLOW_MODEL_KEY);
+    return FLOW_MODELS.some(model => model.value === saved) ? saved : FLOW_MODELS[0].value;
+  });
+  const [flowOutputFormat, setFlowOutputFormat] = useState(() => {
+    const saved = localStorage.getItem(FLOW_OUTPUT_FORMAT_KEY);
+    return saved === "image/jpeg" ? saved : "image/png";
+  });
   const [imageMethod, setImageMethod] = useState("api");
   const [currentFrameIndex, setCurrentFrameIndex] = useState(0);
   const [openPanel, setOpenPanel] = useState("");
@@ -131,6 +193,8 @@ export default function ImageGen() {
   const stopDetail = useRef(false);
   const stopImages = useRef(false);
   const stopFlowImport = useRef(false);
+  const flowBridgeImport = useRef(false);
+  const flowBridgeLaunch = useRef(false);
 
   const applyData = (result) => {
     setData(result);
@@ -495,6 +559,36 @@ export default function ImageGen() {
     finally { setPending(""); }
   };
 
+  const launchFlowBatch = async (frameId = "") => {
+    if (pending || flowBridgeLaunch.current || dirty || storyboard.status !== "confirmed") return;
+    flowBridgeLaunch.current = true;
+    setPending("flow-start"); setError(""); setMessage("");
+    try {
+      await requestFlowBridge("FLOW_BRIDGE_PING", {}, 4000);
+      const { blob } = await exportStoryboardFlowPackage(projectId, storyboard.revision, frameId);
+      if (blob.size > MAX_FLOW_BRIDGE_PACKAGE_BYTES) {
+        throw new Error("Пакет слишком большой для передачи через расширение. Скачайте пакет отдельного кадра.");
+      }
+      const zipBase64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error("Не удалось прочитать пакет Google Flow."));
+        reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+        reader.readAsDataURL(blob);
+      });
+      await requestFlowBridge("START_FLOW_BATCH", {
+        projectId, storyboardRevision: storyboard.revision, frameId,
+        batchSize: frameId ? 1 : flowBatchSize, aspectRatio: flowAspectRatio,
+        modelDisplayName: flowModel,
+        filename: `flow-storyboard-r${storyboard.revision}.zip`, zipBase64,
+      }, 75000);
+      localStorage.setItem(FLOW_OUTPUT_FORMAT_KEY, flowOutputFormat);
+      setMessage(frameId
+        ? "Кадр передан в Google Flow. Готовое изображение появится здесь автоматически."
+        : `Google Flow начал пакет из ${flowBatchSize} кадров. Готовые изображения появятся здесь автоматически.`);
+    } catch (err) { setError(readableError(err)); }
+    finally { flowBridgeLaunch.current = false; if (mounted.current) setPending(""); }
+  };
+
   const importFlowArchive = async event => {
     const archive = event.target.files?.[0];
     event.target.value = "";
@@ -585,6 +679,79 @@ export default function ImageGen() {
       () => importStoryboardFlowFrameImage(projectId, frameId, image, storyboard.revision),
       "Изображение Google Flow привязано к кадру.");
   };
+
+  useEffect(() => {
+    const onFlowBridgeImport = async event => {
+      const requestId = event.data?.requestId;
+      const payload = event.data?.payload;
+      const reply = (ok, error = "") => window.postMessage({
+        source: "webapp-flow-bridge", type: "IMPORT_RESULT", requestId, ok, error,
+      }, window.location.origin);
+      if (event.source !== window || event.origin !== window.location.origin ||
+          event.data?.source !== "flow-webapp-bridge-extension" ||
+          event.data?.type !== "IMPORT_FLOW_FRAME" || !requestId) return;
+      if (!storyboard || payload?.projectId !== projectId ||
+          payload?.storyboardRevision !== storyboard.revision) {
+        reply(false, "Проект или версия раскадровки не совпадают. Обновите обе страницы.");
+        return;
+      }
+      if (pending || localDraft.current.dirty || flowBridgeImport.current) {
+        reply(false, "WebApp занят или раскадровка содержит несохранённые изменения.");
+        return;
+      }
+      const frame = storyboard.frames.find(item => item.id === payload.frameId);
+      if (!frame) {
+        reply(false, "Кадр из сообщения не найден в этой раскадровке.");
+        return;
+      }
+      if (frame.image?.hasImage) {
+        reply(false, "В этом кадре уже есть изображение. Автоматическая передача не заменяет его.");
+        return;
+      }
+      if (!/^(image\/png|image\/jpeg|image\/webp)$/.test(payload.mimeType || "") ||
+          typeof payload.base64 !== "string" || payload.base64.length < 1 || payload.base64.length > 21_000_000) {
+        reply(false, "Формат или размер изображения не поддерживается.");
+        return;
+      }
+
+      flowBridgeImport.current = true;
+      setPending(`flow-frame:${frame.id}`);
+      setError("");
+      setMessage(`Получен кадр ${frame.order} из Google Flow…`);
+      try {
+        const binary = atob(payload.base64);
+        const chunks = [];
+        for (let offset = 0; offset < binary.length; offset += 0x8000) {
+          const part = binary.slice(offset, offset + 0x8000);
+          const bytes = new Uint8Array(part.length);
+          for (let index = 0; index < part.length; index += 1) bytes[index] = part.charCodeAt(index);
+          chunks.push(bytes);
+        }
+        const extension = payload.mimeType === "image/jpeg" ? "jpg" : payload.mimeType.slice(6);
+        const image = new File(chunks, `${frame.id}.${extension}`, { type: payload.mimeType });
+        const savedFormat = localStorage.getItem(FLOW_OUTPUT_FORMAT_KEY);
+        const outputFormat = savedFormat === "image/jpeg" ? savedFormat : "image/png";
+        const converted = await convertFlowImage(image, outputFormat);
+        if (converted.size > MAX_FLOW_IMAGE_BYTES) throw new Error("Изображение после преобразования превышает лимит 15 МБ.");
+        await importStoryboardFlowFrameImage(projectId, frame.id, converted, storyboard.revision, true);
+        const refreshed = await getStoryboard(projectId);
+        if (mounted.current) {
+          applyData(refreshed);
+          setMessage(`Кадр ${frame.order} получен из Google Flow и импортирован.`);
+        }
+        reply(true);
+      } catch (importError) {
+        const text = readableError(importError);
+        if (mounted.current) setError(text);
+        reply(false, text);
+      } finally {
+        flowBridgeImport.current = false;
+        if (mounted.current) setPending("");
+      }
+    };
+    window.addEventListener("message", onFlowBridgeImport);
+    return () => window.removeEventListener("message", onFlowBridgeImport);
+  }, [projectId, storyboard, pending]);
 
   const reconcileImages = async () => {
     if (pending || dirty || storyboard?.status !== "confirmed") return;
@@ -739,6 +906,9 @@ export default function ImageGen() {
               <button type="button" title={activeImage.status === "ready" ? "Перегенерировать через Google API" : "Сгенерировать через Google API"} aria-label={activeImage.status === "ready" ? "Перегенерировать через Google API" : "Сгенерировать через Google API"}
                 className="w-11 h-10 rounded-xl bg-cyan-700 hover:bg-cyan-600 disabled:opacity-40 font-bold" disabled={Boolean(pending) || dirty || storyboard.status !== "confirmed" || !imageProfileId || !activeFrame.id}
                 onClick={() => generateFrameImage(activeFrame.id)}>{pending === `image:${activeFrame.id}` ? "…" : "✨G"}</button>
+              <button type="button" title={activeImage.hasImage ? "У кадра уже есть изображение" : "Сгенерировать через Google Flow"} aria-label="Сгенерировать через Google Flow"
+                className="w-11 h-10 rounded-xl bg-blue-700 hover:bg-blue-600 disabled:opacity-40 font-bold" disabled={Boolean(pending) || dirty || storyboard.status !== "confirmed" || !activeFrame.id || activeImage.hasImage}
+                onClick={() => launchFlowBatch(activeFrame.id)}>{pending === "flow-start" ? "…" : "Flow"}</button>
               <button type="button" aria-label="Меню кадра" className="w-11 h-10 rounded-xl bg-purple-700 hover:bg-purple-600 text-xl leading-none" onClick={() => setFrameMenuOpen(true)}>•••</button>
             </div>
           </header>
@@ -845,7 +1015,16 @@ export default function ImageGen() {
         {imageProgress && <p className="text-sm text-cyan-300">Обработано в этом запуске: {imageProgress.done}/{imageProgress.total}</p>}
       </>}
       {imageMethod === "flow" && <div className="space-y-4 border border-blue-800/60 bg-blue-950/20 rounded-xl p-4">
-        <p className="text-sm text-slate-300">Экспорт включает незавершённые кадры. Большие архивы распаковываются в браузере, а изображения загружаются последовательно без общего серверного лимита ZIP.</p>
+        <p className="text-sm text-slate-300">Запустите генерацию прямо отсюда. WebApp передаст кадры в Google Flow через расширение и получит готовые изображения обратно.</p>
+        <div className="grid sm:grid-cols-2 gap-2">
+          <label className="text-sm text-slate-300">Кадров за запуск<input type="number" min="1" max="20" value={flowBatchSize} disabled={Boolean(pending)} onChange={event => setFlowBatchSize(Math.max(1, Math.min(20, Number(event.target.value) || 1)))} className="mt-1 w-full bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
+          <label className="text-sm text-slate-300">Соотношение сторон<select value={flowAspectRatio} disabled={Boolean(pending)} onChange={event => setFlowAspectRatio(event.target.value)} className="mt-1 w-full bg-slate-950 border border-slate-700 rounded-xl p-3"><option value="16:9">16:9 (кино)</option><option value="9:16">9:16 (вертикальный)</option><option value="1:1">1:1 (квадрат)</option></select></label>
+          <label className="text-sm text-slate-300">Модель Flow<select value={flowModel} disabled={Boolean(pending)} onChange={event => { setFlowModel(event.target.value); localStorage.setItem(FLOW_MODEL_KEY, event.target.value); }} className="mt-1 w-full bg-slate-950 border border-slate-700 rounded-xl p-3">{FLOW_MODELS.map(model => <option key={model.value} value={model.value}>{model.label}</option>)}</select></label>
+          <label className="text-sm text-slate-300">Файл изображения<select value={flowOutputFormat} disabled={Boolean(pending)} onChange={event => { setFlowOutputFormat(event.target.value); localStorage.setItem(FLOW_OUTPUT_FORMAT_KEY, event.target.value); }} className="mt-1 w-full bg-slate-950 border border-slate-700 rounded-xl p-3"><option value="image/png">PNG</option><option value="image/jpeg">JPG</option></select></label>
+        </div>
+        <button type="button" className={`${button} w-full bg-blue-700 hover:bg-blue-600`} disabled={Boolean(pending) || dirty || storyboard.status !== "confirmed" || imageStats.pending === 0} onClick={() => launchFlowBatch()}>{pending === "flow-start" ? "Передаём в Google Flow…" : `Запустить в Google Flow (${Math.min(flowBatchSize, imageStats.pending)})`}</button>
+        <p className="text-xs text-slate-400">При первом запуске откроется вкладка Flow. Оставьте её открытой до окончания генерации.</p>
+        <p className="text-sm text-slate-400">Ручной обмен файлами:</p>
         <div className="grid sm:grid-cols-2 gap-2">
           <button type="button" className={`${button} bg-blue-700 hover:bg-blue-600`} disabled={Boolean(pending) || dirty || storyboard.status !== "confirmed" || imageStats.pending === 0} onClick={() => exportFlow()}>{pending === "flow-export" ? "Подготовка ZIP…" : `Экспортировать (${imageStats.pending})`}</button>
           <a href="https://flow.google.com/" target="_blank" rel="noreferrer" className={`${button} bg-slate-700 hover:bg-slate-600 text-center`}>Открыть Google Flow</a>
@@ -886,7 +1065,7 @@ export default function ImageGen() {
         <div className="flex items-center justify-between gap-2"><h3 className="font-semibold">Изображение кадра</h3><span className="text-sm text-slate-300">{imageStatusLabel}</span></div>
         <div className="flex flex-wrap gap-2">
           {imageMethod === "api" && <button type="button" className={`${button} bg-cyan-700 hover:bg-cyan-600`} disabled={Boolean(pending) || !imageProfileId} onClick={() => generateFrameImage(activeFrame.id)}>{pending === `image:${activeFrame.id}` ? "Генерация…" : activeImage.status === "ready" ? "Перегенерировать" : "Сгенерировать"}</button>}
-          {imageMethod === "flow" && <><button type="button" className={`${button} bg-blue-700 hover:bg-blue-600`} disabled={Boolean(pending)} onClick={() => copyFramePrompt({ ...activeFrame, order: currentFrameIndex + 1 })}>Скопировать prompt</button><button type="button" className={`${button} bg-slate-700 hover:bg-slate-600`} disabled={Boolean(pending)} onClick={() => exportFlow(activeFrame.id)}>{pending === `flow-export:${activeFrame.id}` ? "Подготовка…" : "Скачать пакет кадра"}</button><a href="https://flow.google.com/" target="_blank" rel="noreferrer" className={`${button} bg-slate-700 hover:bg-slate-600`}>Открыть Flow</a><label className={`${button} bg-emerald-700 hover:bg-emerald-600 cursor-pointer ${pending ? "opacity-50 pointer-events-none" : ""}`}>{pending === `flow-frame:${activeFrame.id}` ? "Загрузка…" : "Загрузить изображение"}<input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={event => importFlowFrame(activeFrame.id, event)} /></label></>}
+          {imageMethod === "flow" && <><button type="button" className={`${button} bg-slate-700 hover:bg-slate-600`} disabled={Boolean(pending)} onClick={() => copyFramePrompt({ ...activeFrame, order: currentFrameIndex + 1 })}>Скопировать prompt</button><button type="button" className={`${button} bg-slate-700 hover:bg-slate-600`} disabled={Boolean(pending)} onClick={() => exportFlow(activeFrame.id)}>{pending === `flow-export:${activeFrame.id}` ? "Подготовка…" : "Скачать пакет кадра"}</button><a href={FLOW_TOOL_URL} target="_blank" rel="noreferrer" className={`${button} bg-slate-700 hover:bg-slate-600`}>Открыть Flow</a><label className={`${button} bg-emerald-700 hover:bg-emerald-600 cursor-pointer ${pending ? "opacity-50 pointer-events-none" : ""}`}>{pending === `flow-frame:${activeFrame.id}` ? "Загрузка…" : "Загрузить изображение"}<input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={event => importFlowFrame(activeFrame.id, event)} /></label></>}
           {activeImage.hasImage && <a className={`${button} bg-slate-700 hover:bg-slate-600`} href={getStoryboardFrameImageUrl(projectId, activeFrame.id, activeImage.updatedAt, true)}>Скачать</a>}
         </div>
       </section>}
