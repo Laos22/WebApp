@@ -44,11 +44,16 @@ function webAppProject(url, allowedOrigin, page = "image") {
 }
 
 async function handleStartVideo(payload, sender) {
-  const origin = new URL(sender.url || "about:blank").origin;
-  if ((origin !== LOCAL_ORIGIN && origin !== PRODUCTION_ORIGIN) ||
-      webAppProject(sender.url, origin, "video") !== payload?.projectId || !validVideoStartPayload(payload)) {
-    return { ok: false, error: "Некорректное видеозадание или страница проекта WebApp." };
+  const pageUrl = sender.tab?.url || sender.url || "about:blank";
+  const origin = new URL(pageUrl).origin;
+  if (origin !== LOCAL_ORIGIN && origin !== PRODUCTION_ORIGIN) {
+    return { ok: false, error: "Откройте страницу видео проекта в разрешённом WebApp." };
   }
+  if (webAppProject(pageUrl, origin, "video") !== payload?.projectId) {
+    return { ok: false, error: "Страница WebApp и видеозадание относятся к разным проектам." };
+  }
+  const payloadError = videoStartPayloadError(payload);
+  if (payloadError) return { ok: false, error: payloadError };
   if (!Number.isInteger(sender.tab?.id)) return { ok: false, error: "Не удалось определить вкладку WebApp." };
   const { flowVideoRoute: previousRoute } = await chrome.storage.session.get("flowVideoRoute");
   await chrome.storage.session.set({ flowVideoRoute: {
@@ -72,15 +77,24 @@ async function handleStartVideo(payload, sender) {
 async function handleVideoResult(payload) {
   if (!validVideoResultPayload(payload)) return { ok: false, error: "Некорректные данные видео." };
   const { flowVideoRoute } = await chrome.storage.session.get("flowVideoRoute");
-  if (flowVideoRoute?.projectId !== payload.projectId ||
-      flowVideoRoute?.frameId !== payload.frameId ||
-      flowVideoRoute?.inputFingerprint !== payload.inputFingerprint) {
-    return { ok: false, error: "Задание видео не совпадает с последним запуском из WebApp." };
-  }
-  let tab = Number.isInteger(flowVideoRoute.tabId)
+  const routeMatches = flowVideoRoute?.projectId === payload.projectId &&
+    flowVideoRoute?.frameId === payload.frameId &&
+    flowVideoRoute?.inputFingerprint === payload.inputFingerprint;
+  let tab = routeMatches && Number.isInteger(flowVideoRoute.tabId)
     ? await chrome.tabs.get(flowVideoRoute.tabId).catch(() => null) : null;
-  if (webAppProject(tab?.url, flowVideoRoute.origin, "video") !== payload.projectId) tab = null;
-  if (!tab) return { ok: false, error: "Откройте страницу видео этого проекта в WebApp." };
+  if (tab && webAppProject(tab.url, flowVideoRoute.origin, "video") !== payload.projectId) tab = null;
+  if (!tab) {
+    const tabs = await chrome.tabs.query({ url: [
+      `${LOCAL_ORIGIN}/projects/*`, `${PRODUCTION_ORIGIN}/projects/*`,
+    ] });
+    const candidates = tabs.filter(item => [LOCAL_ORIGIN, PRODUCTION_ORIGIN].some(origin =>
+      webAppProject(item.url, origin, "video") === payload.projectId));
+    if (candidates.length > 1) return { ok: false,
+      error: "Открыто несколько страниц видео этого проекта. Закройте лишнюю и повторите передачу.",
+    };
+    tab = candidates[0];
+  }
+  if (!Number.isInteger(tab?.id)) return { ok: false, error: "Откройте страницу видео этого проекта в WebApp." };
   try {
     return await chrome.tabs.sendMessage(tab.id, { type: "IMPORT_FLOW_VIDEO", payload });
   } catch {
@@ -186,13 +200,19 @@ async function startFlowTool(url, path, type, payload) {
 }
 
 const VIDEO_FRAME_ID = /^frame_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-function validVideoStartPayload(value) {
-  return value && typeof value === "object" &&
-    /^[a-f\d]{24}$/i.test(value.projectId || "") && VIDEO_FRAME_ID.test(value.frameId || "") &&
-    /^[a-f\d]{64}$/i.test(value.inputFingerprint || "") &&
-    ["image/png", "image/jpeg", "image/webp"].includes(value.imageMimeType) &&
-    typeof value.imageBase64 === "string" && value.imageBase64.length > 0 && value.imageBase64.length <= 21_000_000 &&
-    typeof value.prompt === "string" && value.prompt.trim().length > 0 && value.prompt.length <= 12_000;
+function videoStartPayloadError(value) {
+  if (!value || typeof value !== "object" || !/^[a-f\d]{24}$/i.test(value.projectId || ""))
+    return "Некорректный ID проекта в видеозадании.";
+  if (!VIDEO_FRAME_ID.test(value.frameId || "")) return "Некорректный ID кадра в видеозадании.";
+  if (!/^[a-f\d]{64}$/i.test(value.inputFingerprint || ""))
+    return "Некорректный отпечаток версии кадра.";
+  if (!["image/png", "image/jpeg", "image/webp"].includes(value.imageMimeType))
+    return "Неподдерживаемый формат исходного изображения.";
+  if (typeof value.imageBase64 !== "string" || !value.imageBase64.length || value.imageBase64.length > 21_000_000)
+    return "Исходное изображение отсутствует или превышает лимит передачи.";
+  if (typeof value.prompt !== "string" || !value.prompt.trim() || value.prompt.length > 12_000)
+    return "Промпт видео пустой или слишком длинный.";
+  return "";
 }
 function validVideoResultPayload(value) {
   return value && typeof value === "object" &&
