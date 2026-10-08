@@ -1293,7 +1293,7 @@ async function storyboardResponse(project, userId) {
   const assets = await VisualReference.find({
     projectId: project._id, userId, referenceId: { $in: selected.map(item => item.id) },
   });
-  const ready = new Set(assets.filter(asset => asset.status === 'ready').map(asset => asset.referenceId));
+  const ready = new Map(assets.filter(asset => asset.status === 'ready').map(asset => [asset.referenceId, asset]));
   const generatedImages = await StoryboardImage.find({
     projectId: project._id, userId, frameId: { $in: stored.frames.map(frame => frame.id) },
   }).select('+storageKey');
@@ -1332,6 +1332,8 @@ async function storyboardResponse(project, userId) {
     })),
     references: selected.map(item => ({
       id: item.id, name: item.name, type: item.type, imageReady: ready.has(item.id),
+      imageId: ready.get(item.id)?._id.toString() || null,
+      imageUpdatedAt: ready.get(item.id)?.updatedAt || null,
     })),
     storyboard: {
       ...stored,

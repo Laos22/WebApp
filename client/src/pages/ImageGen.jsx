@@ -4,6 +4,7 @@ import {
   adoptStoryboardVoiceover, confirmStoryboard, detailStoryboardFramePrompt, generateStoryboard,
   exportStoryboardFlowPackage, generateStoryboardFrameImage, getStoryboard, getStoryboardFrameImageUrl,
   getStoryboardFramePreviewUrl,
+  getVisualReferenceImageUrl,
   importStoryboardFlowFrameImage,
   reconcileStoryboardImages, resetStoryboardImages, resetStoryboardPromptDetails, saveStoryboard,
   saveStoryboardFrame,
@@ -176,6 +177,7 @@ export default function ImageGen() {
   });
   const [imageMethod, setImageMethod] = useState("api");
   const [currentFrameIndex, setCurrentFrameIndex] = useState(0);
+  const [framePickerOpen, setFramePickerOpen] = useState(false);
   const [openPanel, setOpenPanel] = useState("");
   const [frameMenuOpen, setFrameMenuOpen] = useState(false);
   const [requestPending, setPending] = useState("load");
@@ -801,8 +803,9 @@ export default function ImageGen() {
   };
   const goToFrame = index => {
     setFrameMenuOpen(false);
+    setFramePickerOpen(false);
     setCurrentFrameIndex(Math.max(0, Math.min(index, frames.length - 1)));
-    requestAnimationFrame(() => document.getElementById("active-storyboard-frame")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    requestAnimationFrame(() => document.getElementById("image-frame-navigation")?.scrollIntoView({ behavior: "smooth", block: "start" }));
   };
   const addFrame = () => {
     const newIndex = frames.length;
@@ -811,6 +814,7 @@ export default function ImageGen() {
   };
 
   const activeFrame = frames[currentFrameIndex];
+  const activeReferences = activeFrame?.referenceIds.map(id => data.references.find(reference => reference.id === id)).filter(Boolean) || [];
   const activeStoredFrame = activeFrame && storyboard?.frames.find(item => item.id === activeFrame.id);
   const activeFrameDirty = Boolean(activeFrame?.id && activeStoredFrame &&
     JSON.stringify(activeFrame) !== JSON.stringify(editableFrame(activeStoredFrame)));
@@ -859,11 +863,6 @@ export default function ImageGen() {
         </div>
 
         <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 text-xs whitespace-nowrap">
-          {frames.length > 0 && <div className="shrink-0 flex items-center rounded-full bg-purple-950 border border-purple-800/60 overflow-hidden">
-            <button type="button" aria-label="Предыдущий кадр" className="w-7 h-7 hover:bg-purple-800 disabled:opacity-40" disabled={currentFrameIndex === 0} onClick={() => goToFrame(currentFrameIndex - 1)}>‹</button>
-            <button type="button" className="h-7 px-2.5 hover:bg-purple-800 font-semibold" onClick={() => setOpenPanel("frames")}>{frameLabel(activeFrame, frames, data.voiceoverBlocks)}⌄</button>
-            <button type="button" aria-label="Следующий кадр" className="w-7 h-7 hover:bg-purple-800 disabled:opacity-40" disabled={currentFrameIndex >= frames.length - 1} onClick={() => goToFrame(currentFrameIndex + 1)}>›</button>
-          </div>}
           <span className="px-2.5 py-1 rounded-full bg-slate-800">Раскадровка: <b>{statuses[storyboard?.status] || storyboard?.status}</b></span>
           <span className={`px-2.5 py-1 rounded-full ${detailStats.failed ? "bg-red-950 text-red-300" : "bg-fuchsia-950 text-fuchsia-200"}`}>Промты: <b>{detailStats.ready}/{detailStats.total}</b></span>
           <span className={`px-2.5 py-1 rounded-full ${imageStats.failed ? "bg-red-950 text-red-300" : "bg-emerald-950 text-emerald-200"}`}>Изображения: <b>{imageStats.ready}/{imageStats.total}</b></span>
@@ -894,6 +893,26 @@ export default function ImageGen() {
             <button type="button" className={`${button} bg-amber-700 hover:bg-amber-600`} disabled={Boolean(pending)} onClick={adoptVoiceover}>{pending === "adopt-voiceover" ? "Обновляем текст…" : "Принять новую озвучку без пересоздания"}</button>}
         </div>}
 
+        {frames.length > 0 && <div className="mb-4 space-y-3">
+          <nav id="image-frame-navigation" aria-label="Навигация по кадрам" className="grid grid-cols-2 gap-2 sm:flex scroll-mt-40">
+            <button type="button" className="min-h-12 rounded-xl border border-slate-600 px-4 py-3 text-slate-200 hover:bg-slate-800 disabled:opacity-40" disabled={currentFrameIndex === 0} onClick={() => goToFrame(currentFrameIndex - 1)}>← Предыдущий</button>
+            <button type="button" className="col-span-2 row-start-1 min-h-12 min-w-0 rounded-xl border border-purple-700 bg-purple-950/50 px-4 py-3 font-semibold hover:bg-purple-900/60 sm:flex-1" aria-expanded={framePickerOpen} aria-controls="image-frame-picker" onClick={() => setFramePickerOpen(value => !value)}>
+              {frameLabel(activeFrame, frames, data.voiceoverBlocks)} · Список кадров ({frames.length}) {framePickerOpen ? "▴" : "▾"}
+            </button>
+            <button type="button" className="min-h-12 rounded-xl border border-slate-600 px-4 py-3 text-slate-200 hover:bg-slate-800 disabled:opacity-40" disabled={currentFrameIndex >= frames.length - 1} onClick={() => goToFrame(currentFrameIndex + 1)}>Следующий →</button>
+          </nav>
+          {framePickerOpen && <section id="image-frame-picker" aria-label="Список кадров" className="rounded-xl border border-slate-700 bg-slate-900/80 p-3 space-y-3" onKeyDown={event => { if (event.key === "Escape") setFramePickerOpen(false); }}>
+            <p className="text-sm text-slate-400">Зелёный — изображение готово, красный — ошибка, голубой — генерируется.</p>
+            <div className="flex flex-wrap gap-2 max-h-64 overflow-y-auto p-1">
+              {frames.map((frame, index) => {
+                const state = storyboard.frames.find(item => item.id === frame.id)?.image?.status || "pending";
+                const color = state === "ready" ? "border-emerald-500 bg-emerald-950/60 text-emerald-200" : state === "error" ? "border-red-600 bg-red-950/60 text-red-200" : state === "generating" ? "border-cyan-500 bg-cyan-950/60 text-cyan-200" : "border-slate-700 bg-slate-950 text-slate-200";
+                return <button key={frame.id || index} type="button" aria-current={index === currentFrameIndex ? "true" : undefined} className={`rounded-lg border-2 px-3 py-2 font-semibold ${color} ${index === currentFrameIndex ? "ring-2 ring-purple-400 ring-offset-2 ring-offset-slate-950" : ""}`} onClick={() => goToFrame(index)}>{frameLabel(frame, frames, data.voiceoverBlocks)}</button>;
+              })}
+            </div>
+          </section>}
+        </div>}
+
         {activeFrame ? <article id="active-storyboard-frame" className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/85 shadow-2xl scroll-mt-36">
           <header className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-800">
             <div className="min-w-0">
@@ -913,7 +932,7 @@ export default function ImageGen() {
             </div>
           </header>
 
-          <div className="grid lg:grid-cols-[minmax(0,1.65fr)_minmax(280px,.75fr)]">
+          <div className="grid lg:grid-cols-[minmax(0,1.5fr)_minmax(320px,.9fr)]">
             <div className="relative bg-black/40 min-h-52 lg:min-h-[55vh] flex items-center justify-center overflow-hidden">
               {activeImage.hasImage ? <>
                 {imageLoading && <div role="status" className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-slate-950/70 text-slate-300">
@@ -929,15 +948,26 @@ export default function ImageGen() {
               </>
                 : <div className="aspect-video w-full flex flex-col items-center justify-center gap-2 text-slate-500 p-6 text-center"><span className="text-4xl">▧</span><p>Изображение ещё не создано</p></div>}
             </div>
-            <div className="p-4 md:p-5 flex flex-col gap-4">
-              <div className="min-h-0">
-                <p className="text-xs uppercase tracking-wide text-slate-500 mb-2">Текст кадра</p>
-                <p className="text-base md:text-lg leading-relaxed max-h-32 lg:max-h-[32vh] overflow-y-auto pr-1">{activeFrame.scriptText || "Текст кадра не указан"}</p>
-              </div>
-              <div className="mt-auto pt-3 border-t border-slate-800 flex items-center justify-between gap-3 text-xs text-slate-400">
-                <span>Референсов: {activeFrame.referenceIds.length}</span>
-                <button type="button" className="text-purple-300 hover:text-purple-200" onClick={() => setFrameMenuOpen(true)}>Открыть настройки кадра →</button>
-              </div>
+            <div className="p-4 md:p-5 flex flex-col gap-4 lg:max-h-[75vh] lg:overflow-y-auto">
+              <section>
+                <h3 className="text-xs uppercase tracking-wide text-slate-400 mb-2">Текст кадра</h3>
+                <p className="text-base leading-relaxed whitespace-pre-wrap break-words">{activeFrame.scriptText || "Текст кадра не указан"}</p>
+              </section>
+              <section className="pt-3 border-t border-slate-800">
+                <h3 className="text-xs uppercase tracking-wide text-slate-400 mb-2">Что происходит в кадре</h3>
+                <p className="text-sm leading-relaxed whitespace-pre-wrap break-words text-slate-200">{activeFrame.visualDescription || "Описание пока не добавлено"}</p>
+              </section>
+              <section className="pt-3 border-t border-slate-800">
+                <h3 className="text-xs uppercase tracking-wide text-slate-400 mb-3">Референсы ({activeReferences.length})</h3>
+                {activeReferences.length > 0 ? <div className="grid grid-cols-2 gap-2">
+                  {activeReferences.map(reference => <div key={reference.id} className="min-w-0 overflow-hidden rounded-lg border border-slate-700 bg-slate-950/60">
+                    {reference.imageId ? <img src={getVisualReferenceImageUrl(projectId, reference.imageId, reference.imageUpdatedAt)} alt={reference.name} loading="lazy" className="w-full aspect-square object-cover bg-slate-950" />
+                      : <div className="w-full aspect-square flex items-center justify-center p-2 text-center text-xs text-slate-500">Изображение не загружено</div>}
+                    <p className="truncate px-2 py-1.5 text-xs" title={reference.name}>{reference.name}</p>
+                  </div>)}
+                </div> : <p className="text-sm text-slate-500">Референсы не выбраны.</p>}
+              </section>
+              <button type="button" className="self-start text-sm text-purple-300 hover:text-purple-200" onClick={() => setFrameMenuOpen(true)}>Открыть настройки кадра →</button>
             </div>
           </div>
         </article> : <section className={`${panel} text-center py-12`}>
@@ -948,19 +978,6 @@ export default function ImageGen() {
       </main>
     </div>
 
-    {openPanel === "frames" && <Drawer title="Выбор кадра" onClose={() => setOpenPanel("")}>
-      <select value={currentFrameIndex} onChange={event => { goToFrame(Number(event.target.value)); setOpenPanel(""); }} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3">
-        {frames.map((frame, index) => <option key={frame.id || index} value={index}>{frameLabel(frame, frames, data.voiceoverBlocks)} из {frames.length}</option>)}
-      </select>
-      <div className="grid grid-cols-6 sm:grid-cols-10 gap-2 max-h-[55dvh] overflow-y-auto pr-1">
-        {frames.map((frame, index) => {
-          const state = storyboard.frames.find(item => item.id === frame.id)?.image?.status || "pending";
-          const color = state === "ready" ? "bg-emerald-700" : state === "error" ? "bg-red-800" : state === "generating" ? "bg-cyan-700" : "bg-slate-700";
-          return <button key={frame.id || index} type="button" className={`py-2.5 rounded-lg text-sm ${color} ${index === currentFrameIndex ? "ring-2 ring-purple-400" : ""}`} onClick={() => { goToFrame(index); setOpenPanel(""); }}>{frameLabel(frame, frames, data.voiceoverBlocks)}</button>;
-        })}
-      </div>
-      <p className="text-xs text-slate-500">Зелёный — изображение готово, красный — ошибка, голубой — генерируется.</p>
-    </Drawer>}
 
     {openPanel === "storyboard" && <Drawer title="Управление раскадровкой" wide onClose={() => setOpenPanel("")}>
       <GenerationProgress generation={generation} connectionError={generationConnectionError}
