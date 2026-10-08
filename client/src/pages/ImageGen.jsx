@@ -948,7 +948,7 @@ export default function ImageGen() {
               </>
                 : <div className="aspect-video w-full flex flex-col items-center justify-center gap-2 text-slate-500 p-6 text-center"><span className="text-4xl">▧</span><p>Изображение ещё не создано</p></div>}
             </div>
-            <div className="p-4 md:p-5 flex flex-col gap-4 lg:max-h-[75vh] lg:overflow-y-auto">
+            <div className="p-4 md:p-5 flex flex-col gap-4 lg:max-h-[55vh] lg:overflow-y-auto">
               <section>
                 <h3 className="text-xs uppercase tracking-wide text-slate-400 mb-2">Текст кадра</h3>
                 <p className="text-base leading-relaxed whitespace-pre-wrap break-words">{activeFrame.scriptText || "Текст кадра не указан"}</p>
@@ -959,15 +959,12 @@ export default function ImageGen() {
               </section>
               <section className="pt-3 border-t border-slate-800">
                 <h3 className="text-xs uppercase tracking-wide text-slate-400 mb-3">Референсы ({activeReferences.length})</h3>
-                {activeReferences.length > 0 ? <div className="grid grid-cols-2 gap-2">
-                  {activeReferences.map(reference => <div key={reference.id} className="min-w-0 overflow-hidden rounded-lg border border-slate-700 bg-slate-950/60">
-                    {reference.imageId ? <img src={getVisualReferenceImageUrl(projectId, reference.imageId, reference.imageUpdatedAt)} alt={reference.name} loading="lazy" className="w-full aspect-square object-cover bg-slate-950" />
-                      : <div className="w-full aspect-square flex items-center justify-center p-2 text-center text-xs text-slate-500">Изображение не загружено</div>}
-                    <p className="truncate px-2 py-1.5 text-xs" title={reference.name}>{reference.name}</p>
-                  </div>)}
+                {activeReferences.length > 0 ? <div className="flex flex-wrap gap-1.5">
+                  {activeReferences.map(reference => reference.imageId
+                    ? <img key={reference.id} src={getVisualReferenceImageUrl(projectId, reference.imageId, reference.imageUpdatedAt)} alt={reference.name} title={reference.name} loading="lazy" className="w-9 h-9 rounded border border-slate-600 object-cover bg-slate-950" />
+                    : <span key={reference.id} title={`${reference.name} — изображение не загружено`} aria-label={`${reference.name} — изображение не загружено`} className="w-9 h-9 rounded border border-slate-700 bg-slate-950 text-slate-500 text-xs flex items-center justify-center">▧</span>)}
                 </div> : <p className="text-sm text-slate-500">Референсы не выбраны.</p>}
               </section>
-              <button type="button" className="self-start text-sm text-purple-300 hover:text-purple-200" onClick={() => setFrameMenuOpen(true)}>Открыть настройки кадра →</button>
             </div>
           </div>
         </article> : <section className={`${panel} text-center py-12`}>
