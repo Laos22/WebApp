@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Google Flow ↔ WebApp",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Запускает генерацию изображений и видео в Flow из WebApp и возвращает результаты в проект.",
   "permissions": ["storage"],
   "host_permissions": [

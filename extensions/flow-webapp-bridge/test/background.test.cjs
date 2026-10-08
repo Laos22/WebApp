@@ -10,11 +10,14 @@ const projectId = '6ac44efedd5ffe78127f1fb4';
 const frameId = 'frame_928fa187-5305-4da1-b6c3-cca4c191558f';
 const inputFingerprint = 'a'.repeat(64);
 const webAppUrl = `https://aihub-webapp.onrender.com/projects/${projectId}/video`;
+const imageWebAppUrl = `https://aihub-webapp.onrender.com/projects/${projectId}/image`;
 const toolUrl = 'https://flow.google.com/project/de86267f-f3e0-4767-b161-3e297c3cbe5a/tool/705e5ae1-f454-4a7c-a516-bff7b843bcd9';
+const imageToolUrl = 'https://flow.google.com/project/de86267f-f3e0-4767-b161-3e297c3cbe5a/tool/d4ee684e-ea93-4d1e-bbf3-40cf4b35f0dc';
 
 function setup() {
   const tab = { id: 7, url: webAppUrl };
   const flowTab = { id: 8, url: toolUrl };
+  const imageFlowTab = { id: 9, url: imageToolUrl };
   const storage = {};
   const delivered = [];
   const chrome = {
@@ -26,14 +29,36 @@ function setup() {
     } },
     tabs: {
       async get(id) { return id === tab.id ? tab : flowTab; },
-      async query({ url }) { return String(url).includes('flow.google.com') ? [flowTab] : [tab]; },
+      async query({ url }) { return String(url).includes('flow.google.com') ? [flowTab, imageFlowTab] : [tab]; },
       async sendMessage(id, message) { delivered.push({ id, message }); return { ok: true }; },
     },
   };
   const context = { chrome, URL, RegExp, crypto: webcrypto, setTimeout, clearTimeout };
-  vm.runInNewContext(`${script}\nthis.testApi = { handleStartVideo, handleVideoResult, videoStartPayloadError };`, context);
+  vm.runInNewContext(`${script}\nthis.testApi = { handleStart, startPayloadError, handleStartVideo, handleVideoResult, videoStartPayloadError };`, context);
   return { api: context.testApi, storage, delivered };
 }
+
+test('production image page accepts a frame task when Chrome supplies its URL on the tab', async () => {
+  const { api, delivered } = setup();
+  const payload = { projectId, storyboardRevision: 1, frameId, batchSize: 1,
+    aspectRatio: '16:9', modelDisplayName: '🍌 Nano Banana 2.1',
+    filename: 'flow-storyboard-r1.zip', zipBase64: 'UEsDBA==' };
+  assert.equal(api.startPayloadError(payload), '');
+  const result = await api.handleStart(payload, { url: 'about:blank', tab: { id: 7, url: imageWebAppUrl } });
+  assert.equal(result.ok, true);
+  assert.equal(delivered[0].id, 9);
+  assert.deepEqual(delivered[0].message.payload, payload);
+});
+
+test('image bridge identifies invalid batch fields', () => {
+  const { api } = setup();
+  const payload = { projectId, storyboardRevision: 1, frameId, batchSize: 1,
+    aspectRatio: '16:9', modelDisplayName: '🍌 Nano Banana 2.1',
+    filename: 'flow-storyboard-r1.zip', zipBase64: 'UEsDBA==' };
+  assert.match(api.startPayloadError({ ...payload, batchSize: 21 }), /1 до 20/);
+  assert.match(api.startPayloadError({ ...payload, modelDisplayName: 'unknown' }), /модель/i);
+  assert.match(api.startPayloadError({ ...payload, zipBase64: '' }), /пакет/i);
+});
 
 test('production video page accepts a valid frame task', async () => {
   const { api, storage, delivered } = setup();

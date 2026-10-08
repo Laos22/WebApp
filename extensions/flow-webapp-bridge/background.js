@@ -103,11 +103,14 @@ async function handleVideoResult(payload) {
 }
 
 async function handleStart(payload, sender) {
-  const origin = new URL(sender.url || "about:blank").origin;
-  if ((origin !== LOCAL_ORIGIN && origin !== PRODUCTION_ORIGIN) ||
-      webAppProject(sender.url, origin) !== payload?.projectId || !validStartPayload(payload)) {
-    return { ok: false, error: "Некорректное задание или страница проекта WebApp." };
-  }
+  const pageUrl = sender.tab?.url || sender.url || "about:blank";
+  const origin = new URL(pageUrl).origin;
+  if (origin !== LOCAL_ORIGIN && origin !== PRODUCTION_ORIGIN)
+    return { ok: false, error: "Откройте страницу изображений проекта в разрешённом WebApp." };
+  if (webAppProject(pageUrl, origin) !== payload?.projectId)
+    return { ok: false, error: "Страница WebApp и пакет изображений относятся к разным проектам." };
+  const payloadError = startPayloadError(payload);
+  if (payloadError) return { ok: false, error: payloadError };
   const result = await startFlowBatch(payload);
   if (result?.ok === true && Number.isInteger(sender.tab?.id)) {
     await chrome.storage.session.set({ flowRoute: {
@@ -239,15 +242,22 @@ function validPayload(value) {
     typeof value.base64 === "string" && value.base64.length > 0 && value.base64.length <= 21_000_000;
 }
 
-function validStartPayload(value) {
-  return value && typeof value === "object" &&
-    /^[a-f\d]{24}$/i.test(value.projectId || "") &&
-    Number.isSafeInteger(value.storyboardRevision) && value.storyboardRevision > 0 &&
-    Number.isSafeInteger(value.batchSize) && value.batchSize >= 1 && value.batchSize <= 20 &&
-    ["16:9", "9:16", "1:1"].includes(value.aspectRatio) &&
-    ["🍌 Nano Banana 2 Lite", "🍌 Nano Banana 2.1", "🍌 Nano Banana Pro"].includes(value.modelDisplayName) &&
-    (!value.frameId || /^frame_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.frameId)) &&
-    /^flow-storyboard-r\d+\.zip$/.test(value.filename || "") &&
-    typeof value.zipBase64 === "string" && value.zipBase64.length > 0 &&
-    value.zipBase64.length <= 24_000_000;
+function startPayloadError(value) {
+  if (!value || typeof value !== "object" || !/^[a-f\d]{24}$/i.test(value.projectId || ""))
+    return "Некорректный идентификатор проекта в пакете изображений.";
+  if (!Number.isSafeInteger(value.storyboardRevision) || value.storyboardRevision < 1)
+    return "Некорректная версия раскадровки. Обновите страницу WebApp.";
+  if (!Number.isSafeInteger(value.batchSize) || value.batchSize < 1 || value.batchSize > 20)
+    return "Число кадров за запуск должно быть от 1 до 20.";
+  if (!["16:9", "9:16", "1:1"].includes(value.aspectRatio))
+    return "Некорректное соотношение сторон изображения.";
+  if (!["🍌 Nano Banana 2 Lite", "🍌 Nano Banana 2.1", "🍌 Nano Banana Pro"].includes(value.modelDisplayName))
+    return "Выбранная модель изображений не поддерживается установленным расширением. Обновите его.";
+  if (value.frameId && !/^frame_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.frameId))
+    return "Некорректный идентификатор кадра в пакете.";
+  if (!/^flow-storyboard-r\d+\.zip$/.test(value.filename || ""))
+    return "Некорректное имя пакета Google Flow.";
+  if (typeof value.zipBase64 !== "string" || !value.zipBase64.length || value.zipBase64.length > 24_000_000)
+    return "Пакет Google Flow пустой или превышает лимит передачи через расширение.";
+  return "";
 }
