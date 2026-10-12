@@ -11,7 +11,7 @@ function modelText(response) {
   return text.trim();
 }
 
-async function generateOpenRouterText(prompt, profile, json = false, timeoutMs) {
+async function generateOpenRouterText(prompt, profile, json = false, timeoutMs = 120_000, config = {}) {
   const apiKey = getDecryptedApiKey(profile);
   if (!apiKey) throw new Error('API-ключ OpenRouter не найден');
   const model = profile?.textSettings?.primaryModel?.trim() || 'openrouter/free';
@@ -26,21 +26,39 @@ async function generateOpenRouterText(prompt, profile, json = false, timeoutMs) 
     },
     body: JSON.stringify({
       model,
-      messages: [{ role: 'user', content: String(prompt) }],
+      messages: [
+        ...(config.systemInstruction ? [{ role: 'system', content: config.systemInstruction }] : []),
+        { role: 'user', content: String(prompt) },
+      ],
+      ...(config.maxOutputTokens ? { max_tokens: config.maxOutputTokens } : {}),
       ...(json ? { response_format: { type: 'json_object' } } : {}),
       temperature: profile?.textSettings?.temperature ?? 0.7,
     }),
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(payload?.error?.message || 'OpenRouter request failed');
-    error.status = response.status;
+  if (!response.ok || payload?.error) {
+    const error = new Error(payload?.error?.message || `OpenRouter: HTTP ${response.status} (${response.statusText || 'ошибка запроса'}), модель ${model}`);
+    error.status = response.ok ? 502 : response.status;
+    error.response = { headers: response.headers };
     error.code = payload?.error?.code;
     throw error;
   }
   const text = payload?.choices?.[0]?.message?.content;
   if (typeof text !== 'string' || !text.trim()) throw new Error('OpenRouter returned empty text');
   return text.trim();
+}
+
+// Keep provider selection in one place so OpenRouter credentials never reach Google.
+async function generateTextResponse(profile, operation, { contents, config = {} }) {
+  if (profile?.provider === 'openrouter') {
+    const prompt = typeof contents === 'string' ? contents
+      : contents.flatMap(content => content.parts.map(part => part.text)).join('\n\n');
+    return { text: await generateOpenRouterText(prompt, profile,
+      config.responseMimeType === 'application/json', config.httpOptions?.timeout, config) };
+  }
+  const { apiKey, model } = resolveTextConfig(profile, operation);
+  const ai = new GoogleGenAI({ apiKey });
+  return ai.models.generateContent({ model, contents, config });
 }
 
 function providerStatus(error) {
@@ -81,10 +99,7 @@ export function buildVoiceoverAdaptationPrompt(project, sourceBlocks, instructio
 
 export async function generateVoiceoverAdaptation(project, sourceBlocks, instructions, template, profile) {
   try {
-    const { apiKey, model } = resolveTextConfig(profile, 'adapt-voiceover');
-    const ai = new GoogleGenAI({ apiKey });
-    const response = await ai.models.generateContent({
-      model,
+    const response = await generateTextResponse(profile, "adapt-voiceover", {
       contents: [{ role: 'user', parts: [{
         text: buildVoiceoverAdaptationPrompt(project, sourceBlocks, instructions, template),
       }] }],
@@ -114,10 +129,7 @@ export function buildReferenceAnalysisPrompt(project, currentReferences, instruc
 
 export async function analyzeScriptReferences(project, currentReferences, instructions, template, profile) {
   try {
-    const { apiKey, model } = resolveTextConfig(profile, 'analyze-script-references');
-    const ai = new GoogleGenAI({ apiKey });
-    const response = await ai.models.generateContent({
-      model,
+    const response = await generateTextResponse(profile, "analyze-script-references", {
       contents: [{ role: 'user', parts: [{ text: buildReferenceAnalysisPrompt(project, currentReferences, instructions, template) }] }],
       config: { responseMimeType: 'application/json' },
     });
@@ -143,10 +155,7 @@ export function buildReferenceDetailPrompt(project, reference, instruction, temp
 
 export async function detailReferencePrompt(project, reference, instruction, template, profile) {
   try {
-    const { apiKey, model } = resolveTextConfig(profile, 'detail-reference-prompt');
-    const ai = new GoogleGenAI({ apiKey });
-    const response = await ai.models.generateContent({
-      model,
+    const response = await generateTextResponse(profile, "detail-reference-prompt", {
       contents: [{ role: 'user', parts: [{ text: buildReferenceDetailPrompt(project, reference, instruction, template) }] }],
     });
     const text = modelText(response);
@@ -250,10 +259,7 @@ export function buildStoryboardDetailPrompt(project, frame, references, instruct
 
 export async function detailStoryboardFramePrompt(project, frame, references, instruction, template, profile) {
   try {
-    const { apiKey, model } = resolveTextConfig(profile, 'detail-storyboard-frame-prompt');
-    const ai = new GoogleGenAI({ apiKey });
-    const response = await ai.models.generateContent({
-      model,
+    const response = await generateTextResponse(profile, "detail-storyboard-frame-prompt", {
       contents: [{ role: 'user', parts: [{
         text: buildStoryboardDetailPrompt(project, frame, references, instruction, template),
       }] }],
@@ -283,10 +289,7 @@ export function buildVisualBiblePrompt(projectTitle, confirmedScript, visualBibl
 export async function generateVisualBibleDraft(projectTitle, confirmedScript, visualBiblePrompt, profile) {
   try {
     if (!profile || !profile.textSettings?.primaryModel) throw new Error("Missing text profile");
-    const { apiKey, model } = resolveTextConfig(profile, "generate-visual-bible");
-    const ai = new GoogleGenAI({ apiKey });
-    const response = await ai.models.generateContent({
-      model,
+    const response = await generateTextResponse(profile, "generate-visual-bible", {
       contents: [{ role: "user", parts: [{
         text: buildVisualBiblePrompt(projectTitle, confirmedScript, visualBiblePrompt),
       }] }],
@@ -316,10 +319,7 @@ export function buildVisualBibleEditPrompt(projectTitle, confirmedScript, curren
 export async function editVisualBible(projectTitle, confirmedScript, currentVisualBible, instruction, visualBibleEditPrompt, profile) {
   try {
     if (!profile || !profile.textSettings?.primaryModel) throw new Error("Missing text profile");
-    const { apiKey, model } = resolveTextConfig(profile, "edit-visual-bible");
-    const ai = new GoogleGenAI({ apiKey });
-    const response = await ai.models.generateContent({
-      model,
+    const response = await generateTextResponse(profile, "edit-visual-bible", {
       contents: [{ role: "user", parts: [{
         text: buildVisualBibleEditPrompt(projectTitle, confirmedScript, currentVisualBible, instruction, visualBibleEditPrompt),
       }] }],
@@ -377,10 +377,6 @@ export async function generateVideoTopic(
   profile = null,
 ) {
   try {
-    const { apiKey, model } = resolveTextConfig(profile, "generate-topic");
-
-    const ai = new GoogleGenAI({ apiKey });
-
     // Формируем детальный промпт с учетом ключевых слов, если они есть
     let userPrompt = `${systemPrompt}\n\n`;
     if (keywords.trim()) {
@@ -412,8 +408,7 @@ export async function generateVideoTopic(
 
 Никакого лишнего текста, только JSON массив.`;
 
-    const response = await ai.models.generateContent({
-      model,
+    const response = await generateTextResponse(profile, "generate-topic", {
       contents: [
         {
           role: "user",
@@ -465,24 +460,19 @@ export async function generateVideoTopic(
 
     return parsed;
   } catch (error) {
-    console.error("❌ Ошибка Gemini API:", error);
+    console.error("❌ Ошибка AI API:", error);
     throw error;
   }
 }
 
 export async function generateScript(systemPrompt, projectDescription, profile) {
   try {
-    const { apiKey, model } = resolveTextConfig(profile, "generate-script");
-
-    const ai = new GoogleGenAI({ apiKey });
-
     const userPrompt = `${systemPrompt}\n\n
 Описание проекта: "${projectDescription}"
 
 Никакого лишнего текста.`;
     // console.log("🚀 Отправка запроса на генерацию сценария с промптом:", userPrompt);
-    const response = await ai.models.generateContent({
-      model,
+    const response = await generateTextResponse(profile, "generate-script", {
       contents: [
         {
           role: "user",
@@ -528,17 +518,14 @@ export async function generateScript(systemPrompt, projectDescription, profile) 
 
     return parsed;
   } catch (error) {
-    console.error("❌ Ошибка Gemini API при генерации сценария:", error);
+    console.error("❌ Ошибка AI API при генерации сценария:", error);
     throw error;
   }
 }
 
 
 export async function editScript(currentScript, instruction, profile) {
-  const { apiKey, model } = resolveTextConfig(profile, "edit-script");
-  const ai = new GoogleGenAI({ apiKey });
-  const response = await ai.models.generateContent({
-    model,
+  const response = await generateTextResponse(profile, "edit-script", {
     contents: [{ role: "user", parts: [{ text: JSON.stringify({ currentScript, instruction }) }] }],
     config: {
       systemInstruction: "Отредактируй сценарий согласно инструкции пользователя. Верни полный обновлённый сценарий, а не список изменений. Сохрани язык исходного сценария. Не добавляй Markdown-обёртки, пояснения и комментарии о редактировании.",
@@ -554,12 +541,7 @@ export async function editScript(currentScript, instruction, profile) {
 
 // Single bounded request; the client owns pacing and resumable orchestration.
 export async function generateVideoPlanText(prompt, profile, json = false) {
-  if (profile?.provider === 'openrouter') {
-    return generateOpenRouterText(prompt, profile, json);
-  }
-  const { apiKey, model } = resolveTextConfig(profile, 'video-plan');
-  const ai = new GoogleGenAI({ apiKey });
-  const result = await ai.models.generateContent({ model, contents: prompt,
+  const result = await generateTextResponse(profile, "video-plan", { contents: prompt,
     config: { ...(json ? { responseMimeType: 'application/json' } : {}),
       httpOptions: { timeout: 90000 }, maxOutputTokens: 12000 } });
   return modelText(result);
