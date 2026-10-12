@@ -216,11 +216,12 @@ export default function References() {
               <button type="button" className={button} disabled={busy || dirty || !item.prompt.trim()} onClick={() => images.generate(persisted)}>{image ? 'Создать заново · Google Studio' : 'Сгенерировать изображение · Google Studio'}</button>
               <p className="text-sm text-slate-400">Используется профиль Google Studio, выбранный над карточками.</p>
               <p className="font-semibold">Google Flow / загрузка своего изображения</p>
+              <button type="button" className={`${button} bg-blue-700 hover:bg-blue-600`} disabled={busy || dirty || !item.prompt.trim() || (Boolean(image) && !images.replace)} onClick={() => images.launchFlow(persisted)}>{image ? "Пересоздать в Google Flow" : "Сгенерировать в Google Flow"}</button>
               <div className="flex flex-wrap gap-3">
                 <button type="button" className={button} disabled={!item.prompt} onClick={async () => { try { await navigator.clipboard.writeText(item.prompt); setMessage("Prompt скопирован."); } catch { setError("Не удалось скопировать prompt."); } }}>Скопировать prompt</button>
                 <button type="button" className={`${button} bg-slate-700 hover:bg-slate-600`} onClick={() => window.open("https://flow.google.com/", "_blank", "noopener,noreferrer")}>Открыть Google Flow</button>
               </div>
-              <ol className="list-decimal pl-5 text-sm text-slate-400 space-y-1"><li>Скопируйте prompt.</li><li>Создайте и скачайте изображение в Flow.</li><li>Загрузите лучший вариант сюда.</li></ol>
+              <p className="text-sm text-slate-400">Для замены готового изображения включите переключатель над карточками. Ручная загрузка тоже доступна.</p>
               <input type="file" accept="image/png,image/jpeg,image/webp" onChange={event => setFiles(current => ({ ...current, [item.id]: event.target.files?.[0] || null }))} />
               <button type="button" className={button} disabled={dirty || !files[item.id] || !item.prompt || Boolean(working)} onClick={() => upload(persisted)}>{working === "upload" ? "Загрузка…" : image ? "Заменить изображение" : "Загрузить изображение"}</button>
             </div>}

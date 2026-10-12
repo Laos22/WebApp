@@ -131,8 +131,11 @@ export const generateReferenceImage = (projectId, item, profileId) =>
   projectRequest(projectId, `/reference-plan/images/${encodeURIComponent(item.id)}/generate`, 'POST', {
     sourceReferenceVersion: item.version, prompt: item.prompt, profileId: profileId || undefined,
   });
-export async function exportReferenceFlowPackage(projectId, all = false) {
-  const response = await flowFileRequest(`${SERVER_URL}/api/projects/${projectId}/reference-plan/flow/export?all=${all ? '1' : '0'}`);
+export async function exportReferenceFlowPackage(projectId, all = false, options = {}) {
+  const query = new URLSearchParams({ all: all ? '1' : '0' });
+  if (options.bridge) query.set('bridge', '1');
+  if (options.referenceId) query.set('referenceId', options.referenceId);
+  const response = await flowFileRequest(`${SERVER_URL}/api/projects/${projectId}/reference-plan/flow/export?${query}`);
   return response.blob();
 }
 export async function importReferenceFlowImage(projectId, item, file) {

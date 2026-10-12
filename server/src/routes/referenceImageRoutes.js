@@ -11,6 +11,7 @@ import { normalizeReferencePlan } from '../services/referencePlanService.js';
 import { MAX_VISUAL_REFERENCE_BYTES } from '../services/visualReferenceStorage.js';
 import { referenceFingerprint, requireReferenceItem, saveReferenceImage, referenceImageError } from '../services/referenceImageService.js';
 import { referenceFlowBase } from '../../../shared/referenceFlow.js';
+import { buildFlowManifest, flowFrameBaseName, flowPromptsText } from '../services/flowPackageService.js';
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_VISUAL_REFERENCE_BYTES, files: 1, fields: 1, parts: 2 } }).single('image');
@@ -51,9 +52,11 @@ router.get('/:id/reference-plan/flow/export', ensureAuthenticated, ownedProject,
     const plan = normalizeReferencePlan(project);
     if (plan.status !== 'confirmed' || project.script?.status !== 'confirmed' || plan.sourceScriptRevision !== project.script?.revision) throw referenceImageError(409, 'Сохраните и утвердите актуальный набор референсов.');
     const assets = await VisualReference.find({ projectId: project._id, userId: req.user._id });
-    const selected = plan.items.filter(item => item.selected);
+    const requestedReferenceId = typeof req.query.referenceId === 'string' ? req.query.referenceId : '';
+    const selected = plan.items.filter(item => item.selected && (!requestedReferenceId || item.id === requestedReferenceId));
+    if (requestedReferenceId && !selected.length) throw referenceImageError(404, 'Референс не найден или не выбран.');
     if (selected.some(item => !item.prompt?.trim())) throw referenceImageError(400, 'Сначала подготовьте промпты для всех выбранных референсов.');
-    const items = selected.filter(item => req.query.all === '1' || !assets.some(asset => asset.referenceId === item.id && asset.status === 'ready' && asset.sourceReferenceVersion === item.version && asset.prompt === item.prompt));
+    const items = selected.filter(item => requestedReferenceId || req.query.all === '1' || !assets.some(asset => asset.referenceId === item.id && asset.status === 'ready' && asset.sourceReferenceVersion === item.version && asset.prompt === item.prompt));
     if (!items.length) throw referenceImageError(400, 'Все выбранные референсы уже имеют изображения. Включите замену готовых.');
     if (items.length > 100) throw referenceImageError(400, 'В одном пакете допускается до 100 референсов.');
     const zip = new JSZip();
@@ -63,7 +66,24 @@ router.get('/:id/reference-plan/flow/export', ensureAuthenticated, ownedProject,
       zip.file(`prompts/${base}.txt`, item.prompt);
       return { referenceId: item.id, name: item.name, type: item.type, sourceReferenceVersion: item.version, inputFingerprint, prompt: item.prompt, outputFile: `${base}.png` };
     });
-    zip.file('manifest.json', JSON.stringify({ schemaVersion: 1, kind: 'reference-images', projectId: String(project._id), references }, null, 2));
+    if (req.query.bridge === '1') {
+      // The Flow image tool accepts storyboard-shaped jobs. Translate reference IDs
+      // to frame IDs here; the browser bridge maps each result back to its reference.
+      const frames = references.map((reference, index) => ({
+        id: reference.referenceId.replace(/^ref_/, 'frame_'),
+        order: index + 1, scriptText: '', prompt: reference.prompt,
+        referenceIds: [], fileBaseName: `frame_${index + 1}_1`,
+      }));
+      const manifest = buildFlowManifest({ project, storyboard: { revision: plan.revision }, frames, references: [] });
+      manifest.referenceJobs = references.map((reference, index) => ({
+        frameId: frames[index].id, referenceId: reference.referenceId, inputFingerprint: reference.inputFingerprint,
+      }));
+      zip.file('manifest.json', JSON.stringify(manifest, null, 2));
+      zip.file('prompts.txt', flowPromptsText(frames));
+      frames.forEach(frame => zip.file(`prompts/${flowFrameBaseName(frame)}.txt`, frame.prompt));
+    } else {
+      zip.file('manifest.json', JSON.stringify({ schemaVersion: 1, kind: 'reference-images', projectId: String(project._id), references }, null, 2));
+    }
     zip.file('prompts.txt', references.map(item => `${item.name}\nФайл результата: ${item.outputFile}\n${item.prompt}`).join('\n\n---\n\n'));
     zip.file('README.txt', 'Пакет референсов Google Flow\n\n1. Откройте Flow и создайте изображения по prompts.txt или отдельным файлам prompts/.\n2. Назовите каждый результат точно как outputFile в manifest.json (допустимы расширения PNG, JPG, JPEG, WebP). Не меняйте идентификатор и отпечаток в имени.\n3. Соберите результаты в ZIP и нажмите «Импортировать ZIP» на странице референсов. Допускается частичный архив.\n4. Изображения распределяются по карточкам автоматически; старые версии промптов не принимаются.\n\nЭто пакет для ручной работы в Flow, он не запускает генерацию автоматически. Максимум 15 МиБ на изображение.');
     const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
@@ -71,7 +91,7 @@ router.get('/:id/reference-plan/flow/export', ensureAuthenticated, ownedProject,
     if (!current) throw referenceImageError(404, 'Проект не найден');
     for (const item of references) requireReferenceItem(current, item.referenceId, null, null, item.inputFingerprint);
     res.set('Content-Type', 'application/zip');
-    res.set('Content-Disposition', 'attachment; filename="flow-references.zip"');
+    res.set('Content-Disposition', `attachment; filename="${req.query.bridge === '1' ? `flow-storyboard-r${plan.revision}.zip` : 'flow-references.zip'}"`);
     res.send(buffer);
   } catch (error) { fail(res, error); }
 });

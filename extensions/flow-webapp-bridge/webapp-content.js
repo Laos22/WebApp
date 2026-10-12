@@ -1,7 +1,7 @@
 const pending = new Map();
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type !== "IMPORT_FLOW_FRAME" && message?.type !== "IMPORT_FLOW_VIDEO") return;
+  if (message?.type !== "IMPORT_FLOW_FRAME" && message?.type !== "IMPORT_FLOW_REFERENCE" && message?.type !== "IMPORT_FLOW_VIDEO") return;
   const requestId = crypto.randomUUID();
   const timeout = setTimeout(() => {
     pending.delete(requestId);

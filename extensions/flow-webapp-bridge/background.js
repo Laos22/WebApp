@@ -107,7 +107,7 @@ async function handleStart(payload, sender) {
   const origin = new URL(pageUrl).origin;
   if (origin !== LOCAL_ORIGIN && origin !== PRODUCTION_ORIGIN)
     return { ok: false, error: "Откройте страницу изображений проекта в разрешённом WebApp." };
-  if (webAppProject(pageUrl, origin) !== payload?.projectId)
+  if (webAppProject(pageUrl, origin, payload?.referenceJobs ? "references" : "image") !== payload?.projectId)
     return { ok: false, error: "Страница WebApp и пакет изображений относятся к разным проектам." };
   const payloadError = startPayloadError(payload);
   if (payloadError) return { ok: false, error: payloadError };
@@ -115,37 +115,47 @@ async function handleStart(payload, sender) {
   if (result?.ok === true && Number.isInteger(sender.tab?.id)) {
     await chrome.storage.session.set({ flowRoute: {
       tabId: sender.tab.id, origin, projectId: payload.projectId,
-      storyboardRevision: payload.storyboardRevision,
+      storyboardRevision: payload.storyboardRevision, referenceJobs: payload.referenceJobs || null,
     } });
   }
   return result;
 }
 
 async function handleFrameResult(payload) {
-  if (!validPayload(payload)) return { ok: false, error: "Некорректные данные кадра." };
+  if (!validPayload(payload)) return { ok: false, error: "Некорректные данные изображения." };
   const { flowRoute } = await chrome.storage.session.get("flowRoute");
+  const referenceJob = flowRoute?.referenceJobs?.find(job => job.frameId === payload.frameId);
+  const referenceMode = Boolean(flowRoute?.referenceJobs);
+  if (referenceMode && !referenceJob) return { ok: false, error: "Референс не найден в запущенном пакете." };
   let tab = null;
   if (flowRoute?.projectId === payload.projectId &&
       flowRoute?.storyboardRevision === payload.storyboardRevision &&
       Number.isInteger(flowRoute.tabId)) {
     tab = await chrome.tabs.get(flowRoute.tabId).catch(() => null);
-    if (webAppProject(tab?.url, flowRoute.origin) !== payload.projectId) tab = null;
+    if (webAppProject(tab?.url, flowRoute.origin, referenceMode ? "references" : "image") !== payload.projectId) tab = null;
   }
   if (!tab) {
     const patterns = [`${LOCAL_ORIGIN}/projects/*`, `${PRODUCTION_ORIGIN}/projects/*`];
     const tabs = await chrome.tabs.query({ url: patterns });
     const candidates = tabs.filter(item => [LOCAL_ORIGIN, PRODUCTION_ORIGIN].some(origin =>
-      origin && webAppProject(item.url, origin) === payload.projectId));
+      origin && webAppProject(item.url, origin, referenceMode ? "references" : "image") === payload.projectId));
     if (candidates.length > 1) return {
       ok: false, error: "Открыто несколько вкладок этого проекта. Закройте лишнюю и повторите передачу.",
     };
     tab = candidates[0];
   }
   if (!Number.isInteger(tab?.id)) return {
-    ok: false, error: "Откройте страницу изображений этого проекта в WebApp.",
+    ok: false, error: referenceMode ? "Откройте страницу референсов этого проекта в WebApp." : "Откройте страницу изображений этого проекта в WebApp.",
   };
   try {
-    return await chrome.tabs.sendMessage(tab.id, { type: "IMPORT_FLOW_FRAME", payload });
+    const result = referenceMode ? {
+      projectId: payload.projectId, referencePlanRevision: payload.storyboardRevision,
+      referenceId: referenceJob.referenceId, inputFingerprint: referenceJob.inputFingerprint,
+      mimeType: payload.mimeType, base64: payload.base64,
+    } : payload;
+    return await chrome.tabs.sendMessage(tab.id, {
+      type: referenceMode ? "IMPORT_FLOW_REFERENCE" : "IMPORT_FLOW_FRAME", payload: result,
+    });
   } catch {
     return { ok: false, error: "Не удалось связаться с WebApp. Обновите вкладку и повторите отправку." };
   }
@@ -246,13 +256,18 @@ function startPayloadError(value) {
   if (!value || typeof value !== "object" || !/^[a-f\d]{24}$/i.test(value.projectId || ""))
     return "Некорректный идентификатор проекта в пакете изображений.";
   if (!Number.isSafeInteger(value.storyboardRevision) || value.storyboardRevision < 1)
-    return "Некорректная версия раскадровки. Обновите страницу WebApp.";
+    return "Некорректная версия пакета изображений. Обновите страницу WebApp.";
   if (!Number.isSafeInteger(value.batchSize) || value.batchSize < 1 || value.batchSize > 20)
     return "Число кадров за запуск должно быть от 1 до 20.";
   if (!["16:9", "9:16", "1:1"].includes(value.aspectRatio))
     return "Некорректное соотношение сторон изображения.";
   if (!["🍌 Nano Banana 2 Lite", "🍌 Nano Banana 2.1", "🍌 Nano Banana Pro"].includes(value.modelDisplayName))
     return "Выбранная модель изображений не поддерживается установленным расширением. Обновите его.";
+  if (value.referenceJobs && (!Array.isArray(value.referenceJobs) || !value.referenceJobs.length || value.referenceJobs.length > 100 ||
+      value.referenceJobs.some(job => !/^frame_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(job.frameId || '') ||
+        !/^ref_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(job.referenceId || '') ||
+        job.frameId.slice(6) !== job.referenceId.slice(4) || !/^[a-f0-9]{64}$/.test(job.inputFingerprint || ''))))
+    return "Некорректное соответствие референсов в пакете Flow.";
   if (value.frameId && !/^frame_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.frameId))
     return "Некорректный идентификатор кадра в пакете.";
   if (!/^flow-storyboard-r\d+\.zip$/.test(value.filename || ""))

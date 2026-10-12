@@ -14,8 +14,8 @@ const imageWebAppUrl = `https://aihub-webapp.onrender.com/projects/${projectId}/
 const toolUrl = 'https://flow.google.com/project/de86267f-f3e0-4767-b161-3e297c3cbe5a/tool/705e5ae1-f454-4a7c-a516-bff7b843bcd9';
 const imageToolUrl = 'https://flow.google.com/project/de86267f-f3e0-4767-b161-3e297c3cbe5a/tool/d4ee684e-ea93-4d1e-bbf3-40cf4b35f0dc';
 
-function setup() {
-  const tab = { id: 7, url: webAppUrl };
+function setup(pageUrl = webAppUrl) {
+  const tab = { id: 7, url: pageUrl };
   const flowTab = { id: 8, url: toolUrl };
   const imageFlowTab = { id: 9, url: imageToolUrl };
   const storage = {};
@@ -34,7 +34,7 @@ function setup() {
     },
   };
   const context = { chrome, URL, RegExp, crypto: webcrypto, setTimeout, clearTimeout };
-  vm.runInNewContext(`${script}\nthis.testApi = { handleStart, startPayloadError, handleStartVideo, handleVideoResult, videoStartPayloadError };`, context);
+  vm.runInNewContext(`${script}\nthis.testApi = { handleStart, startPayloadError, handleStartVideo, handleVideoResult, handleFrameResult, videoStartPayloadError };`, context);
   return { api: context.testApi, storage, delivered };
 }
 
@@ -89,4 +89,24 @@ test('finished video finds the project page after extension session state is los
   assert.equal(result.ok, true);
   assert.equal(delivered[0].id, 7);
   assert.equal(delivered[0].message.type, 'IMPORT_FLOW_VIDEO');
+});
+
+test('reference image job starts from references page and result returns to that page', async () => {
+  const referencePage = `https://aihub-webapp.onrender.com/projects/${projectId}/references`;
+  const { api, storage, delivered } = setup(referencePage);
+  const referenceId = frameId.replace(/^frame_/, 'ref_');
+  const referenceJobs = [{ frameId, referenceId, inputFingerprint }];
+  const payload = { projectId, storyboardRevision: 3, frameId, batchSize: 1,
+    aspectRatio: '16:9', modelDisplayName: '🍌 Nano Banana 2.1',
+    filename: 'flow-storyboard-r3.zip', zipBase64: 'UEsDBA==', referenceJobs };
+  const source = { url: 'about:blank', tab: { id: 7, url: `https://aihub-webapp.onrender.com/projects/${projectId}/references` } };
+  assert.equal(api.startPayloadError(payload), '');
+  assert.equal((await api.handleStart(payload, source)).ok, true);
+  assert.deepEqual(storage.flowRoute.referenceJobs, referenceJobs);
+  const result = await api.handleFrameResult({ projectId, storyboardRevision: 3, frameId,
+    mimeType: 'image/png', base64: 'aGVsbG8=' });
+  assert.equal(result.ok, true);
+  assert.equal(delivered.at(-1).message.type, 'IMPORT_FLOW_REFERENCE');
+  assert.equal(delivered.at(-1).message.payload.referenceId, referenceId);
+  assert.equal(delivered.at(-1).message.payload.inputFingerprint, inputFingerprint);
 });

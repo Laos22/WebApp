@@ -114,3 +114,22 @@ test('Flow export rejects a plan changed while the archive was built', async t =
   t.mock.method(VisualReference, 'find', async () => []);
   assert.equal((await exportRoute()).code, 409);
 });
+
+test('bridge export gives the Flow image tool frame-shaped jobs mapped to reference fingerprints', async t => {
+  const project = fixture();
+  project.referencePlan.revision = 3;
+  t.mock.method(Project, 'findOne', async () => project);
+  t.mock.method(VisualReference, 'find', async () => []);
+  const result = await exportRoute({ query: { bridge: '1', referenceId: item.id } });
+  assert.equal(result.code, 200);
+  const zip = await JSZip.loadAsync(result.data);
+  const manifest = JSON.parse(await zip.file('manifest.json').async('string'));
+  assert.equal(manifest.projectId, String(project._id));
+  assert.equal(manifest.storyboardRevision, project.referencePlan.revision ?? 0);
+  assert.equal(manifest.frames.length, 1);
+  const frame = manifest.frames[0];
+  assert.equal(frame.frameId, item.id.replace(/^ref_/, 'frame_'));
+  assert.equal(await zip.file(frame.promptFile).async('string'), item.prompt);
+  assert.deepEqual(manifest.referenceJobs, [{ frameId: frame.frameId,
+    referenceId: item.id, inputFingerprint: referenceFingerprint(project, item) }]);
+});
