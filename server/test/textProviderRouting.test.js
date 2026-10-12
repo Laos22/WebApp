@@ -98,5 +98,69 @@ test('OpenRouter rate limit retains retry timing for frame detail', async t => {
 
 test('OpenRouter empty response is rejected', async t => {
   t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ choices: [{ message: { content: '' } }] })));
-  await assert.rejects(service.editScript('Script', 'Edit', profile), /OpenRouter returned empty text/);
+  await assert.rejects(service.editScript('Script', 'Edit', profile), /модель не вернула готовый текст/);
 });
+
+test('script operations allow ten minutes; bounded video planning retains its timeout', async t => {
+  const timeouts = [];
+  t.mock.method(AbortSignal, 'timeout', ms => {
+    timeouts.push(ms);
+    return new AbortController().signal;
+  });
+  t.mock.method(globalThis, 'fetch', async (_url, options) => {
+    assert.equal(JSON.parse(options.body).stream, false);
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'Complete script' }, finish_reason: 'stop' }] }));
+  });
+  await service.generateScript('System', 'Project', profile);
+  await service.editScript('Script', 'Edit', profile);
+  await service.generateVideoPlanText('Plan', profile);
+  assert.deepEqual(timeouts, [600000, 600000, 90000]);
+});
+
+for (const phase of ['headers', 'body']) {
+  test(`timeout during ${phase} is reported as a timeout, not empty text`, async t => {
+    const controller = new AbortController();
+    t.mock.method(AbortSignal, 'timeout', () => controller.signal);
+    const abort = () => {
+      controller.abort(new DOMException('Timed out', 'TimeoutError'));
+      throw new DOMException('Aborted', 'AbortError');
+    };
+    t.mock.method(globalThis, 'fetch', async () => {
+      if (phase === 'headers') return abort();
+      return { ok: true, status: 200, headers: new Headers(), json: async () => abort() };
+    });
+    await assert.rejects(service.editScript('Script', 'Edit', profile), error => {
+      assert.equal(error.status, 504);
+      assert.equal(error.code, 'OPENROUTER_TIMEOUT');
+      assert.match(error.message, /600 сек/);
+      return true;
+    });
+  });
+}
+
+test('malformed JSON and non-JSON HTTP errors preserve useful diagnostics', async t => {
+  for (const status of [200, 502]) {
+    t.mock.method(globalThis, 'fetch', async () => new Response('<html>Bad gateway</html>', { status }));
+    await assert.rejects(service.editScript('Script', 'Edit', profile), error => {
+      assert.equal(error.code, 'OPENROUTER_RESPONSE_ERROR');
+      assert.equal(error.status, 502);
+      assert.doesNotMatch(error.message, /не вернула готовый текст/);
+      if (status === 502) assert.match(error.message, /HTTP 502/);
+      return true;
+    });
+  }
+});
+
+for (const reason of ['length', 'cancelled', 'error', 'content_filter']) {
+  test(`unfinished response (${reason}) is rejected even with partial text`, async t => {
+    t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({
+      id: 'test-generation', choices: [{ finish_reason: reason, message: { content: 'Partial script' } }],
+    })));
+    await assert.rejects(service.editScript('Script', 'Edit', profile), error => {
+      assert.equal(error.code, 'OPENROUTER_INCOMPLETE_RESPONSE');
+      assert.equal(error.finishReason, reason);
+      assert.equal(error.generationId, 'test-generation');
+      return true;
+    });
+  });
+}

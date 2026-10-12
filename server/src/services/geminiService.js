@@ -15,27 +15,45 @@ async function generateOpenRouterText(prompt, profile, json = false, timeoutMs =
   const apiKey = getDecryptedApiKey(profile);
   if (!apiKey) throw new Error('API-ключ OpenRouter не найден');
   const model = profile?.textSettings?.primaryModel?.trim() || 'openrouter/free';
-  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': 'https://webapp.local',
-      'X-Title': 'WebApp',
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        ...(config.systemInstruction ? [{ role: 'system', content: config.systemInstruction }] : []),
-        { role: 'user', content: String(prompt) },
-      ],
-      ...(config.maxOutputTokens ? { max_tokens: config.maxOutputTokens } : {}),
-      ...(json ? { response_format: { type: 'json_object' } } : {}),
-      temperature: profile?.textSettings?.temperature ?? 0.7,
-    }),
-  });
-  const payload = await response.json().catch(() => ({}));
+  const signal = AbortSignal.timeout(timeoutMs);
+  let response;
+  let payload;
+  try {
+    response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      signal,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://webapp.local',
+        'X-Title': 'WebApp',
+      },
+      body: JSON.stringify({
+        model,
+        stream: false,
+        messages: [
+          ...(config.systemInstruction ? [{ role: 'system', content: config.systemInstruction }] : []),
+          { role: 'user', content: String(prompt) },
+        ],
+        ...(config.maxOutputTokens ? { max_tokens: config.maxOutputTokens } : {}),
+        ...(json ? { response_format: { type: 'json_object' } } : {}),
+        temperature: profile?.textSettings?.temperature ?? 0.7,
+      }),
+    });
+    payload = await response.json();
+  } catch (cause) {
+    // Aborting while reading the body must not be mistaken for an empty answer.
+    const timedOut = signal.aborted || cause?.name === 'TimeoutError';
+    const error = new Error(timedOut
+      ? `OpenRouter: время ожидания истекло (${Math.round(timeoutMs / 1000)} сек.). Модель не успела завершить ответ. Попробуйте сократить запрос или выбрать другую модель.`
+      : response && !response.ok
+        ? `OpenRouter: HTTP ${response.status} (${response.statusText || 'ошибка запроса'}). Не удалось прочитать ответ сервера.`
+        : 'OpenRouter: не удалось прочитать ответ — соединение прервано или получен некорректный JSON.');
+    error.status = timedOut ? 504 : response && !response.ok ? response.status : 502;
+    error.code = timedOut ? 'OPENROUTER_TIMEOUT' : 'OPENROUTER_RESPONSE_ERROR';
+    if (response) error.response = { headers: response.headers };
+    throw error;
+  }
   if (!response.ok || payload?.error) {
     const error = new Error(payload?.error?.message || `OpenRouter: HTTP ${response.status} (${response.statusText || 'ошибка запроса'}), модель ${model}`);
     error.status = response.ok ? 502 : response.status;
@@ -44,7 +62,22 @@ async function generateOpenRouterText(prompt, profile, json = false, timeoutMs =
     throw error;
   }
   const text = payload?.choices?.[0]?.message?.content;
-  if (typeof text !== 'string' || !text.trim()) throw new Error('OpenRouter returned empty text');
+  const finishReason = payload?.choices?.[0]?.finish_reason;
+  if (typeof text !== 'string' || !text.trim() || ['length', 'cancelled', 'error', 'content_filter'].includes(finishReason)) {
+    const messages = {
+      length: 'OpenRouter: достигнут лимит токенов, модель не завершила ответ. Сократите запрос или увеличьте лимит ответа и уменьшите бюджет рассуждений.',
+      cancelled: 'OpenRouter: генерация отменена до завершения ответа. Попробуйте сократить запрос или выбрать другую модель.',
+      error: 'OpenRouter: провайдер прервал генерацию с ошибкой. Попробуйте позже или выберите другую модель.',
+      content_filter: 'OpenRouter: ответ остановлен фильтром содержимого провайдера.',
+    };
+    const error = new Error(messages[finishReason] || 'OpenRouter: модель не вернула готовый текст. Попробуйте позже или выберите другую модель.');
+    error.status = 502;
+    error.code = 'OPENROUTER_INCOMPLETE_RESPONSE';
+    // Only diagnostic metadata; never log prompts, credentials or reasoning text.
+    error.generationId = payload?.id;
+    error.finishReason = finishReason;
+    throw error;
+  }
   return text.trim();
 }
 
@@ -54,7 +87,8 @@ async function generateTextResponse(profile, operation, { contents, config = {} 
     const prompt = typeof contents === 'string' ? contents
       : contents.flatMap(content => content.parts.map(part => part.text)).join('\n\n');
     return { text: await generateOpenRouterText(prompt, profile,
-      config.responseMimeType === 'application/json', config.httpOptions?.timeout, config) };
+      config.responseMimeType === 'application/json',
+      config.httpOptions?.timeout ?? (['generate-script', 'edit-script'].includes(operation) ? 600_000 : 120_000), config) };
   }
   const { apiKey, model } = resolveTextConfig(profile, operation);
   const ai = new GoogleGenAI({ apiKey });
