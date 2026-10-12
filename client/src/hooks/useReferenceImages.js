@@ -74,7 +74,11 @@ export default function useReferenceImages({ projectId, plan, applyData, setErro
     const job = start('flow-start');
     if (!job) return;
     try {
-      await requestBridge('FLOW_BRIDGE_PING', {}, 4000);
+      const bridge = await requestBridge('FLOW_BRIDGE_PING', {}, 4000);
+      const [major, minor] = String(bridge.version || '').split('.').map(Number);
+      if (!Number.isInteger(major) || !Number.isInteger(minor) || (major === 0 && minor < 6)) {
+        throw new Error('Расширение Google Flow устарело. Обновите его до версии 0.6.1 в chrome://extensions, затем обновите вкладки WebApp и Flow.');
+      }
       const blob = await exportReferenceFlowPackage(projectId, replace, {
         bridge: true, referenceId: single?.id || '',
       });

@@ -108,7 +108,9 @@ async function handleStart(payload, sender) {
   if (origin !== LOCAL_ORIGIN && origin !== PRODUCTION_ORIGIN)
     return { ok: false, error: "Откройте страницу изображений проекта в разрешённом WebApp." };
   if (webAppProject(pageUrl, origin, payload?.referenceJobs ? "references" : "image") !== payload?.projectId)
-    return { ok: false, error: "Страница WebApp и пакет изображений относятся к разным проектам." };
+    return { ok: false, error: payload?.referenceJobs
+      ? "Не совпали проект и страница референсов. Обновите расширение Google Flow и вкладку WebApp; затем проверьте, что открыт нужный проект."
+      : "Страница WebApp и пакет изображений относятся к разным проектам." };
   const payloadError = startPayloadError(payload);
   if (payloadError) return { ok: false, error: payloadError };
   const result = await startFlowBatch(payload);

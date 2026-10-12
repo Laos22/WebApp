@@ -58,5 +58,6 @@ window.addEventListener("message", event => {
     type: "FLOW_BRIDGE_PING_RESULT",
     requestId: event.data.requestId,
     ok: true,
+    version: chrome.runtime.getManifest().version,
   }, location.origin);
 });
