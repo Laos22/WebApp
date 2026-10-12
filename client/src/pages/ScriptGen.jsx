@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import axios from "axios";
 
 import { getProject, generateProjectScript, saveProjectScript, confirmProjectScript, editProjectScript } from "../services/api";
 import ProfileSelector from "../components/ProfileSelector";
+import { getNarrationStats } from "../utils/scriptNarration";
 
 const API_URL = String(import.meta.env.VITE_SERVER_URL || "").replace(/\/$/, "");
 
@@ -31,6 +32,7 @@ function ScriptEditor({ projectId }) {
   const editorRef = useRef(null);
   const dirty = Boolean(result && content !== result.content);
   const busy = loading || saving || editing;
+  const narration = useMemo(() => getNarrationStats(content), [content]);
 
   useEffect(() => () => editRequest.current?.abort(), []);
   useEffect(() => {
@@ -275,6 +277,17 @@ function ScriptEditor({ projectId }) {
               disabled={busy}
               onChange={(event) => { setContent(event.target.value); setMessage(""); }}
               className="w-full bg-slate-950 border border-slate-800 rounded-xl p-4" />
+            <div className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
+              <p className="text-emerald-300">
+                Диктор: <span className="font-semibold tabular-nums">{narration.hasNarration || !content.trim()
+                  ? narration.characters.toLocaleString("ru-RU") : "—"}</span> символов
+              </p>
+              <p className="text-slate-400">
+                {narration.hasNarration || !content.trim()
+                  ? "С пробелами · только текст диктора"
+                  : "Добавьте метки ДИКТОР: и ВІЗУАЛ: для подсчёта"}
+              </p>
+            </div>
             {content !== result.content && <p className="text-sm text-amber-300">Есть несохранённые изменения. Сохраните их перед подтверждением.</p>}
             <div className="flex flex-wrap gap-3">
               <button onClick={() => handleSave()} disabled={busy || !content.trim() || content === result.content}
