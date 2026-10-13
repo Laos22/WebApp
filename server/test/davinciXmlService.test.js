@@ -63,19 +63,40 @@ test('XML escapes Russian marker text and omits absent optional markers', () => 
   for (const note of ['Voiceover Text', 'Start Time', 'Animation Instruction', 'DaVinci Resolve Marker']) assert.equal(xml.split(`note="${note}"`).length - 1, 6);
   input.frames.forEach(frame => { delete frame.animation; delete frame.marker; });
   const legacy = createDavinciXml(input);
-  assert.doesNotMatch(legacy, /Animation Instruction|DaVinci Resolve Marker|adjust-transform/);
+  assert.match(legacy, /Animation Instruction|adjust-transform/);
+  assert.doesNotMatch(legacy, /DaVinci Resolve Marker/);
 });
 for (const [animation, first, last] of [
   ['Zoom In', '1 1', '1.15 1.15'], ['Zoom Out', '1.15 1.15', '1 1'],
   ['Pan Left', '5 0', '-5 0'], ['Pan Right', '-5 0', '5 0'],
   ['Pan Up', '0 5', '0 -5'], ['Pan Down', '0 -5', '0 5'],
-]) test(`${animation} has the bot's keyframes ending inside the final clip duration`, () => {
-  const input = fixture(); input.frames.forEach(frame => { frame.animation = animation; });
-  const xml = createDavinciXml(input);
+]) test(`${animation} selected at export has keyframes ending inside the final clip duration`, () => {
+  const input = fixture(); input.frames.forEach(frame => { frame.animation = 'Zoom Out'; });
+  const xml = createDavinciXml({ ...input, animationTypes: [animation] });
   const duration = timelinePlan(input.voiceoverBlocks, input.frames).blocks[0].durations[0];
   assert.ok(xml.includes(`time="0/${TIMEBASE}s" value="${first}"`));
   assert.ok(xml.includes(`time="${duration - TIMEBASE / 24}/${TIMEBASE}s" value="${last}"`));
+  assert.equal((xml.match(/<adjust-transform /g) || []).length, input.frames.length);
+  assert.equal((xml.match(new RegExp(`value="${animation}" note="Animation Instruction"`, 'g')) || []).length, input.frames.length);
   assert.doesNotMatch(createDavinciXml({ ...input, addAnimations: false }), /adjust-transform/);
+  assert.doesNotMatch(createDavinciXml({ ...input, addAnimations: false }), /note="Animation Instruction"/);
+});
+
+test('export cycles selected animations without changing saved frames and skips video', () => {
+  const input = fixture();
+  const saved = structuredClone(input.frames);
+  const xml = createDavinciXml({ ...input, animationTypes: ['Zoom Out', 'Pan Right'],
+    videoFiles: new Map([[input.frames[0].id, { filename: 'video_1_1.mp4', durationSec: 2 }]]),
+  });
+  const instructions = [...xml.matchAll(/value="(Zoom Out|Pan Right)" note="Animation Instruction"/g)].map(match => match[1]);
+  assert.deepEqual(instructions, ['Zoom Out', 'Pan Right', 'Zoom Out', 'Pan Right', 'Zoom Out']);
+  assert.equal((xml.match(/<adjust-transform /g) || []).length, 5);
+  assert.equal((xml.match(/<adjust-conform type="fill"\/>/g) || []).length, 2);
+  assert.deepEqual(input.frames, saved);
+  for (const animationTypes of [[], ['Other'], ['Zoom In', 'Zoom In'], 'Zoom In']) {
+    assert.throws(() => createDavinciXml({ ...input, animationTypes }), { code: 'INVALID_DAVINCI_SETTINGS' });
+  }
+  assert.doesNotThrow(() => createDavinciXml({ ...input, addAnimations: false, animationTypes: [] }));
 });
 test('transitions cover every cut and both ends without changing image or audio timing', () => {
   const input = fixture();
@@ -163,10 +184,25 @@ test('loopable music covers the complete narration timeline and trims only the f
   } });
   const clips = [...xml.matchAll(/<asset-clip name="Loop"[^>]+>/g)].map(match => match[0]);
   assert.equal(clips.length, Math.ceil(plan.duration / clipTicks));
+  assert.equal((xml.match(/<adjust-volume amount="-10\.46dB"\/>/g) || []).length, clips.length);
   clips.forEach((clip, index) => {
     assert.match(clip, new RegExp(`offset="${index * clipTicks}/${TIMEBASE}s"`));
     assert.match(clip, new RegExp(`duration="${Math.min(clipTicks, plan.duration - index * clipTicks)}/${TIMEBASE}s"`));
   });
   const legacy = createDavinciXml({ ...input, backgroundMusic: { filename: 'old.mp3', durationSec: 2.5 } });
   assert.equal((legacy.match(/audioRole="music"/g) || []).length, 1);
+});
+
+test('background music volume changes only music clips and rejects invalid levels', () => {
+  const input = { ...fixture(), backgroundMusic: {
+    filename: 'background_music_loop.mp3', durationSec: 2.5, loop: true,
+  } };
+  const xml = createDavinciXml({ ...input, backgroundMusicVolume: 0.5 });
+  const musicClips = [...xml.matchAll(/<asset-clip[^>]+audioRole="music"><adjust-volume amount="-6\.02dB"\/><\/asset-clip>/g)];
+  assert.equal(musicClips.length, Math.ceil(timelinePlan(input.voiceoverBlocks, input.frames).duration / Math.round(2.5 * TIMEBASE)));
+  assert.equal((xml.match(/<adjust-volume /g) || []).length, musicClips.length);
+  assert.match(createDavinciXml({ ...input, backgroundMusicVolume: 1 }), /audioRole="music"><adjust-volume amount="0dB"\/>/);
+  for (const volume of [0, -0.1, 1.01, '0.3', NaN]) {
+    assert.throws(() => createDavinciXml({ ...input, backgroundMusicVolume: volume }), { code: 'INVALID_DAVINCI_SETTINGS' });
+  }
 });

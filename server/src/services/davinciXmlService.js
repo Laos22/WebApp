@@ -1,5 +1,7 @@
 import { mediaSourceUrl, normalizeMediaRoot } from '../../../shared/davinciMediaPaths.js';
 import { audioTrimSeconds, validateAudioTrim } from '../../../shared/davinciAudioTrim.js';
+import { DEFAULT_BACKGROUND_MUSIC_VOLUME, validBackgroundMusicVolume, backgroundMusicDecibels } from '../../../shared/davinciMusicVolume.js';
+import { DEFAULT_DAVINCI_ANIMATION_TYPES, validDavinciAnimationTypes } from '../../../shared/davinciAnimations.js';
 import { hasAudioDuration } from './audioDuration.js';
 
 // Divisible by 24/25/30 FPS and 44.1/48 kHz. Keep the audio end, including its
@@ -94,12 +96,14 @@ export function imageExtension(mimeType) {
 
 export function createDavinciXml({
   projectName, frames, voiceoverBlocks, imageFiles, videoFiles = new Map(), frameRate = 24, charsPerSecond = 15,
-  addAnimations = true, addTransitions = false, transitionDurationSec = 0.5,
-  mediaRootPath = '', audioTrim = {}, backgroundMusic = null, soundEffects = [], onWarning = () => {},
+  addAnimations = true, animationTypes = DEFAULT_DAVINCI_ANIMATION_TYPES, addTransitions = false, transitionDurationSec = 0.5,
+  mediaRootPath = '', audioTrim = {}, backgroundMusic = null, backgroundMusicVolume = DEFAULT_BACKGROUND_MUSIC_VOLUME,
+  soundEffects = [], onWarning = () => {},
 }) {
   if (![24, 25, 30].includes(frameRate) || !Number.isFinite(charsPerSecond) || charsPerSecond < 5 || charsPerSecond > 30 ||
-      typeof addAnimations !== 'boolean' || typeof addTransitions !== 'boolean' ||
-      !Number.isFinite(transitionDurationSec) || transitionDurationSec <= 0 || transitionDurationSec > 5) fail('INVALID_DAVINCI_SETTINGS');
+      typeof addAnimations !== 'boolean' || !validDavinciAnimationTypes(animationTypes, addAnimations) || typeof addTransitions !== 'boolean' ||
+      !Number.isFinite(transitionDurationSec) || transitionDurationSec <= 0 || transitionDurationSec > 5 ||
+      !validBackgroundMusicVolume(backgroundMusicVolume)) fail('INVALID_DAVINCI_SETTINGS');
   validateAudioTrim(audioTrim);
   if (mediaRootPath !== '') normalizeMediaRoot(mediaRootPath);
   const plan = timelinePlan(voiceoverBlocks, frames, frameRate, charsPerSecond);
@@ -120,6 +124,7 @@ export function createDavinciXml({
   };
   let previousDuration = null;
   let audioAnchorIndex;
+  let stillImageIndex = 0;
   const frameOffsets = new Map();
   for (const item of plan.blocks) {
     const { block, duration, durations, offset } = item;
@@ -137,6 +142,7 @@ export function createDavinciXml({
       const filename = imageFiles.get(frame.id);
       if (!filename || !/^(frame_[0-9]+_[0-9]+|still_[a-p]{64})\.(jpg|png|webp)$/.test(filename)) fail('DAVINCI_IMAGE_MISSING');
       const video = videoFiles.get(frame.id);
+      const animation = video || !addAnimations ? '' : animationTypes[stillImageIndex++ % animationTypes.length];
       const displayName = `frame_${block.order}_${index + 1}.${video ? 'mp4' : filename.split('.').at(-1)}`;
       const imageId = `r${resourceNumber++}`;
       const clipDuration = durations[index];
@@ -170,12 +176,12 @@ export function createDavinciXml({
         clips.push('            <adjust-conform type="fit"/>', '          </video>');
       } else {
         clips.push(`        <asset-clip name="${displayName}" ref="${imageId}" start="0s" duration="${time(clipDuration)}" offset="${time(offset + blockOffset)}" enabled="1">`,
-          `          <adjust-conform type="${addAnimations && /^Pan /.test(frame.animation || '') ? 'fill' : 'fit'}"/>`);
-        if (addAnimations) clips.push(...transform(frame.animation, clipDuration, frameRate));
+          `          <adjust-conform type="${/^Pan /.test(animation) ? 'fill' : 'fit'}"/>`);
+        if (animation) clips.push(...transform(animation, clipDuration, frameRate));
       }
       if (audioAnchorIndex === undefined) audioAnchorIndex = clips.length;
       if (index === 0) clips.push(`          <asset-clip name="${audioName}" ref="${audioId}" lane="-1" start="${time(trimStart)}" offset="${time(trimStart)}" duration="${time(audibleDuration)}" audioRole="dialogue"/>`);
-      for (const [note, value] of [['Voiceover Text', frame.scriptText], ['Start Time', time(offset + blockOffset)], ['Animation Instruction', frame.animation], ['DaVinci Resolve Marker', frame.marker]]) {
+      for (const [note, value] of [['Voiceover Text', frame.scriptText], ['Start Time', time(offset + blockOffset)], ['Animation Instruction', animation], ['DaVinci Resolve Marker', frame.marker]]) {
         if (value) clips.push(`          <marker start="0s" duration="1/${frameRate}s" value="${escapeXml(value)}" note="${note}"/>`);
       }
       clips.push(video ? '        </clip>' : '        </asset-clip>');
@@ -193,7 +199,7 @@ export function createDavinciXml({
     resources.push(`    <asset id="${musicId}" name="${escapeXml(backgroundMusic.filename)}" start="0s" hasAudio="1" duration="${time(sourceDuration)}" audioSources="1" audioChannels="2" audioRate="48k"><media-rep src="${escapeXml(mediaSourceUrl(mediaRootPath, `audio/${backgroundMusic.filename}`))}" kind="original-media"/></asset>`);
     for (let offset = 0; offset < plan.duration; offset += sourceDuration) {
       const musicDuration = Math.min(plan.duration - offset, sourceDuration);
-      connectedAudio.push(`          <asset-clip name="${escapeXml(backgroundMusic.title || 'Background Music')}" ref="${musicId}" start="0s" duration="${time(musicDuration)}" offset="${time(offset)}" enabled="1" lane="-2" audioRole="music"/>`);
+      connectedAudio.push(`          <asset-clip name="${escapeXml(backgroundMusic.title || 'Background Music')}" ref="${musicId}" start="0s" duration="${time(musicDuration)}" offset="${time(offset)}" enabled="1" lane="-2" audioRole="music"><adjust-volume amount="${backgroundMusicDecibels(backgroundMusicVolume)}"/></asset-clip>`);
       if (!backgroundMusic.loop) break;
     }
   }

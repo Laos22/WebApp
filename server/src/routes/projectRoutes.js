@@ -5,6 +5,8 @@ import { videoPlanResponse } from '../services/videoPlanService.js';
 import { checkDriveFile } from '../services/driveSync.js';
 import { normalizeMediaRoot } from '../../../shared/davinciMediaPaths.js';
 import { validateAudioTrim, audioTrimSeconds } from '../../../shared/davinciAudioTrim.js';
+import { DEFAULT_BACKGROUND_MUSIC_VOLUME, validBackgroundMusicVolume } from '../../../shared/davinciMusicVolume.js';
+import { DEFAULT_DAVINCI_ANIMATION_TYPES, validDavinciAnimationTypes } from '../../../shared/davinciAnimations.js';
 // server/src/routes/projectRoutes.js
 import express from "express";
 import referenceImageRoutes from './referenceImageRoutes.js';
@@ -2646,12 +2648,13 @@ router.get('/:id/davinci', ensureAuthenticated, async (req, res) => {
 router.post('/:id/davinci/export', ensureAuthenticated, async (req, res) => {
   let stage = 'settings';
   try {
-    const { frameRate = 24, charsPerSecond = 15, addAnimations = true, addTransitions = false, transitionDurationSec = 0.5, audioTrim = {}, pathMode = 'absolute', mediaRootPath = '' } = req.body || {};
-    if (Object.keys(req.body || {}).some(key => !['frameRate', 'charsPerSecond', 'addAnimations', 'addTransitions', 'transitionDurationSec', 'audioTrim', 'pathMode', 'mediaRootPath'].includes(key)) ||
+    const { frameRate = 24, charsPerSecond = 15, addAnimations = true, animationTypes = DEFAULT_DAVINCI_ANIMATION_TYPES, addTransitions = false, transitionDurationSec = 0.5, audioTrim = {}, pathMode = 'absolute', mediaRootPath = '', backgroundMusicVolume = DEFAULT_BACKGROUND_MUSIC_VOLUME } = req.body || {};
+    if (Object.keys(req.body || {}).some(key => !['frameRate', 'charsPerSecond', 'addAnimations', 'animationTypes', 'addTransitions', 'transitionDurationSec', 'audioTrim', 'pathMode', 'mediaRootPath', 'backgroundMusicVolume'].includes(key)) ||
         ![24, 25, 30].includes(frameRate) || !Number.isFinite(charsPerSecond) ||
         charsPerSecond < 5 || charsPerSecond > 30 ||
-        typeof addAnimations !== 'boolean' || typeof addTransitions !== 'boolean' ||
-        !Number.isFinite(transitionDurationSec) || transitionDurationSec <= 0 || transitionDurationSec > 5) {
+        typeof addAnimations !== 'boolean' || !validDavinciAnimationTypes(animationTypes, addAnimations) || typeof addTransitions !== 'boolean' ||
+        !Number.isFinite(transitionDurationSec) || transitionDurationSec <= 0 || transitionDurationSec > 5 ||
+        !validBackgroundMusicVolume(backgroundMusicVolume)) {
       return res.status(400).json({ error: 'Некорректные настройки таймлайна' });
     }
     validateAudioTrim(audioTrim);
@@ -2709,8 +2712,8 @@ router.post('/:id/davinci/export', ensureAuthenticated, async (req, res) => {
     stage = 'generate-xml';
     const xml = createDavinciXml({ projectName: project.shortTitle || project.title,
       frames: state.storyboard.frames, voiceoverBlocks: state.blocks, imageFiles, videoFiles,
-      frameRate, charsPerSecond, addAnimations, addTransitions, transitionDurationSec, audioTrim, mediaRootPath: resolvedMediaRoot,
-      backgroundMusic: state.backgroundMusic,
+      frameRate, charsPerSecond, addAnimations, animationTypes, addTransitions, transitionDurationSec, audioTrim, mediaRootPath: resolvedMediaRoot,
+      backgroundMusic: state.backgroundMusic, backgroundMusicVolume,
       soundEffects: state.soundEffects,
       onWarning: warning => console.warn(warning) });
     stage = 'copy-local-media';

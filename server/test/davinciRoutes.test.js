@@ -77,10 +77,12 @@ for (const legacy of [false, true]) test(`status and export with ${legacy ? 'leg
   assert.equal(exported.value.mediaRootPath, project.projectPath);
   const exportedXml = await fs.readFile(path.join(project.projectPath, exported.value.filename), 'utf8');
   assert.match(exportedXml, /adjust-transform/);
+  assert.match(exportedXml, /value="Zoom In" note="Animation Instruction"/);
   if (!legacy) {
     assert.equal(status.value.backgroundMusicReady, true);
     assert.equal(status.value.soundEffectCount, 1);
     assert.match(exportedXml, /lane="-2" audioRole="music"/);
+    assert.match(exportedXml, /audioRole="music"><adjust-volume amount="-10\.46dB"\/>/);
     assert.match(exportedXml, /lane="-3" audioRole="effects"/);
     assert.ok(exportedXml.indexOf('audioRole="music"') < exportedXml.indexOf('</asset-clip>'));
   }
@@ -108,6 +110,22 @@ for (const legacy of [false, true]) test(`status and export with ${legacy ? 'leg
   assert.match(trimmedXml, /lane="-1" start="8820000\/35280000s" offset="8820000\/35280000s" duration="58212000\/35280000s"/);
   assert.match(trimmedXml, /src="file:\/\/\/[^"]+\/images\/still_[a-p]{64}\.jpg"/);
   assert.match(trimmedXml, /<asset-clip name="frame_1_1.jpg"/);
+  const panned = await request('/:id/davinci/export', 'post', { animationTypes: ['Pan Right'] });
+  assert.equal(panned.code, 200);
+  const pannedXml = await fs.readFile(path.join(project.projectPath, panned.value.filename), 'utf8');
+  assert.match(pannedXml, /<adjust-conform type="fill"\/>/);
+  assert.match(pannedXml, /value="Pan Right" note="Animation Instruction"/);
+  if (!legacy) {
+    const quieter = await request('/:id/davinci/export', 'post', { backgroundMusicVolume: 0.5 });
+    assert.equal(quieter.code, 200);
+    assert.match(await fs.readFile(path.join(project.projectPath, quieter.value.filename), 'utf8'), /audioRole="music"><adjust-volume amount="-6\.02dB"\/>/);
+  }
+  for (const volume of [0, -1, 1.1, '0.3']) {
+    assert.equal((await request('/:id/davinci/export', 'post', { backgroundMusicVolume: volume })).code, 400);
+  }
+  assert.equal((await request('/:id/davinci/export', 'post', { animationTypes: [] })).code, 400);
+  assert.equal((await request('/:id/davinci/export', 'post', { animationTypes: ['Zoom In', 'Zoom In'] })).code, 400);
+  assert.equal((await request('/:id/davinci/export', 'post', { animationTypes: ['Spin'] })).code, 400);
   assert.equal((await request('/:id/davinci/export', 'post', {
     audioTrim: { enabled: true, mode: 'seconds', startSec: 20 },
   })).code, 400);

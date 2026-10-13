@@ -3,6 +3,8 @@ import { Link, useParams } from "react-router-dom";
 import { generateDavinciXml, getDavinciStatus } from "../services/api";
 import { audioTrimSeconds, validateAudioTrim } from '../../../shared/davinciAudioTrim.js';
 import { normalizeMediaRoot } from '../../../shared/davinciMediaPaths.js';
+import { DEFAULT_BACKGROUND_MUSIC_VOLUME, validBackgroundMusicVolume, backgroundMusicDecibels } from '../../../shared/davinciMusicVolume.js';
+import { DAVINCI_ANIMATION_TYPES, DEFAULT_DAVINCI_ANIMATION_TYPES, validDavinciAnimationTypes } from '../../../shared/davinciAnimations.js';
 
 const button = "px-4 py-2.5 rounded-xl font-medium disabled:opacity-50 disabled:cursor-not-allowed";
 
@@ -12,6 +14,7 @@ export default function DavinciExport() {
   const [frameRate, setFrameRate] = useState(24);
   const [charsPerSecond, setCharsPerSecond] = useState(15);
   const [addAnimations, setAddAnimations] = useState(true);
+  const [animationTypes, setAnimationTypes] = useState([...DEFAULT_DAVINCI_ANIMATION_TYPES]);
   const [addTransitions, setAddTransitions] = useState(() => {
     try { return localStorage.getItem(`davinci-transitions:${projectId}`) !== 'false'; } catch { return true; }
   });
@@ -19,6 +22,7 @@ export default function DavinciExport() {
     try { localStorage.setItem(`davinci-transitions:${projectId}`, String(addTransitions)); } catch { /* Optional preference storage. */ }
   }, [projectId, addTransitions]);
   const [transitionDurationSec, setTransitionDurationSec] = useState(0.5);
+  const [backgroundMusicVolume, setBackgroundMusicVolume] = useState(DEFAULT_BACKGROUND_MUSIC_VOLUME);
   const [audioTrim, setAudioTrim] = useState({ enabled: false, mode: 'phrase', phrase: '-Абзац-', startSec: 0, endSec: 0 });
   const updateTrim = (key, value) => setAudioTrim(current => ({ ...current, [key]: value }));
   const [pathMode, setPathMode] = useState('absolute');
@@ -46,7 +50,8 @@ export default function DavinciExport() {
     seconds: item.exact ? item.durationSec : item.textLength / charsPerSecond,
   }));
   const settingsValid = Number.isFinite(charsPerSecond) && charsPerSecond >= 5 && charsPerSecond <= 30 &&
-    Number.isFinite(transitionDurationSec) && transitionDurationSec > 0 && transitionDurationSec <= 5;
+    Number.isFinite(transitionDurationSec) && transitionDurationSec > 0 && transitionDurationSec <= 5 &&
+    validBackgroundMusicVolume(backgroundMusicVolume) && validDavinciAnimationTypes(animationTypes, addAnimations);
   const structureValid = timings.length > 0 && timings.every(item => item.frameCount > 0 && item.seconds * frameRate >= item.frameCount);
   const totalSeconds = timings.reduce((sum, item) => sum + item.seconds, 0);
   let trimError = '';
@@ -69,7 +74,7 @@ export default function DavinciExport() {
     if (busy || !data?.canExport || !settingsValid || !structureValid || trimError || pathError) return;
     setBusy(true); setError(""); setMessage("");
     try {
-      const result = await generateDavinciXml(projectId, { frameRate, charsPerSecond, addAnimations, addTransitions, transitionDurationSec, audioTrim, pathMode,
+      const result = await generateDavinciXml(projectId, { frameRate, charsPerSecond, addAnimations, animationTypes, addTransitions, transitionDurationSec, audioTrim, backgroundMusicVolume, pathMode,
         mediaRootPath: pathMode === 'relative' ? '' : mediaRootPath ? normalizeMediaRoot(mediaRootPath) : '' });
       if (pathMode === 'absolute') {
         setMediaRootPath(result.mediaRootPath);
@@ -118,9 +123,24 @@ export default function DavinciExport() {
           {pathMode === 'relative' && <p className="text-sm text-amber-300">При импорте Resolve может потребовать вручную указать папку с медиа.</p>}
           {pathError && <p role="alert" className="text-amber-300">{pathError}</p>}
         </div>
-        <label className="flex gap-3 items-center"><input type="checkbox" checked={addAnimations} onChange={event => setAddAnimations(event.target.checked)} />Анимации Zoom / Pan из настроек кадров</label>
+        <div className="space-y-3 border border-slate-700 rounded-xl p-4">
+          <label className="flex gap-3 items-center"><input type="checkbox" checked={addAnimations} onChange={event => setAddAnimations(event.target.checked)} />Анимировать изображения при экспорте</label>
+          {addAnimations && <>
+            <p className="text-sm text-slate-400">Выберите виды движения. Экспорт назначит их по очереди всем изображениям; готовые видеокадры MP4 не изменятся.</p>
+            <div className="grid sm:grid-cols-3 gap-2">{DAVINCI_ANIMATION_TYPES.map(type => <label key={type} className="flex items-center gap-2 rounded-lg bg-slate-950 p-3"><input type="checkbox" checked={animationTypes.includes(type)} onChange={event => setAnimationTypes(current => event.target.checked ? DAVINCI_ANIMATION_TYPES.filter(item => current.includes(item) || item === type) : current.filter(item => item !== type))} />{type}</label>)}</div>
+            {animationTypes.length === 0 && <p role="alert" className="text-amber-300 text-sm">Выберите хотя бы один вид движения.</p>}
+          </>}
+        </div>
         <label className="flex gap-3 items-center"><input type="checkbox" checked={addTransitions} onChange={event => setAddTransitions(event.target.checked)} />Переходы через чёрный на всех стыках, в начале и конце</label>
         <label className="block">Длительность перехода, сек.<input type="number" min="0.01" max="5" step="0.01" disabled={!addTransitions} value={transitionDurationSec} onChange={event => setTransitionDurationSec(Number(event.target.value))} className="block w-full mt-2 bg-slate-950 border border-slate-700 rounded-xl p-3 disabled:opacity-50" /><span className="text-xs text-slate-400">Округляется до чётного числа кадров; для коротких кадров сокращается или пропускается.</span></label>
+        <div className="space-y-2 border border-slate-700 rounded-xl p-4">
+          <label htmlFor="background-music-volume" className="block text-sm text-slate-300">Громкость фоновой музыки</label>
+          <div className="flex items-center gap-3">
+            <input id="background-music-volume" type="range" min="0.01" max="1" step="0.01" value={backgroundMusicVolume} onChange={event => setBackgroundMusicVolume(Number(event.target.value))} className="flex-1 accent-cyan-500" />
+            <input type="number" min="0.01" max="1" step="0.01" value={backgroundMusicVolume} onChange={event => setBackgroundMusicVolume(Number(event.target.value))} aria-label="Уровень громкости фоновой музыки" className="w-24 bg-slate-950 border border-slate-700 rounded-xl p-2" />
+          </div>
+          <p className="text-xs text-slate-400">От 0,01 до 1; 1 — исходная громкость. По умолчанию 0,3{validBackgroundMusicVolume(backgroundMusicVolume) ? ` (${backgroundMusicDecibels(backgroundMusicVolume).replace('.', ',')} в XML)` : ''}. Настройка действует только на фоновую музыку, включая повторы.</p>
+        </div>
         <div className="space-y-3 border border-slate-700 rounded-xl p-4">
           <label className="flex gap-3 items-center"><input type="checkbox" checked={audioTrim.enabled} onChange={event => updateTrim('enabled', event.target.checked)} />Подрезать аудио по краям без сдвига таймлайна</label>
           {audioTrim.enabled && <>
@@ -135,7 +155,7 @@ export default function DavinciExport() {
           {timings.map((item, index) => <p key={item.id}>Блок {item.order}: {item.available ? "MP3 готов" : "MP3 недоступен"} · {item.exact ? "Точная" : "Приблизительная"} длительность: {item.seconds.toFixed(3)} сек.{audioTrim.enabled && trimPreviews[index] && <span className="block text-slate-400">Обрезка: {trimPreviews[index].start.toFixed(3)} сек. в начале / {trimPreviews[index].end.toFixed(3)} сек. в конце; звучание: {(item.seconds - trimPreviews[index].start - trimPreviews[index].end).toFixed(3)} сек.</span>}</p>)}
           <p className="font-bold">Общая продолжительность: {totalSeconds.toFixed(3)} сек. {timings.some(item => !item.exact) ? "(приблизительно)" : ""}</p>
           {data?.warnings?.map((warning, index) => <p key={index} className="text-amber-300">{warning}</p>)}
-          {!settingsValid && <p className="text-amber-300">Проверьте скорость речи (5–30) и длительность перехода (0,01–5 сек.).</p>}
+          {!settingsValid && <p className="text-amber-300">Проверьте скорость речи (5–30), длительность перехода (0,01–5 сек.), громкость музыки (0,01–1) и выбор анимации.</p>}
           {data && !structureValid && <p className="text-amber-300">Каждому аудиоблоку нужны кадры и минимум один видеокадр времени на изображение.</p>}
         </div>
         <div className="p-4 rounded-xl bg-blue-950/30 border border-blue-800/40 text-sm text-blue-200 space-y-2">
