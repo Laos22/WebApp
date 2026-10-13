@@ -87,6 +87,7 @@ import { saveSoundEffectFile, readSoundEffectFile, deleteSoundEffectFile } from 
 import { soundDesignPrompt, parseSoundDesign } from "../services/soundDesignService.js";
 import { saveMusicFile, readMusicFile, deleteMusicFile } from "../services/musicStorage.js";
 import { prepareEnglishAudioPrompt } from "../services/audioPromptTranslation.js";
+import { parseFlowMusicAnalysis, parseFlowMusicFields } from "../services/flowMusicPlanService.js";
 
 const router = express.Router();
 router.use(referenceImageRoutes);
@@ -793,16 +794,6 @@ function flowMusicResponse(project) {
       byteSize: draft.candidate.byteSize, uploadedAt: draft.candidate.uploadedAt } : null };
 }
 
-function parseFlowMusicFields(value) {
-  const title = typeof value?.title === 'string' ? value.title.trim() : '';
-  const structure = typeof value?.structure === 'string' ? value.structure.trim() : '';
-  const prompt = typeof value?.prompt === 'string' ? value.prompt.trim() : '';
-  const clipDurationSec = Number(value?.clipDurationSec);
-  if (!title || title.length > 160 || !structure || structure.length > 4100 || !prompt || prompt.length > 4100 ||
-      !Number.isFinite(clipDurationSec) || clipDurationSec < 3 || clipDurationSec > 180) return null;
-  return { title, structure, prompt, clipDurationSec };
-}
-
 router.post('/:id/flow-music/analyze', ensureAuthenticated, async (req, res) => {
   try {
     const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
@@ -824,10 +815,11 @@ router.post('/:id/flow-music/analyze', ensureAuthenticated, async (req, res) => 
     if (!profile) return res.status(503).json({ error: 'Настройте текстовый AI-профиль для анализа музыки' });
     const request = `You are a film composer. Analyze the timed storyboard and narration. Design a LOOPABLE instrumental music cue for Google Flow Music of exactly about ${clipDurationSec} seconds. The full film is approximately ${targetDurationSec} seconds and the same cue will repeat in editing. Do not attempt a one-time linear emotional arc that breaks at the loop point. Begin and end on the same tonal and rhythmic texture; no intro, outro, fade, silence, vocals, speech, abrupt ending, or one-off dramatic climax. Return JSON only with keys: title (short Russian title), structure (Russian description of the film's timed sections and how a repeating cue supports them), prompt (English Flow Music generation prompt up to 4100 characters, including requested duration and seamless loop instructions). User instructions: ${JSON.stringify(instructions)}. Previous plan: ${JSON.stringify(project.flowMusicDraft ? { structure: project.flowMusicDraft.structure, prompt: project.flowMusicDraft.prompt } : null)}. Project: ${JSON.stringify(project.title)}. Timed sections: ${JSON.stringify(sections)}.`;
     const answer = await generateVideoPlanText(request, profile, true);
-    let parsed;
-    try { parsed = JSON.parse(String(answer).trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')); } catch { parsed = null; }
-    const fields = parseFlowMusicFields({ ...parsed, clipDurationSec });
-    if (!fields) return res.status(502).json({ error: 'ИИ вернул некорректный план музыки. Повторите анализ.' });
+    const fields = parseFlowMusicAnalysis(answer, clipDurationSec);
+    if (!fields) {
+      console.warn('FLOW_MUSIC_INVALID_PLAN', { answerLength: String(answer).length });
+      return res.status(502).json({ error: 'ИИ вернул некорректный план музыки. Повторите анализ.' });
+    }
     const saved = await Project.findOneAndUpdate({ _id: project._id, userId: req.user._id,
       'storyboard.revision': project.storyboard.revision, 'voiceover.revision': project.voiceover.revision,
       updatedAt: project.updatedAt }, { $set: {
@@ -840,7 +832,12 @@ router.post('/:id/flow-music/analyze', ensureAuthenticated, async (req, res) => 
       } }, { new: true, runValidators: true });
     if (!saved) return res.status(409).json({ error: 'Проект изменился во время анализа. Повторите запрос.' });
     return res.json({ success: true, draft: flowMusicResponse(saved) });
-  } catch (error) { return res.status(error.status === 429 ? 429 : 500).json({ error: 'Не удалось проанализировать раскадровку для Flow Music' }); }
+  } catch (error) {
+    console.warn('FLOW_MUSIC_ANALYSIS_FAILED', { name: error?.name, code: error?.code, status: error?.status });
+    if (error?.status === 503) return res.status(503).json({ error: 'Текстовая модель временно недоступна (503). Повторите позже или выберите другой профиль.' });
+    if (error?.status === 429) return res.status(429).json({ error: 'Лимит текстовой модели исчерпан. Повторите позже или выберите другой профиль.' });
+    return res.status(500).json({ error: 'Не удалось проанализировать раскадровку для Flow Music' });
+  }
 });
 
 router.put('/:id/flow-music/plan', ensureAuthenticated, async (req, res) => {

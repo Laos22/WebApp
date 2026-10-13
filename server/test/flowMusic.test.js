@@ -3,6 +3,16 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { parseFlowMusicAnalysis } from '../src/services/flowMusicPlanService.js';
+
+test('music analysis accepts a JSON object or a single-element array from the model', () => {
+  const plan = { title: 'Петля', structure: 'Ровная фактура', prompt: 'Seamless instrumental loop' };
+  assert.deepEqual(parseFlowMusicAnalysis(JSON.stringify(plan), 90), { ...plan, clipDurationSec: 90 });
+  assert.deepEqual(parseFlowMusicAnalysis(JSON.stringify([plan]), 120), { ...plan, clipDurationSec: 120 });
+  assert.deepEqual(parseFlowMusicAnalysis('```json\n' + JSON.stringify([plan]) + '\n```', 180), { ...plan, clipDurationSec: 180 });
+  assert.equal(parseFlowMusicAnalysis(JSON.stringify([plan, plan]), 90), null);
+  assert.equal(parseFlowMusicAnalysis(JSON.stringify([{ ...plan, prompt: '' }]), 90), null);
+});
 
 process.env.ENCRYPTION_KEY = 'flow-music-test-only-configuration-00000000000000';
 const { default: router } = await import('../src/routes/projectRoutes.js');
