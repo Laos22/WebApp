@@ -129,6 +129,7 @@ export default function BackgroundMusic() {
         <input type="number" min="3" max="180" step="1" value={clipDurationSec} onChange={e => setClipDurationSec(e.target.value)} className={field} />
       </label>}
       <ProfileSelector type="text" projectId={projectId} operation="music-analysis" value={analysisProfileId} onChange={setAnalysisProfileId} disabled={Boolean(busy)} />
+      <Link className="block text-sm text-purple-300 hover:underline" to="/settings?tab=prompts">Настройки → Промты → Анализ музыки Flow Music</Link>
       <button type="button" className={`${button} bg-cyan-700 hover:bg-cyan-600`} disabled={Boolean(busy)} onClick={analyze}>{busy === 'analyze' ? 'Анализирую…' : draft ? 'Повторить анализ' : 'Проанализировать проект'}</button>
       {draft && <p className="text-sm text-cyan-200">Длина ролика: около {formatDuration(target)}. Фрагмент: {formatDuration(clipDurationSec)}. XML повторит его столько раз, сколько потребуется.</p>}
     </section>

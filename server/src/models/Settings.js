@@ -15,6 +15,10 @@ export const DEFAULT_VIDEO_PROMPT_PREPARATION_PROMPT = `Подготовь ан�
 Инструкции пользователя: {{INSTRUCTIONS}}
 Опиши выполнимое за указанное время действие, движение камеры и темп. Сохраняй композицию, внешность персонажей, предметы и визуальный стиль исходного изображения. Не добавляй текст, звук или новые сцены. Верни только готовый видеопромт.`;
 
+export const DEFAULT_FLOW_MUSIC_ANALYSIS_PROMPT = `Ты — кинокомпозитор. По хронометражу озвучки и раскадровке предложи структуру фоновой музыки и английский промт для Google Flow Music.
+Музыка должна поддерживать содержание ролика, не перекрывая диктора. Создай инструментальный фрагмент без вокала и речи. Он будет повторяться в монтаже, поэтому начало и конец должны иметь совместимую тональность, ритм и фактуру. Не предлагай отдельное вступление, концовку, затухание, тишину на краях или однократную кульминацию, которая ломает петлю.
+В структуре опиши настроение, темп, инструменты и связь с ключевыми частями ролика. В английском промте явно укажи нужную длину фрагмента и бесшовное зацикливание.`;
+
 import mongoose from "mongoose";
 import { DEFAULT_YOUTUBE_DESCRIPTION_PROMPT } from '../services/youtubeDescriptionService.js';
 
@@ -302,6 +306,7 @@ const settingsSchema = new mongoose.Schema(
       storyboardDetailPrompt: { type: String, default: "" },
       videoPlanAnalysisPrompt: { type: String, default: DEFAULT_VIDEO_PLAN_ANALYSIS_PROMPT },
       videoPromptPreparationPrompt: { type: String, default: DEFAULT_VIDEO_PROMPT_PREPARATION_PROMPT },
+      flowMusicAnalysisPrompt: { type: String, default: DEFAULT_FLOW_MUSIC_ANALYSIS_PROMPT, maxlength: 12000 },
     },
 
     driveCredentials: { type: driveCredentialsSchema, default: null, select: false },

@@ -71,6 +71,33 @@ test('Google Studio still uses the Google endpoint and response format', async t
   assert.equal(calls, 1);
 });
 
+test('video planning sends editable music instructions as an OpenRouter system message', async t => {
+  t.mock.method(globalThis, 'fetch', async (_url, options) => {
+    const body = JSON.parse(options.body);
+    assert.equal(body.messages[0].role, 'system');
+    assert.equal(body.messages[0].content, 'Compose a restrained seamless loop.');
+    assert.equal(body.messages[1].role, 'user');
+    assert.equal(body.messages[1].content, 'Storyboard and timing');
+    return new Response(JSON.stringify({ choices: [{ message: { content: '{}' } }] }));
+  });
+  assert.equal(await service.generateVideoPlanText('Storyboard and timing', profile, true,
+    'Compose a restrained seamless loop.'), '{}');
+});
+
+test('video planning sends editable music instructions as a Google system instruction', async t => {
+  t.mock.method(globalThis, 'fetch', async (_url, options) => {
+    const body = JSON.parse(options.body);
+    assert.match(JSON.stringify(body.systemInstruction), /Compose a restrained seamless loop/);
+    assert.match(JSON.stringify(body.contents), /Storyboard and timing/);
+    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: '{}' }], role: 'model' }, finishReason: 'STOP' }] }),
+      { headers: { 'Content-Type': 'application/json' } });
+  });
+  const googleProfile = { ...profile, provider: 'google_studio', apiKey: encryptData('test-google-key'),
+    textSettings: { primaryModel: 'gemini-test' } };
+  assert.equal(await service.generateVideoPlanText('Storyboard and timing', googleProfile, true,
+    'Compose a restrained seamless loop.'), '{}');
+});
+
 test('OpenRouter missing key never falls back to a Google credential or sends a request', async t => {
   t.mock.method(globalThis, 'fetch', async () => assert.fail('No request should be sent'));
   await assert.rejects(service.editScript('Script', 'Edit', { ...profile, apiKey: null }), /API-ключ OpenRouter не найден/);

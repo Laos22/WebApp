@@ -3,7 +3,23 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseFlowMusicAnalysis } from '../src/services/flowMusicPlanService.js';
+import { buildFlowMusicAnalysisInput, parseFlowMusicAnalysis } from '../src/services/flowMusicPlanService.js';
+import Settings, { DEFAULT_FLOW_MUSIC_ANALYSIS_PROMPT } from '../src/models/Settings.js';
+
+test('Flow Music has an editable default system prompt and keeps runtime data separate', async () => {
+  const settings = new Settings({ userId: '000000000000000000000001' });
+  assert.equal(settings.prompts.flowMusicAnalysisPrompt, DEFAULT_FLOW_MUSIC_ANALYSIS_PROMPT);
+  settings.prompts.flowMusicAnalysisPrompt = 'Мой музыкальный стиль';
+  await settings.validate();
+  const input = buildFlowMusicAnalysisInput({ projectTitle: 'Фильм', targetDurationSec: 400,
+    clipDurationSec: 120, sections: [{ startSec: 0, durationSec: 20, visuals: ['Лес'] }],
+    instructions: 'Тише', previousPlan: null });
+  assert.match(input, /400 секунд/);
+  assert.match(input, /120 секунд/);
+  assert.match(input, /Лес/);
+  assert.match(input, /Тише/);
+  assert.doesNotMatch(input, /Мой музыкальный стиль/);
+});
 
 test('music analysis accepts a JSON object or a single-element array from the model', () => {
   const plan = { title: 'Петля', structure: 'Ровная фактура', prompt: 'Seamless instrumental loop' };

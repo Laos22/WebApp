@@ -13,7 +13,7 @@ import youtubeDescriptionRoutes from './youtubeDescriptionRoutes.js';
 import multer from "multer";
 import JSZip from "jszip";
 import { ensureAuthenticated } from "../middleware/auth.js";
-import Settings, { DEFAULT_VISUAL_BIBLE_PROMPT, DEFAULT_VISUAL_BIBLE_EDIT_PROMPT, DEFAULT_REFERENCE_ANALYSIS_PROMPT, DEFAULT_REFERENCE_DETAIL_PROMPT, DEFAULT_STORYBOARD_PROMPT, DEFAULT_STORYBOARD_DETAIL_PROMPT, DEFAULT_AUDIO_ADAPTATION_PROMPT } from "../models/Settings.js";
+import Settings, { DEFAULT_VISUAL_BIBLE_PROMPT, DEFAULT_VISUAL_BIBLE_EDIT_PROMPT, DEFAULT_REFERENCE_ANALYSIS_PROMPT, DEFAULT_REFERENCE_DETAIL_PROMPT, DEFAULT_STORYBOARD_PROMPT, DEFAULT_STORYBOARD_DETAIL_PROMPT, DEFAULT_AUDIO_ADAPTATION_PROMPT, DEFAULT_FLOW_MUSIC_ANALYSIS_PROMPT } from "../models/Settings.js";
 import {
   generateVideoTopic,
   generateScript,
@@ -87,7 +87,7 @@ import { saveSoundEffectFile, readSoundEffectFile, deleteSoundEffectFile } from 
 import { soundDesignPrompt, parseSoundDesign } from "../services/soundDesignService.js";
 import { saveMusicFile, readMusicFile, deleteMusicFile } from "../services/musicStorage.js";
 import { prepareEnglishAudioPrompt } from "../services/audioPromptTranslation.js";
-import { parseFlowMusicAnalysis, parseFlowMusicFields } from "../services/flowMusicPlanService.js";
+import { buildFlowMusicAnalysisInput, parseFlowMusicAnalysis, parseFlowMusicFields } from "../services/flowMusicPlanService.js";
 
 const router = express.Router();
 router.use(referenceImageRoutes);
@@ -813,8 +813,12 @@ router.post('/:id/flow-music/analyze', ensureAuthenticated, async (req, res) => 
     const settings = await Settings.findOne({ userId: req.user._id });
     const profile = resolveRequestedProfile(settings, 'text', req.body?.profileId);
     if (!profile) return res.status(503).json({ error: 'Настройте текстовый AI-профиль для анализа музыки' });
-    const request = `You are a film composer. Analyze the timed storyboard and narration. Design a LOOPABLE instrumental music cue for Google Flow Music of exactly about ${clipDurationSec} seconds. The full film is approximately ${targetDurationSec} seconds and the same cue will repeat in editing. Do not attempt a one-time linear emotional arc that breaks at the loop point. Begin and end on the same tonal and rhythmic texture; no intro, outro, fade, silence, vocals, speech, abrupt ending, or one-off dramatic climax. Return JSON only with keys: title (short Russian title), structure (Russian description of the film's timed sections and how a repeating cue supports them), prompt (English Flow Music generation prompt up to 4100 characters, including requested duration and seamless loop instructions). User instructions: ${JSON.stringify(instructions)}. Previous plan: ${JSON.stringify(project.flowMusicDraft ? { structure: project.flowMusicDraft.structure, prompt: project.flowMusicDraft.prompt } : null)}. Project: ${JSON.stringify(project.title)}. Timed sections: ${JSON.stringify(sections)}.`;
-    const answer = await generateVideoPlanText(request, profile, true);
+    const request = buildFlowMusicAnalysisInput({ projectTitle: project.title, targetDurationSec, clipDurationSec,
+      sections, instructions, previousPlan: project.flowMusicDraft ? {
+        structure: project.flowMusicDraft.structure, prompt: project.flowMusicDraft.prompt,
+      } : null });
+    const systemInstruction = settings?.prompts?.flowMusicAnalysisPrompt?.trim() || DEFAULT_FLOW_MUSIC_ANALYSIS_PROMPT;
+    const answer = await generateVideoPlanText(request, profile, true, systemInstruction);
     const fields = parseFlowMusicAnalysis(answer, clipDurationSec);
     if (!fields) {
       console.warn('FLOW_MUSIC_INVALID_PLAN', { answerLength: String(answer).length });

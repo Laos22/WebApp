@@ -574,9 +574,10 @@ export async function editScript(currentScript, instruction, profile) {
 }
 
 // Single bounded request; the client owns pacing and resumable orchestration.
-export async function generateVideoPlanText(prompt, profile, json = false) {
+export async function generateVideoPlanText(prompt, profile, json = false, systemInstruction = '') {
   const result = await generateTextResponse(profile, "video-plan", { contents: prompt,
     config: { ...(json ? { responseMimeType: 'application/json' } : {}),
+      ...(systemInstruction ? { systemInstruction } : {}),
       httpOptions: { timeout: 90000 }, maxOutputTokens: 12000 } });
   return modelText(result);
 }
