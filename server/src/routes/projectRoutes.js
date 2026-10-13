@@ -2,7 +2,7 @@ import StoryboardVideo from '../models/StoryboardVideo.js';
 import StoryboardGeneration from '../models/StoryboardGeneration.js';
 import { readStoryboardVideoFile } from '../services/storyboardVideoStorage.js';
 import { videoPlanResponse } from '../services/videoPlanService.js';
-import { checkDriveFile } from '../services/driveSync.js';
+import { checkDriveFile, copyDriveImagesForDavinci, driveFileIdFromStorageKey, listDriveFolderFiles } from '../services/driveSync.js';
 import { normalizeMediaRoot } from '../../../shared/davinciMediaPaths.js';
 import { validateAudioTrim, audioTrimSeconds } from '../../../shared/davinciAudioTrim.js';
 import { DEFAULT_BACKGROUND_MUSIC_VOLUME, validBackgroundMusicVolume } from '../../../shared/davinciMusicVolume.js';
@@ -78,8 +78,8 @@ import {
   frameIdFromFlowImagePath,
 } from "../services/flowPackageService.js";
 import { createDavinciXml, imageExtension, timelinePlan, TIMEBASE } from "../services/davinciXmlService.js";
-import { ensurePortableLocalFile, ensureDavinciLocalWorkspace, saveDavinciStill, prepareDavinciImages } from "../services/davinciMediaStorage.js";
-import { measureMp3Duration, inspectAudioBlock } from "../services/audioDuration.js";
+import { ensurePortableLocalFile, ensureDavinciLocalWorkspace, saveDavinciStill, prepareDavinciImages, davinciDriveStillFilename } from "../services/davinciMediaStorage.js";
+import { measureMp3Duration, inspectAudioBlock, hasAudioDuration } from "../services/audioDuration.js";
 import { safeProjectFolderName } from "../services/projectStorage.js";
 import path from "path";
 import fs from "fs";
@@ -2544,16 +2544,23 @@ async function davinciProjectState(project, userId) {
     frameId: { $in: storyboard.frames.map(frame => frame.id) },
   }).select('+storageKey');
   const imageByFrame = new Map(images.map(image => [image.frameId, image]));
+  const driveFolders = projectUsesDrive(project) ? await Promise.all(['images', 'audio'].map(directory =>
+    listDriveFolderFiles({ userId, parentId: project.storage.driveFolderIds[directory] }))) : null;
+  const driveImageFiles = driveFolders ? new Map(driveFolders[0].map(file => [file.id, file])) : null;
+  const driveAudioFiles = driveFolders ? new Map(driveFolders[1].map(file => [file.id, file])) : null;
   const warnings = [];
   const readyImages = [];
-  // Read sequentially to bound memory and Drive requests for large storyboards.
+  // Folder metadata covers current Drive assets; only legacy out-of-folder keys need individual checks.
   for (const frame of storyboard.frames) {
     const image = imageByFrame.get(frame.id);
     try {
       if (image?.status !== 'ready' || !image.storageKey || !storyboardImageMatchesFrame(image, frame)) throw new Error();
       imageExtension(image.mimeType);
       if (projectUsesDrive(project)) {
-        await checkDriveFile({ userId, storageKey: image.storageKey });
+        const listed = driveImageFiles.get(driveFileIdFromStorageKey(image.storageKey));
+        if (listed) {
+          if (!(Number(listed.size) > 0)) throw new Error('DRIVE_FILE_UNAVAILABLE');
+        } else await checkDriveFile({ userId, storageKey: image.storageKey });
       } else {
         const buffer = await readStoryboardImageFile(image.storageKey, project.projectPath, userId);
         if (!buffer.length) throw new Error();
@@ -2587,8 +2594,17 @@ async function davinciProjectState(project, userId) {
   const readyAudio = [];
   const audioTimings = [];
   for (const block of blocks) {
-    const info = block.audioStatus === 'ready' && block.audioStorageKey
-      ? await inspectAudioBlock(block, {
+    let info = { available: false };
+    if (block.audioStatus === 'ready' && block.audioStorageKey) {
+      if (projectUsesDrive(project) && hasAudioDuration(block.audioDurationSec)) {
+        try {
+          const listed = driveAudioFiles.get(driveFileIdFromStorageKey(block.audioStorageKey));
+          if (listed) {
+            if (!(Number(listed.size) > 0)) throw new Error('DRIVE_FILE_UNAVAILABLE');
+          } else await checkDriveFile({ userId, storageKey: block.audioStorageKey });
+          info = { available: true, durationSec: block.audioDurationSec, exact: true };
+        } catch { /* A saved duration does not prove the MP3 still exists. */ }
+      } else info = await inspectAudioBlock(block, {
         read: key => readVoiceoverAudio(key, project.projectPath, userId),
         persist: async (source, durationSec) => {
           const result = await Project.updateOne({
@@ -2600,7 +2616,8 @@ async function davinciProjectState(project, userId) {
           }, { $set: { 'voiceover.blocks.$.audioDurationSec': durationSec } });
           if (!result.matchedCount) throw new Error('DAVINCI_AUDIO_CHANGED');
         },
-      }) : { available: false };
+      });
+    }
     if (info.available) readyAudio.push(block);
     else warnings.push(`Блок ${block.order}: MP3 отсутствует или недоступен.`);
     if (info.available && !info.exact) warnings.push(`Блок ${block.order}: не удалось определить длительность MP3, используется приблизительная оценка по тексту.`);
@@ -2693,7 +2710,17 @@ router.post('/:id/davinci/export', ensureAuthenticated, async (req, res) => {
     });
     const resolvedMediaRoot = pathMode === 'relative' ? '' : normalizeMediaRoot(mediaRootPath.trim() || project.projectPath);
     stage = 'prepare-still-images';
+    const remoteImages = projectUsesDrive(project) ? state.storyboard.frames.flatMap(frame => {
+      const image = state.imageByFrame.get(frame.id);
+      return driveFileIdFromStorageKey(image.storageKey)
+        ? [{ frameId: frame.id, storageKey: image.storageKey, mimeType: image.mimeType }] : [];
+    }) : [];
+    const remoteStillFiles = remoteImages.length
+      ? await copyDriveImagesForDavinci({ userId: req.user._id,
+        parentId: project.storage.driveFolderIds.images, images: remoteImages,
+        filenameFor: davinciDriveStillFilename }) : new Map();
     const imageFiles = await prepareDavinciImages(state.storyboard.frames, async frame => {
+      if (remoteStillFiles.has(frame.id)) return remoteStillFiles.get(frame.id);
       const image = state.imageByFrame.get(frame.id);
       const buffer = await readStoryboardImageFile(image.storageKey, project.projectPath, req.user._id);
       const filename = await saveDavinciStill({ project, userId: req.user._id, buffer,
@@ -2706,16 +2733,34 @@ router.post('/:id/davinci/export', ensureAuthenticated, async (req, res) => {
     const videoState = videoPlanResponse(project, [...state.imageByFrame.values()], videos);
     let staleVideosUsed = 0;
     let readyVideosUsed = 0;
-    for (const frame of videoState.frames) {
+    const selectedVideoFrames = videoState.frames.filter(frame => {
       const status = frame.video?.status;
-      if (status !== 'ready' && !(includeStaleVideos && status === 'stale')) continue;
+      return status === 'ready' || (includeStaleVideos && status === 'stale');
+    });
+    const driveVideoFiles = projectUsesDrive(project) && selectedVideoFrames.length
+      ? new Map((await listDriveFolderFiles({ userId: req.user._id, parentId: project.storage.driveFolderIds.video }))
+        .map(file => [file.id, file])) : null;
+    const preparedVideos = await prepareDavinciImages(selectedVideoFrames.map(frame => ({ ...frame, id: frame.frameId })), async frame => {
+      const status = frame.video.status;
       const video = videos.find(item => item.frameId === frame.frameId);
-      if (!video?.storageKey || !video.filename) continue;
-      const buffer = await readStoryboardVideoFile(video.storageKey, project.projectPath, req.user._id);
+      if (!video?.storageKey || !video.filename) return null;
       const filename = video.filename;
       if (!/^video_[1-9]\d*_[1-9]\d*(?:__[0-9a-zA-Z_-]{1,72})?\.mp4$/.test(filename)) throw new Error('INVALID_VIDEO_FILENAME');
-      if (!projectUsesDrive(project)) await ensurePortableLocalFile(project.projectPath, 'video', filename, buffer);
-      videoFiles.set(frame.frameId, { filename, durationSec: video.durationSec, width: video.width, height: video.height });
+      if (projectUsesDrive(project)) {
+        const listed = driveVideoFiles.get(driveFileIdFromStorageKey(video.storageKey));
+        if (listed) {
+          if (!(Number(listed.size) > 0)) throw new Error('DRIVE_FILE_UNAVAILABLE');
+        } else await checkDriveFile({ userId: req.user._id, storageKey: video.storageKey });
+      } else {
+        const buffer = await readStoryboardVideoFile(video.storageKey, project.projectPath, req.user._id);
+        await ensurePortableLocalFile(project.projectPath, 'video', filename, buffer);
+      }
+      return { status, filename, durationSec: video.durationSec, width: video.width, height: video.height };
+    });
+    for (const [frameId, video] of preparedVideos) {
+      if (!video) continue;
+      const { status, ...details } = video;
+      videoFiles.set(frameId, details);
       if (status === 'stale') staleVideosUsed++;
       else readyVideosUsed++;
     }

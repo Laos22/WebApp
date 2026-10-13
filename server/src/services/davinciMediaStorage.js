@@ -42,6 +42,14 @@ export function davinciStillFilename(buffer, extension) {
   return `still_${letters}.${extension}`;
 }
 
+export function davinciDriveStillFilename(storageKey, mimeType) {
+  const extension = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }[mimeType];
+  if (!/^gdrive:[A-Za-z0-9_-]+$/.test(String(storageKey || '')) || !extension) throw new Error('INVALID_DAVINCI_IMAGE_FORMAT');
+  const letters = createHash('sha256').update(storageKey).digest('hex').replace(/[0-9a-f]/g, char =>
+    String.fromCharCode(97 + parseInt(char, 16)));
+  return `still_${letters}.${extension}`;
+}
+
 export async function saveDavinciStill({ project, userId, buffer, extension, mimeType, remoteWrite }) {
   const filename = davinciStillFilename(buffer, extension);
   if (project.storage?.provider === 'google_drive') {

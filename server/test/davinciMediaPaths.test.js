@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { normalizeMediaRoot, mediaSourceUrl } from '../../shared/davinciMediaPaths.js';
 import { createDavinciXml } from '../src/services/davinciXmlService.js';
-import { prepareDavinciImages, saveDavinciStill } from '../src/services/davinciMediaStorage.js';
+import { prepareDavinciImages, saveDavinciStill, davinciDriveStillFilename } from '../src/services/davinciMediaStorage.js';
+process.env.ENCRYPTION_KEY = 'davinci-test-only-configuration-00000000000000000000';
+const { copyDriveImagesForDavinci, listDriveFolderFiles } = await import('../src/services/driveSync.js');
 
 test('Drive still uploads request reuse of content-addressed copies', async () => {
   let request;
@@ -11,6 +13,38 @@ test('Drive still uploads request reuse of content-addressed copies', async () =
     userId: 'user', buffer: Buffer.from('image'), extension: 'jpg', mimeType: 'image/jpeg',
     remoteWrite: async value => { request = value; } });
   assert.equal(request.reuseExisting, true);
+});
+
+test('Drive export lists paginated metadata and copies each missing source only once', async () => {
+  const first = davinciDriveStillFilename('gdrive:sourceA', 'image/jpeg');
+  const second = davinciDriveStillFilename('gdrive:sourceB', 'image/png');
+  assert.match(first, /^still_[a-p]{64}\.jpg$/);
+  assert.notEqual(first, second);
+  const pages = [];
+  const copies = [];
+  const drive = { files: {
+    list: async options => {
+      pages.push(options.pageToken || 'first');
+      return { data: options.pageToken
+        ? { files: [{ id: 'sourceB', name: 'frame_1_2.png', size: '200' }] }
+        : { files: [{ id: 'sourceA', name: 'frame_1_1.jpg', size: '100' },
+          { id: 'existing', name: first, size: '100' }], nextPageToken: 'next' } };
+    },
+    copy: async options => { copies.push(options); return { data: { id: 'copied', size: '200' } }; },
+  } };
+  const listed = await listDriveFolderFiles({ parentId: 'folder', drive });
+  assert.equal(listed.length, 3);
+  const result = await copyDriveImagesForDavinci({ parentId: 'folder', drive,
+    images: [
+      { frameId: 'frame1', storageKey: 'gdrive:sourceA', mimeType: 'image/jpeg' },
+      { frameId: 'frame2', storageKey: 'gdrive:sourceB', mimeType: 'image/png' },
+      { frameId: 'frame3', storageKey: 'gdrive:sourceB', mimeType: 'image/png' },
+    ], filenameFor: davinciDriveStillFilename });
+  assert.deepEqual(pages, ['first', 'next', 'first', 'next']);
+  assert.deepEqual(copies, [{ fileId: 'sourceB', requestBody: { name: second, parents: ['folder'] }, fields: 'id,size' }]);
+  assert.equal(result.get('frame1'), first);
+  assert.equal(result.get('frame2'), second);
+  assert.equal(result.get('frame3'), second);
 });
 
 test('image preparation bounds concurrency and preserves frame associations', async () => {

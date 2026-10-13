@@ -236,6 +236,57 @@ export async function checkDriveFile({ userId, storageKey }) {
   if (data.trashed || !(Number(data.size) > 0)) throw new Error('DRIVE_FILE_UNAVAILABLE');
 }
 
+export async function listDriveFolderFiles({ userId, parentId, drive = null }) {
+  if (!/^[A-Za-z0-9_-]+$/.test(String(parentId || ''))) throw new Error('DRIVE_FILE_INPUT_INVALID');
+  const client = drive || await driveForUser(userId);
+  const files = [];
+  let pageToken;
+  do {
+    const { data } = await client.files.list({
+      q: `'${escapeDriveQueryValue(parentId)}' in parents and trashed=false`,
+      fields: 'nextPageToken,files(id,name,size,mimeType)', spaces: 'drive', pageSize: 1000,
+      ...(pageToken ? { pageToken } : {}),
+    });
+    files.push(...data.files || []);
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+  return files;
+}
+
+export async function copyDriveImagesForDavinci({ userId, parentId, images, filenameFor, drive = null }) {
+  const client = drive || await driveForUser(userId);
+  const existing = new Set((await listDriveFolderFiles({ userId, parentId, drive: client }))
+    .filter(file => Number(file.size) > 0).map(file => file.name));
+  const results = new Map();
+  const copies = new Map();
+  for (const image of images) {
+    const sourceId = driveFileIdFromStorageKey(image.storageKey);
+    if (!sourceId) throw new Error('INVALID_DRIVE_FILE_ID');
+    const filename = filenameFor(image.storageKey, image.mimeType);
+    if (!copies.has(filename)) copies.set(filename, { sourceId, frameIds: [] });
+    copies.get(filename).frameIds.push(image.frameId);
+  }
+  const entries = [...copies];
+  let next = 0;
+  let failure;
+  await Promise.all(Array.from({ length: Math.min(4, entries.length) }, async () => {
+    while (!failure && next < entries.length) {
+      const [filename, { sourceId, frameIds }] = entries[next++];
+      try {
+        if (!existing.has(filename)) {
+          const { data } = await client.files.copy({ fileId: sourceId,
+            requestBody: { name: filename, parents: [parentId] }, fields: 'id,size' });
+          if (!data.id || !(Number(data.size) > 0)) throw new Error('DRIVE_COPY_FAILED');
+          existing.add(filename);
+        }
+        for (const frameId of frameIds) results.set(frameId, filename);
+      } catch (error) { failure = error; }
+    }
+  }));
+  if (failure) throw failure;
+  return results;
+}
+
 export async function trashDriveFile({ userId, storageKey }) {
   const fileId = driveFileIdFromStorageKey(storageKey);
   if (!fileId) return false;
