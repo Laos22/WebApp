@@ -23,6 +23,7 @@ export default function DavinciExport() {
   }, [projectId, addTransitions]);
   const [transitionDurationSec, setTransitionDurationSec] = useState(0.5);
   const [backgroundMusicVolume, setBackgroundMusicVolume] = useState(DEFAULT_BACKGROUND_MUSIC_VOLUME);
+  const [includeStaleVideos, setIncludeStaleVideos] = useState(false);
   const [audioTrim, setAudioTrim] = useState({ enabled: false, mode: 'phrase', phrase: '-Абзац-', startSec: 0, endSec: 0 });
   const updateTrim = (key, value) => setAudioTrim(current => ({ ...current, [key]: value }));
   const [pathMode, setPathMode] = useState('absolute');
@@ -74,13 +75,13 @@ export default function DavinciExport() {
     if (busy || !data?.canExport || !settingsValid || !structureValid || trimError || pathError) return;
     setBusy(true); setError(""); setMessage("");
     try {
-      const result = await generateDavinciXml(projectId, { frameRate, charsPerSecond, addAnimations, animationTypes, addTransitions, transitionDurationSec, audioTrim, backgroundMusicVolume, pathMode,
+      const result = await generateDavinciXml(projectId, { frameRate, charsPerSecond, addAnimations, animationTypes, addTransitions, transitionDurationSec, audioTrim, backgroundMusicVolume, includeStaleVideos, pathMode,
         mediaRootPath: pathMode === 'relative' ? '' : mediaRootPath ? normalizeMediaRoot(mediaRootPath) : '' });
       if (pathMode === 'absolute') {
         setMediaRootPath(result.mediaRootPath);
         try { localStorage.setItem(`davinci-media-root:${projectId}`, result.mediaRootPath); } catch { /* Storage may be disabled. */ }
       }
-      setMessage('Time Line готов');
+      setMessage(`Time Line готов. MP4 в XML: ${result.readyVideosUsed ?? 0} актуальных, ${result.staleVideosUsed ?? 0} устаревших.`);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -101,13 +102,15 @@ export default function DavinciExport() {
 
       <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 md:p-6 space-y-5">
         <div><h2 className="text-xl font-bold">Готовность проекта</h2><p className="text-sm text-slate-400">{data?.projectName || "Загрузка…"}</p></div>
-        <div className="grid sm:grid-cols-4 gap-3">
+        <div className="grid sm:grid-cols-5 gap-3">
           <div className="p-4 bg-slate-950 rounded-xl"><span className="text-xs text-slate-500">Раскадровка</span><p className={data?.storyboardReady ? "text-emerald-400" : "text-amber-300"}>{data?.storyboardReady ? "Актуальна" : "Требует обновления"}</p></div>
           <div className="p-4 bg-slate-950 rounded-xl"><span className="text-xs text-slate-500">Изображения</span><p>{data ? `${data.readyImages}/${data.frames}` : "—"}</p></div>
           <div className="p-4 bg-slate-950 rounded-xl"><span className="text-xs text-slate-500">Аудиоблоки</span><p>{data ? `${data.readyAudio}/${data.audioBlocks}` : "—"}</p></div>
           <div className="p-4 bg-slate-950 rounded-xl"><span className="text-xs text-slate-500">Фоновая музыка</span><p className={data?.backgroundMusicReady ? "text-emerald-400" : "text-slate-400"}>{data?.backgroundMusicReady ? "Будет добавлена" : "Не добавлена"}</p></div>
+          <div className="p-4 bg-slate-950 rounded-xl"><span className="text-xs text-slate-500">Готовые MP4</span><p>{data ? `${data.readyVideos ?? 0} актуальных` : "—"}</p>{Boolean(data?.staleVideos) && <p className="text-amber-300 text-sm">{data.staleVideos} устаревших</p>}</div>
         </div>
         <p className="text-sm text-slate-400">Звуковых эффектов для экспорта: {data?.soundEffectCount ?? 0}. Готовые актуальные MP4 заменяют изображения соответствующих кадров.</p>
+        {Boolean(data?.staleVideos) && <p className="text-amber-300">Устаревшие MP4 по умолчанию заменяются JPG: исходные кадры, промты или длительности изменились после создания видео. Ниже можно явно включить эти MP4 в XML.</p>}
         {data && !data.canExport && <p className="text-amber-300">Для экспорта нужны актуальная утверждённая раскадровка, все изображения и MP3-блоки.</p>}
       </section>
 
@@ -131,6 +134,10 @@ export default function DavinciExport() {
             {animationTypes.length === 0 && <p role="alert" className="text-amber-300 text-sm">Выберите хотя бы один вид движения.</p>}
           </>}
         </div>
+        {Boolean(data?.staleVideos) && <div className="space-y-2 border border-amber-700/60 bg-amber-950/20 rounded-xl p-4">
+          <label className="flex gap-3 items-center"><input type="checkbox" checked={includeStaleVideos} onChange={event => setIncludeStaleVideos(event.target.checked)} />Включить устаревшие MP4 в XML ({data.staleVideos})</label>
+          <p className="text-sm text-amber-200">Эти файлы есть в проекте, но могут не соответствовать текущим изображениям, промтам или длительности кадров. При включении они заменят JPG на таймлайне.</p>
+        </div>}
         <label className="flex gap-3 items-center"><input type="checkbox" checked={addTransitions} onChange={event => setAddTransitions(event.target.checked)} />Переходы через чёрный на всех стыках, в начале и конце</label>
         <label className="block">Длительность перехода, сек.<input type="number" min="0.01" max="5" step="0.01" disabled={!addTransitions} value={transitionDurationSec} onChange={event => setTransitionDurationSec(Number(event.target.value))} className="block w-full mt-2 bg-slate-950 border border-slate-700 rounded-xl p-3 disabled:opacity-50" /><span className="text-xs text-slate-400">Округляется до чётного числа кадров; для коротких кадров сокращается или пропускается.</span></label>
         <div className="space-y-2 border border-slate-700 rounded-xl p-4">

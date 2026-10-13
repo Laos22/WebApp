@@ -162,6 +162,8 @@ test('exports MP4, music, overlapping frame effects and transitions together at 
     soundEffects: [1, 2].map(i => ({ filename: `sound_effect_${i}.mp3`, durationSec: 2, frameId: input.frames[1].id })),
   });
   assert.match(xml, /src="video\/video_1_1.mp4"/);
+  assert.match(xml, /<asset-clip name="frame_1_1.mp4" ref="r\d+" srcEnable="video"/);
+  assert.doesNotMatch(xml, /<video ref=/);
   assert.doesNotMatch(xml, /src="images\/frame_1_1.jpg"/);
   assert.match(xml, /<timeMap>/);
   assert.match(xml, /lane="-2" audioRole="music"/);
@@ -170,9 +172,14 @@ test('exports MP4, music, overlapping frame effects and transitions together at 
   assert.equal((xml.match(/<transition /g) || []).length, input.frames.length + 1);
   const effects = [...xml.matchAll(/<asset-clip[^>]+audioRole="effects"[^>]*>/g)];
   for (const [tag] of effects) assert.ok(tag.includes(`offset="${effectOffset}/${TIMEBASE}s"`));
-  const firstClip = xml.slice(xml.indexOf('<clip name='), xml.indexOf('</clip>'));
+  const firstClipStart = xml.indexOf('<asset-clip name="frame_1_1.mp4"');
+  const firstClip = xml.slice(firstClipStart, xml.indexOf('        </asset-clip>', firstClipStart));
   for (const role of ['dialogue', 'music', 'effects']) assert.ok(firstClip.includes(`audioRole="${role}"`));
   assert.ok(xml.includes(`sequence format="r0" duration="${plan.duration}/${TIMEBASE}s"`));
+  const uniqueNameXml = createDavinciXml({ ...input, videoFiles: new Map([[input.frames[0].id, {
+    filename: 'video_1_1__v123.mp4', durationSec: 1,
+  }]]) });
+  assert.match(uniqueNameXml, /src="video\/video_1_1__v123.mp4"/);
 });
 
 test('loopable music covers the complete narration timeline and trims only the final repeat', () => {

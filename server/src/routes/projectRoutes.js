@@ -2639,7 +2639,11 @@ router.get('/:id/davinci', ensureAuthenticated, async (req, res) => {
       .select('+voiceover.blocks.audioStorageKey +backgroundMusic.storageKey +soundEffects.storageKey');
     if (!project) return res.status(404).json({ error: 'Проект не найден' });
     const state = await davinciProjectState(project, req.user._id);
-    return res.json({ success: true, projectName: project.shortTitle || project.title, ...state.summary });
+    const videos = await StoryboardVideo.find({ projectId: project._id, userId: req.user._id, status: { $in: ['ready', 'stale'] } }).select('+storageKey');
+    const videoFrames = videoPlanResponse(project, [...state.imageByFrame.values()], videos).frames;
+    return res.json({ success: true, projectName: project.shortTitle || project.title, ...state.summary,
+      readyVideos: videoFrames.filter(frame => frame.video?.status === 'ready').length,
+      staleVideos: videoFrames.filter(frame => frame.video?.status === 'stale').length });
   } catch {
     return res.status(500).json({ error: 'Не удалось проверить готовность экспорта DaVinci Resolve' });
   }
@@ -2648,11 +2652,11 @@ router.get('/:id/davinci', ensureAuthenticated, async (req, res) => {
 router.post('/:id/davinci/export', ensureAuthenticated, async (req, res) => {
   let stage = 'settings';
   try {
-    const { frameRate = 24, charsPerSecond = 15, addAnimations = true, animationTypes = DEFAULT_DAVINCI_ANIMATION_TYPES, addTransitions = false, transitionDurationSec = 0.5, audioTrim = {}, pathMode = 'absolute', mediaRootPath = '', backgroundMusicVolume = DEFAULT_BACKGROUND_MUSIC_VOLUME } = req.body || {};
-    if (Object.keys(req.body || {}).some(key => !['frameRate', 'charsPerSecond', 'addAnimations', 'animationTypes', 'addTransitions', 'transitionDurationSec', 'audioTrim', 'pathMode', 'mediaRootPath', 'backgroundMusicVolume'].includes(key)) ||
+    const { frameRate = 24, charsPerSecond = 15, addAnimations = true, animationTypes = DEFAULT_DAVINCI_ANIMATION_TYPES, addTransitions = false, transitionDurationSec = 0.5, audioTrim = {}, pathMode = 'absolute', mediaRootPath = '', backgroundMusicVolume = DEFAULT_BACKGROUND_MUSIC_VOLUME, includeStaleVideos = false } = req.body || {};
+    if (Object.keys(req.body || {}).some(key => !['frameRate', 'charsPerSecond', 'addAnimations', 'animationTypes', 'addTransitions', 'transitionDurationSec', 'audioTrim', 'pathMode', 'mediaRootPath', 'backgroundMusicVolume', 'includeStaleVideos'].includes(key)) ||
         ![24, 25, 30].includes(frameRate) || !Number.isFinite(charsPerSecond) ||
         charsPerSecond < 5 || charsPerSecond > 30 ||
-        typeof addAnimations !== 'boolean' || !validDavinciAnimationTypes(animationTypes, addAnimations) || typeof addTransitions !== 'boolean' ||
+        typeof addAnimations !== 'boolean' || !validDavinciAnimationTypes(animationTypes, addAnimations) || typeof addTransitions !== 'boolean' || typeof includeStaleVideos !== 'boolean' ||
         !Number.isFinite(transitionDurationSec) || transitionDurationSec <= 0 || transitionDurationSec > 5 ||
         !validBackgroundMusicVolume(backgroundMusicVolume)) {
       return res.status(400).json({ error: 'Некорректные настройки таймлайна' });
@@ -2698,16 +2702,22 @@ router.post('/:id/davinci/export', ensureAuthenticated, async (req, res) => {
     }, (completed, total) => console.info('[DaVinci export]', { stage, completed, total }));
     stage = 'prepare-video';
     const videoFiles = new Map();
-    const videos = await StoryboardVideo.find({ projectId: project._id, userId: req.user._id, status: 'ready' }).select('+storageKey');
+    const videos = await StoryboardVideo.find({ projectId: project._id, userId: req.user._id, status: { $in: ['ready', 'stale'] } }).select('+storageKey');
     const videoState = videoPlanResponse(project, [...state.imageByFrame.values()], videos);
+    let staleVideosUsed = 0;
+    let readyVideosUsed = 0;
     for (const frame of videoState.frames) {
-      if (frame.video?.status !== 'ready') continue;
+      const status = frame.video?.status;
+      if (status !== 'ready' && !(includeStaleVideos && status === 'stale')) continue;
       const video = videos.find(item => item.frameId === frame.frameId);
+      if (!video?.storageKey || !video.filename) continue;
       const buffer = await readStoryboardVideoFile(video.storageKey, project.projectPath, req.user._id);
       const filename = video.filename;
-      if (!/^video_[0-9]+_[0-9]+(?:__[0-9a-f-]{36})?\.mp4$/i.test(filename)) throw new Error('INVALID_VIDEO_FILENAME');
+      if (!/^video_[1-9]\d*_[1-9]\d*(?:__[0-9a-zA-Z_-]{1,72})?\.mp4$/.test(filename)) throw new Error('INVALID_VIDEO_FILENAME');
       if (!projectUsesDrive(project)) await ensurePortableLocalFile(project.projectPath, 'video', filename, buffer);
       videoFiles.set(frame.frameId, { filename, durationSec: video.durationSec, width: video.width, height: video.height });
+      if (status === 'stale') staleVideosUsed++;
+      else readyVideosUsed++;
     }
     stage = 'generate-xml';
     const xml = createDavinciXml({ projectName: project.shortTitle || project.title,
@@ -2741,7 +2751,7 @@ router.post('/:id/davinci/export', ensureAuthenticated, async (req, res) => {
       content: xml, mimeType: 'application/xml',
     });
     return res.json({ success: true, message: 'Time Line готов', filename, pathMode,
-      mediaRootPath: resolvedMediaRoot });
+      mediaRootPath: resolvedMediaRoot, readyVideosUsed, staleVideosUsed });
   } catch (error) {
     // Never log raw errors: SDK messages/stacks may contain paths or credentials.
     const knownCodes = new Set(['INVALID_PROJECT_PATH', 'EACCES', 'EPERM', 'ENOSPC', 'ENOENT', 'ENAMETOOLONG', 'DAVINCI_PROJECT_CHANGED']);

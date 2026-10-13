@@ -147,7 +147,7 @@ export function createDavinciXml({
       const imageId = `r${resourceNumber++}`;
       const clipDuration = durations[index];
       if (video) {
-        if (!/^video_[0-9]+_[0-9]+(?:__[0-9a-f-]{36})?\.mp4$/i.test(video.filename) || !(video.durationSec > 0)) fail('INVALID_DAVINCI_SETTINGS');
+        if (!/^video_[1-9]\d*_[1-9]\d*(?:__[0-9a-zA-Z_-]{1,72})?\.mp4$/.test(video.filename) || !(video.durationSec > 0)) fail('INVALID_DAVINCI_SETTINGS');
         const formatId = `r${resourceNumber++}`;
         resources.push(`    <format id="${formatId}" frameDuration="1/${frameRate}s" width="${video.width || 1920}" height="${video.height || 1080}"/>`);
         resources.push(`    <asset id="${imageId}" name="${escapeXml(video.filename)}" hasVideo="1" start="0s" duration="${time(Math.round(video.durationSec * TIMEBASE))}" format="${formatId}"><media-rep src="${escapeXml(mediaSourceUrl(mediaRootPath, `video/${video.filename}`))}" kind="original-media"/></asset>`);
@@ -167,13 +167,12 @@ export function createDavinciXml({
       }
       previousDuration = clipDuration;
       frameOffsets.set(frame.id, offset + blockOffset);
-      // A wrapper keeps connected audio on the sequence clock even when video is retimed.
       if (video) {
-        clips.push(`        <clip name="${displayName}" start="0s" duration="${time(clipDuration)}" offset="${time(offset + blockOffset)}" enabled="1">`);
-        clips.push(`          <video ref="${imageId}" start="0s" offset="0s" duration="${time(clipDuration)}">`);
+        // Refer to the MP4 directly while keeping its audio out of the timeline.
+        clips.push(`        <asset-clip name="${displayName}" ref="${imageId}" srcEnable="video" start="0s" duration="${time(clipDuration)}" offset="${time(offset + blockOffset)}" enabled="1">`);
         const sourceDuration = Math.round(video.durationSec * TIMEBASE);
-        if (sourceDuration < clipDuration) clips.push(`            <timeMap><timept time="0s" value="0s" interp="linear"/><timept time="${time(clipDuration)}" value="${time(sourceDuration)}" interp="linear"/></timeMap>`);
-        clips.push('            <adjust-conform type="fit"/>', '          </video>');
+        if (sourceDuration < clipDuration) clips.push(`          <timeMap><timept time="0s" value="0s" interp="linear"/><timept time="${time(clipDuration)}" value="${time(sourceDuration)}" interp="linear"/></timeMap>`);
+        clips.push('          <adjust-conform type="fit"/>');
       } else {
         clips.push(`        <asset-clip name="${displayName}" ref="${imageId}" start="0s" duration="${time(clipDuration)}" offset="${time(offset + blockOffset)}" enabled="1">`,
           `          <adjust-conform type="${/^Pan /.test(animation) ? 'fill' : 'fit'}"/>`);
@@ -184,7 +183,7 @@ export function createDavinciXml({
       for (const [note, value] of [['Voiceover Text', frame.scriptText], ['Start Time', time(offset + blockOffset)], ['Animation Instruction', animation], ['DaVinci Resolve Marker', frame.marker]]) {
         if (value) clips.push(`          <marker start="0s" duration="1/${frameRate}s" value="${escapeXml(value)}" note="${note}"/>`);
       }
-      clips.push(video ? '        </clip>' : '        </asset-clip>');
+      clips.push('        </asset-clip>');
       blockOffset += clipDuration;
     });
   }

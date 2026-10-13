@@ -58,7 +58,7 @@ for (const legacy of [false, true]) test(`status and export with ${legacy ? 'leg
     assert.ok(fields.includes('+soundEffects.storageKey'));
     return project;
   } }));
-  t.mock.method(StoryboardVideo, 'find', () => ({ select: async () => [] }));
+  t.mock.method(StoryboardVideo, 'find', () => ({ select: async () => project.testVideos || [] }));
   t.mock.method(StoryboardImage, 'find', () => ({ select: async () => [image] }));
   const writes = [];
   t.mock.method(Project, 'updateOne', async (filter, update) => { writes.push({ filter, update }); return { matchedCount: 1 }; });
@@ -137,6 +137,27 @@ for (const legacy of [false, true]) test(`status and export with ${legacy ? 'leg
   const customXml = await fs.readFile(path.join(project.projectPath, custom.value.filename), 'utf8');
   assert.match(customXml, /src="file:\/\/\/Volumes\/Resolve%20media\/images\//);
   assert.equal(project.projectPath === '/Volumes/Resolve media', false);
+  if (!legacy) {
+    const filename = 'video_1_1__v123.mp4';
+    await fs.mkdir(path.join(root, 'video'), { recursive: true });
+    await fs.writeFile(path.join(root, 'video', filename), Buffer.from('0000ftypisomvideo'));
+    project.testVideos = [{ frameId: frame.id, status: 'ready', filename,
+      storageKey: `project/video/${filename}`, durationSec: 2.4, width: 1280, height: 720,
+      inputFingerprint: 'outdated' }];
+    const videoStatus = await request('/:id/davinci', 'get');
+    assert.equal(videoStatus.value.readyVideos, 0);
+    assert.equal(videoStatus.value.staleVideos, 1);
+    const defaultVideoExport = await request('/:id/davinci/export', 'post');
+    assert.equal(defaultVideoExport.value.staleVideosUsed, 0);
+    assert.doesNotMatch(await fs.readFile(path.join(root, defaultVideoExport.value.filename), 'utf8'), /src="file:[^"]+\/video\//);
+    const withStaleVideo = await request('/:id/davinci/export', 'post', { includeStaleVideos: true });
+    assert.equal(withStaleVideo.code, 200);
+    assert.equal(withStaleVideo.value.staleVideosUsed, 1);
+    const xmlWithVideo = await fs.readFile(path.join(root, withStaleVideo.value.filename), 'utf8');
+    assert.match(xmlWithVideo, /<asset-clip name="frame_1_1.mp4" ref="r\d+" srcEnable="video"/);
+    assert.match(xmlWithVideo, /src="file:[^"]+\/video\/video_1_1__v123.mp4"/);
+    assert.equal((await request('/:id/davinci/export', 'post', { includeStaleVideos: 'true' })).code, 400);
+  }
   project.storage = { provider: 'google_drive' };
   assert.equal((await request('/:id/davinci/export', 'post')).value.code, 'DAVINCI_MEDIA_ROOT_REQUIRED');
   delete project.storage;

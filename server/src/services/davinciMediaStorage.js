@@ -6,7 +6,7 @@ import { ensureProjectWorkspace, projectsRoot } from './projectStorage.js';
 // Old local projects may still reference uploads/voiceover or UUID image names.
 // Add byte-identical portable copies; never overwrite an existing project asset.
 export async function ensurePortableLocalFile(projectPath, directory, filename, buffer) {
-  if (!['audio', 'images', 'video'].includes(directory) || !/^((frame_\d+_\d+|still_[a-p]{64})\.(jpg|png|webp)|audio_block_\d+\.mp3|background_music_[0-9a-f-]{36}\.mp3|sound_effect_[0-9a-f-]{36}\.mp3|video_[0-9]+_[0-9]+(?:__[0-9a-f-]{36})?\.mp4)$/.test(filename)) {
+  if (!['audio', 'images', 'video'].includes(directory) || !/^((frame_\d+_\d+|still_[a-p]{64})\.(jpg|png|webp)|audio_block_\d+\.mp3|background_music_[0-9a-f-]{36}\.mp3|sound_effect_[0-9a-f-]{36}\.mp3|video_[1-9]\d*_[1-9]\d*(?:__[0-9a-zA-Z_-]{1,72})?\.mp4)$/.test(filename)) {
     throw new Error('INVALID_DAVINCI_MEDIA_PATH');
   }
   const root = await ensureProjectWorkspace(projectPath);
