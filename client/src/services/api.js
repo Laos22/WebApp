@@ -97,6 +97,20 @@ export const createSoundEffect = (projectId, payload) => projectRequest(projectI
 export const analyzeBackgroundMusic = (projectId, profileId) => projectRequest(projectId, '/music/analyze', 'POST', profileId ? { profileId } : {});
 export const generateBackgroundMusic = (projectId, payload = {}) => projectRequest(projectId, '/music/generate', 'POST', payload);
 export const backgroundMusicAudioUrl = (projectId, generatedAt) => `${SERVER_URL}/api/projects/${projectId}/music/audio?v=${encodeURIComponent(generatedAt || '0')}`;
+export const analyzeFlowMusic = (projectId, payload) => projectRequest(projectId, '/flow-music/analyze', 'POST', payload);
+export const saveFlowMusicPlan = (projectId, payload) => projectRequest(projectId, '/flow-music/plan', 'PUT', payload);
+export const acceptFlowMusic = projectId => projectRequest(projectId, '/flow-music/accept', 'POST', {});
+export const flowMusicCandidateAudioUrl = (projectId, uploadedAt) => `${SERVER_URL}/api/projects/${projectId}/flow-music/candidate/audio?v=${encodeURIComponent(uploadedAt || '0')}`;
+export async function uploadFlowMusicCandidate(projectId, file) {
+  const form = new FormData();
+  form.append('audio', file, file.name);
+  const response = await fetch(`${SERVER_URL}/api/projects/${projectId}/flow-music/candidate`, {
+    method: 'POST', credentials: 'include', body: form,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success) throw new Error(data.error || 'Не удалось загрузить трек Flow Music');
+  return data;
+}
 export const getReferencePlan = (projectId) => projectRequest(projectId, "/reference-plan");
 export const analyzeReferencePlan = (projectId, payload) =>
   projectRequest(projectId, "/reference-plan/analyze", "POST", payload);

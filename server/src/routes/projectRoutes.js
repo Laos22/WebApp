@@ -75,7 +75,7 @@ import {
   buildFlowManifest, flowFrameBaseName, flowPromptsText, flowReferenceFileName,
   frameIdFromFlowImagePath,
 } from "../services/flowPackageService.js";
-import { createDavinciXml, imageExtension } from "../services/davinciXmlService.js";
+import { createDavinciXml, imageExtension, timelinePlan, TIMEBASE } from "../services/davinciXmlService.js";
 import { ensurePortableLocalFile, ensureDavinciLocalWorkspace, saveDavinciStill, prepareDavinciImages } from "../services/davinciMediaStorage.js";
 import { measureMp3Duration, inspectAudioBlock } from "../services/audioDuration.js";
 import { safeProjectFolderName } from "../services/projectStorage.js";
@@ -109,6 +109,7 @@ const flowFrameImageUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 15 * 1024 * 1024, files: 1, fields: 2, parts: 3 },
 });
+const flowMusicUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024, files: 1 } });
 
 function parseVisualReferenceUpload(req, res, next) {
   visualReferenceUpload.single("image")(req, res, error => {
@@ -711,7 +712,7 @@ function soundPlanResponse(project) {
 function musicResponse(project) {
   const value = project.backgroundMusic?.toObject ? project.backgroundMusic.toObject() : project.backgroundMusic;
   if (!value) return { status: 'empty' };
-  return { status: value.status, title: value.title, sourcePrompt: value.sourcePrompt || '', prompt: value.prompt, durationSec: value.durationSec,
+  return { status: value.status, title: value.title, sourcePrompt: value.sourcePrompt || '', prompt: value.prompt, durationSec: value.durationSec, loop: Boolean(value.loop),
     instrumental: value.instrumental, filename: value.filename, mimeType: value.mimeType, byteSize: value.byteSize,
     generatedAt: value.generatedAt, sourceStoryboardRevision: value.sourceStoryboardRevision,
     sourceVoiceoverRevision: value.sourceVoiceoverRevision, errorCode: value.errorCode };
@@ -780,6 +781,141 @@ router.get('/:id/music/audio', ensureAuthenticated, async (req, res) => {
     res.status(200).set({ 'Content-Type': project.backgroundMusic.mimeType || 'audio/mpeg', 'Content-Length': String(audio.length), 'Content-Disposition': `inline; filename="${project.backgroundMusic.filename || 'background-music.mp3'}"`, 'Cache-Control': 'no-store' });
     return res.send(audio);
   } catch { return res.status(500).json({ error: 'Не удалось прочитать фоновую музыку' }); }
+});
+
+function flowMusicResponse(project) {
+  const draft = project.flowMusicDraft;
+  if (!draft) return null;
+  return { title: draft.title, targetDurationSec: draft.targetDurationSec, clipDurationSec: draft.clipDurationSec,
+    structure: draft.structure, prompt: draft.prompt, sourceStoryboardRevision: draft.sourceStoryboardRevision,
+    sourceVoiceoverRevision: draft.sourceVoiceoverRevision,
+    candidate: draft.candidate ? { filename: draft.candidate.filename, durationSec: draft.candidate.durationSec,
+      byteSize: draft.candidate.byteSize, uploadedAt: draft.candidate.uploadedAt } : null };
+}
+
+function parseFlowMusicFields(value) {
+  const title = typeof value?.title === 'string' ? value.title.trim() : '';
+  const structure = typeof value?.structure === 'string' ? value.structure.trim() : '';
+  const prompt = typeof value?.prompt === 'string' ? value.prompt.trim() : '';
+  const clipDurationSec = Number(value?.clipDurationSec);
+  if (!title || title.length > 160 || !structure || structure.length > 4100 || !prompt || prompt.length > 4100 ||
+      !Number.isFinite(clipDurationSec) || clipDurationSec < 3 || clipDurationSec > 180) return null;
+  return { title, structure, prompt, clipDurationSec };
+}
+
+router.post('/:id/flow-music/analyze', ensureAuthenticated, async (req, res) => {
+  try {
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    if (project.storyboard?.status !== 'confirmed' || project.voiceover?.status !== 'confirmed') return res.status(409).json({ error: 'Сначала утвердите раскадровку и текст озвучки' });
+    const instructions = typeof req.body?.instructions === 'string' ? req.body.instructions.trim() : '';
+    if (instructions.length > 2000) return res.status(400).json({ error: 'Инструкции слишком длинные' });
+    const plan = timelinePlan(project.voiceover.blocks, project.storyboard.frames);
+    const targetDurationSec = Number((plan.duration / TIMEBASE).toFixed(2));
+    const requestedDuration = req.body?.clipDurationSec;
+    const clipDurationSec = requestedDuration === 'full' ? Math.max(3, Math.min(180, targetDurationSec))
+      : Number(requestedDuration ?? project.flowMusicDraft?.clipDurationSec ?? 120);
+    if (!Number.isFinite(clipDurationSec) || clipDurationSec < 3 || clipDurationSec > 180) return res.status(400).json({ error: 'Длина фрагмента Flow Music должна быть от 3 до 180 секунд' });
+    const sections = plan.blocks.map(item => ({ startSec: Number((item.offset / TIMEBASE).toFixed(2)),
+      durationSec: Number(item.durationSec.toFixed(2)), narration: String(item.block.adaptedText || item.block.sourceText || '').slice(0, 600),
+      visuals: item.frames.map(frame => String(frame.visualDescription || '').slice(0, 240)).slice(0, 15) }));
+    const settings = await Settings.findOne({ userId: req.user._id });
+    const profile = resolveRequestedProfile(settings, 'text', req.body?.profileId);
+    if (!profile) return res.status(503).json({ error: 'Настройте текстовый AI-профиль для анализа музыки' });
+    const request = `You are a film composer. Analyze the timed storyboard and narration. Design a LOOPABLE instrumental music cue for Google Flow Music of exactly about ${clipDurationSec} seconds. The full film is approximately ${targetDurationSec} seconds and the same cue will repeat in editing. Do not attempt a one-time linear emotional arc that breaks at the loop point. Begin and end on the same tonal and rhythmic texture; no intro, outro, fade, silence, vocals, speech, abrupt ending, or one-off dramatic climax. Return JSON only with keys: title (short Russian title), structure (Russian description of the film's timed sections and how a repeating cue supports them), prompt (English Flow Music generation prompt up to 4100 characters, including requested duration and seamless loop instructions). User instructions: ${JSON.stringify(instructions)}. Previous plan: ${JSON.stringify(project.flowMusicDraft ? { structure: project.flowMusicDraft.structure, prompt: project.flowMusicDraft.prompt } : null)}. Project: ${JSON.stringify(project.title)}. Timed sections: ${JSON.stringify(sections)}.`;
+    const answer = await generateVideoPlanText(request, profile, true);
+    let parsed;
+    try { parsed = JSON.parse(String(answer).trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')); } catch { parsed = null; }
+    const fields = parseFlowMusicFields({ ...parsed, clipDurationSec });
+    if (!fields) return res.status(502).json({ error: 'ИИ вернул некорректный план музыки. Повторите анализ.' });
+    const saved = await Project.findOneAndUpdate({ _id: project._id, userId: req.user._id,
+      'storyboard.revision': project.storyboard.revision, 'voiceover.revision': project.voiceover.revision,
+      updatedAt: project.updatedAt }, { $set: {
+        'flowMusicDraft.title': fields.title, 'flowMusicDraft.structure': fields.structure,
+        'flowMusicDraft.prompt': fields.prompt, 'flowMusicDraft.clipDurationSec': fields.clipDurationSec,
+        'flowMusicDraft.targetDurationSec': targetDurationSec,
+        'flowMusicDraft.sourceStoryboardRevision': project.storyboard.revision,
+        'flowMusicDraft.sourceVoiceoverRevision': project.voiceover.revision,
+        updatedAt: new Date(),
+      } }, { new: true, runValidators: true });
+    if (!saved) return res.status(409).json({ error: 'Проект изменился во время анализа. Повторите запрос.' });
+    return res.json({ success: true, draft: flowMusicResponse(saved) });
+  } catch (error) { return res.status(error.status === 429 ? 429 : 500).json({ error: 'Не удалось проанализировать раскадровку для Flow Music' }); }
+});
+
+router.put('/:id/flow-music/plan', ensureAuthenticated, async (req, res) => {
+  try {
+    const fields = parseFlowMusicFields(req.body);
+    if (!fields) return res.status(400).json({ error: 'Заполните название, структуру, промт и длительность до 180 секунд' });
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    if (!project.flowMusicDraft) return res.status(409).json({ error: 'Сначала проанализируйте проект' });
+    const saved = await Project.findOneAndUpdate({ _id: project._id, userId: req.user._id },
+      { $set: { 'flowMusicDraft.title': fields.title, 'flowMusicDraft.structure': fields.structure,
+        'flowMusicDraft.prompt': fields.prompt, 'flowMusicDraft.clipDurationSec': fields.clipDurationSec,
+        updatedAt: new Date() } }, { new: true, runValidators: true });
+    return res.json({ success: true, draft: flowMusicResponse(saved) });
+  } catch { return res.status(500).json({ error: 'Не удалось сохранить музыкальный план' }); }
+});
+
+router.post('/:id/flow-music/candidate', ensureAuthenticated, (req, res, next) => {
+  flowMusicUpload.single('audio')(req, res, error => error
+    ? res.status(error.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({ error: 'Загрузите MP3 размером до 50 МБ' }) : next());
+}, async (req, res) => {
+  let stored;
+  let project;
+  try {
+    project = await Project.findOne({ _id: req.params.id, userId: req.user._id }).select('+flowMusicDraft.candidate.storageKey');
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    if (!project.flowMusicDraft?.prompt) return res.status(409).json({ error: 'Сначала подготовьте план Flow Music' });
+    if (!req.file?.buffer?.length || !/\.mp3$/i.test(req.file.originalname || '')) return res.status(400).json({ error: 'Нужен MP3-файл, скачанный из Flow Music' });
+    let durationSec;
+    try { durationSec = await measureMp3Duration(req.file.buffer); } catch { return res.status(400).json({ error: 'Файл не является корректным MP3' }); }
+    if (durationSec < 3 || durationSec > 600) return res.status(400).json({ error: 'Длительность MP3 должна быть от 3 до 600 секунд' });
+    stored = await saveMusicFile({ project, userId: req.user._id, buffer: req.file.buffer });
+    const candidate = { ...stored, durationSec, uploadedAt: new Date() };
+    const saved = await Project.findOneAndUpdate({ _id: project._id, userId: req.user._id, updatedAt: project.updatedAt },
+      { $set: { 'flowMusicDraft.candidate': candidate, updatedAt: new Date() } }, { new: true, runValidators: true });
+    if (!saved) { await deleteMusicFile(stored.storageKey, project, req.user._id); return res.status(409).json({ error: 'Проект изменился. Повторите загрузку.' }); }
+    if (project.flowMusicDraft.candidate?.storageKey) await deleteMusicFile(project.flowMusicDraft.candidate.storageKey, project, req.user._id).catch(() => {});
+    return res.json({ success: true, draft: flowMusicResponse(saved) });
+  } catch { if (stored && project) await deleteMusicFile(stored.storageKey, project, req.user._id).catch(() => {}); return res.status(500).json({ error: 'Не удалось загрузить трек Flow Music' }); }
+});
+
+router.get('/:id/flow-music/candidate/audio', ensureAuthenticated, async (req, res) => {
+  try {
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id }).select('+flowMusicDraft.candidate.storageKey');
+    const candidate = project?.flowMusicDraft?.candidate;
+    if (!candidate?.storageKey) return res.status(404).json({ error: 'Трек для прослушивания не найден' });
+    const audio = await readMusicFile(candidate.storageKey, project, req.user._id);
+    return res.status(200).set({ 'Content-Type': 'audio/mpeg', 'Content-Length': String(audio.length),
+      'Content-Disposition': `inline; filename="${candidate.filename}"`, 'Cache-Control': 'no-store' }).send(audio);
+  } catch { return res.status(500).json({ error: 'Не удалось прочитать трек Flow Music' }); }
+});
+
+router.post('/:id/flow-music/accept', ensureAuthenticated, async (req, res) => {
+  try {
+    const project = await Project.findOne({ _id: req.params.id, userId: req.user._id })
+      .select('+flowMusicDraft.candidate.storageKey +backgroundMusic.storageKey');
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const draft = project.flowMusicDraft;
+    if (!draft?.candidate?.storageKey) return res.status(409).json({ error: 'Сначала загрузите и прослушайте трек' });
+    const audio = await readMusicFile(draft.candidate.storageKey, project, req.user._id);
+    const durationSec = await measureMp3Duration(audio);
+    const accepted = { status: 'ready', title: draft.title || 'Flow Music', sourcePrompt: draft.prompt,
+      prompt: draft.prompt, durationSec, instrumental: true, loop: true,
+      storageKey: draft.candidate.storageKey, filename: draft.candidate.filename,
+      mimeType: 'audio/mpeg', byteSize: audio.length, generatedAt: new Date(),
+      sourceStoryboardRevision: draft.sourceStoryboardRevision,
+      sourceVoiceoverRevision: draft.sourceVoiceoverRevision, errorCode: '' };
+    const saved = await Project.findOneAndUpdate({ _id: project._id, userId: req.user._id, updatedAt: project.updatedAt },
+      { $set: { backgroundMusic: accepted, updatedAt: new Date() }, $unset: { 'flowMusicDraft.candidate': '' } },
+      { new: true, runValidators: true });
+    if (!saved) return res.status(409).json({ error: 'Проект изменился. Повторите принятие трека.' });
+    if (project.backgroundMusic?.storageKey && project.backgroundMusic.storageKey !== accepted.storageKey)
+      await deleteMusicFile(project.backgroundMusic.storageKey, project, req.user._id).catch(() => {});
+    return res.json({ success: true, music: musicResponse(saved), draft: flowMusicResponse(saved) });
+  } catch { return res.status(500).json({ error: 'Не удалось принять трек Flow Music' }); }
 });
 
 router.get('/:id/sound-effects', ensureAuthenticated, async (req, res) => {

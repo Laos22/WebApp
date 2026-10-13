@@ -180,6 +180,7 @@ const backgroundMusicSchema = new mongoose.Schema({
   prompt: { type: String, default: '', maxlength: 4100 },
   durationSec: { type: Number, min: 3, max: 600, default: null },
   instrumental: { type: Boolean, default: true },
+  loop: { type: Boolean, default: false },
   storageKey: { type: String, default: '', maxlength: 1000, select: false },
   filename: { type: String, default: '' },
   mimeType: { type: String, default: 'audio/mpeg' },
@@ -188,6 +189,24 @@ const backgroundMusicSchema = new mongoose.Schema({
   sourceStoryboardRevision: { type: Number, default: null },
   sourceVoiceoverRevision: { type: Number, default: null },
   errorCode: { type: String, default: '' },
+}, { _id: false, strict: 'throw' });
+
+const flowMusicDraftSchema = new mongoose.Schema({
+  title: { type: String, default: '', maxlength: 160 },
+  targetDurationSec: { type: Number, min: 1, default: null },
+  clipDurationSec: { type: Number, min: 3, max: 180, default: 120 },
+  structure: { type: String, default: '', maxlength: 4100 },
+  prompt: { type: String, default: '', maxlength: 4100 },
+  sourceStoryboardRevision: { type: Number, default: null },
+  sourceVoiceoverRevision: { type: Number, default: null },
+  candidate: { type: new mongoose.Schema({
+    storageKey: { type: String, required: true, select: false },
+    filename: { type: String, required: true },
+    mimeType: { type: String, default: 'audio/mpeg' },
+    byteSize: { type: Number, required: true },
+    durationSec: { type: Number, required: true },
+    uploadedAt: { type: Date, required: true },
+  }, { _id: false, strict: 'throw' }), default: undefined },
 }, { _id: false, strict: 'throw' });
 
 const storyboardFrameSchema = new mongoose.Schema({
@@ -297,6 +316,7 @@ const projectSchema = new mongoose.Schema({
   soundEffects: { type: [soundEffectSchema], default: [] },
   soundPlan: { type: soundPlanSchema, default: undefined },
   backgroundMusic: { type: backgroundMusicSchema, default: undefined },
+  flowMusicDraft: { type: flowMusicDraftSchema, default: undefined },
   visualBible: { type: visualBibleSchema, default: undefined },
   referencePlan: { type: referencePlanSchema, default: undefined },
   storyboard: { type: storyboardSchema, default: undefined },

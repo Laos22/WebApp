@@ -153,3 +153,20 @@ test('exports MP4, music, overlapping frame effects and transitions together at 
   for (const role of ['dialogue', 'music', 'effects']) assert.ok(firstClip.includes(`audioRole="${role}"`));
   assert.ok(xml.includes(`sequence format="r0" duration="${plan.duration}/${TIMEBASE}s"`));
 });
+
+test('loopable music covers the complete narration timeline and trims only the final repeat', () => {
+  const input = fixture();
+  const plan = timelinePlan(input.voiceoverBlocks, input.frames);
+  const clipTicks = Math.round(2.5 * TIMEBASE);
+  const xml = createDavinciXml({ ...input, backgroundMusic: {
+    filename: 'background_music_loop.mp3', title: 'Loop', durationSec: 2.5, loop: true,
+  } });
+  const clips = [...xml.matchAll(/<asset-clip name="Loop"[^>]+>/g)].map(match => match[0]);
+  assert.equal(clips.length, Math.ceil(plan.duration / clipTicks));
+  clips.forEach((clip, index) => {
+    assert.match(clip, new RegExp(`offset="${index * clipTicks}/${TIMEBASE}s"`));
+    assert.match(clip, new RegExp(`duration="${Math.min(clipTicks, plan.duration - index * clipTicks)}/${TIMEBASE}s"`));
+  });
+  const legacy = createDavinciXml({ ...input, backgroundMusic: { filename: 'old.mp3', durationSec: 2.5 } });
+  assert.equal((legacy.match(/audioRole="music"/g) || []).length, 1);
+});

@@ -189,9 +189,13 @@ export function createDavinciXml({
   const connectedAudio = [];
   if (backgroundMusic?.filename && backgroundMusic?.durationSec > 0) {
     const musicId = `r${resourceNumber++}`;
-    const musicDuration = Math.min(plan.duration, Math.round(backgroundMusic.durationSec * TIMEBASE));
-    resources.push(`    <asset id="${musicId}" name="${escapeXml(backgroundMusic.filename)}" start="0s" hasAudio="1" duration="${time(Math.round(backgroundMusic.durationSec * TIMEBASE))}" audioSources="1" audioChannels="2" audioRate="48k"><media-rep src="${escapeXml(mediaSourceUrl(mediaRootPath, `audio/${backgroundMusic.filename}`))}" kind="original-media"/></asset>`);
-    connectedAudio.push(`          <asset-clip name="${escapeXml(backgroundMusic.title || 'Background Music')}" ref="${musicId}" start="0s" duration="${time(musicDuration)}" offset="0s" enabled="1" lane="-2" audioRole="music"/>`);
+    const sourceDuration = Math.round(backgroundMusic.durationSec * TIMEBASE);
+    resources.push(`    <asset id="${musicId}" name="${escapeXml(backgroundMusic.filename)}" start="0s" hasAudio="1" duration="${time(sourceDuration)}" audioSources="1" audioChannels="2" audioRate="48k"><media-rep src="${escapeXml(mediaSourceUrl(mediaRootPath, `audio/${backgroundMusic.filename}`))}" kind="original-media"/></asset>`);
+    for (let offset = 0; offset < plan.duration; offset += sourceDuration) {
+      const musicDuration = Math.min(plan.duration - offset, sourceDuration);
+      connectedAudio.push(`          <asset-clip name="${escapeXml(backgroundMusic.title || 'Background Music')}" ref="${musicId}" start="0s" duration="${time(musicDuration)}" offset="${time(offset)}" enabled="1" lane="-2" audioRole="music"/>`);
+      if (!backgroundMusic.loop) break;
+    }
   }
   const laneEnds = [];
   for (const sourceEffect of soundEffects) {
