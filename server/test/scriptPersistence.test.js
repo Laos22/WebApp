@@ -5,6 +5,7 @@ import vm from 'node:vm';
 
 const source = fs.readFileSync(new URL('../src/routes/projectRoutes.js', import.meta.url), 'utf8')
   .replace(/^import[\s\S]*?from\s+"[^"]+";\n/gm, '')
+  .replace(/^router\.use\([^;]+;\n/gm, '')
   .replace('export default router;', '');
 
 function setup({ owner = true, failWrite = false, failMirror = false } = {}) {
@@ -55,7 +56,7 @@ function setup({ owner = true, failWrite = false, failMirror = false } = {}) {
     projectUsesDrive: () => false,
     markVisualBibleStaleUpdate: () => ({ $set: {} }),
     Settings: { findOne: async () => ({ prompts: { script: 'unchanged prompt' } }) },
-    resolveProfile: () => 'profile',
+    resolveProfile: () => 'profile', resolveRequestedProfile: () => 'profile',
     generateScript: async (...args) => {
       assert.deepEqual(args, ['unchanged prompt', 'description', 'profile']);
       generated++;

@@ -1,11 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "Google Flow ↔ WebApp",
-  "version": "0.6.1",
-  "description": "Запускает генерацию изображений и видео в Flow из WebApp и возвращает результаты в проект.",
+  "name": "Flow и DaVinci AI ↔ WebApp",
+  "version": "0.7.3",
+  "description": "Запускает генерацию в Flow и DaVinci AI из WebApp и возвращает результаты в проект.",
   "permissions": ["storage"],
   "host_permissions": [
     "https://flow.google.com/*",
+    "https://davinci.ai/*",
+    "https://storage.googleapis.com/davinciweb-b8892.appspot.com/user-outputs/*",
     "http://localhost:5173/*",
     "https://aihub-webapp.onrender.com/*"
   ],
@@ -17,6 +19,11 @@
     {
       "matches": ["https://flow.google.com/*"],
       "js": ["flow-content.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://davinci.ai/app/video/*"],
+      "js": ["davinci-content.js"],
       "run_at": "document_start"
     },
     {

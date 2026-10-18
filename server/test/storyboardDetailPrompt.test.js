@@ -21,6 +21,7 @@ test('storyboard detail prompt includes frame and only selected references', () 
   const result = buildStoryboardDetailPrompt(
     project, frame, references, 'Больше деталей света',
     '{{PROJECT_TITLE}}|{{FRAME}}|{{REFERENCES}}|{{CURRENT_PROMPT}}|{{INSTRUCTION}}',
+    true,
   );
   assert.match(result, /Тестовый проект/);
   assert.match(result, /Точный текст кадра/);
@@ -28,6 +29,24 @@ test('storyboard detail prompt includes frame and only selected references', () 
   assert.doesNotMatch(result, /ref_unused/);
   assert.match(result, /Current prompt/);
   assert.match(result, /Больше деталей света/);
+});
+
+test('rebuilding a frame prompt uses the edited scene instead of a contradictory old prompt', () => {
+  const project = { title: 'Чайка' };
+  const frame = {
+    id: 'frame_1', order: 1, scriptText: 'Корабль идёт по волнам',
+    visualDescription: 'На казацкой чайке стоят казаки',
+    prompt: 'An empty boat, no people visible', referenceIds: [],
+    promptDetailStatus: 'stale',
+  };
+  const template = '{{FRAME}}\nOLD: {{CURRENT_PROMPT}}';
+  const rebuilt = buildStoryboardDetailPrompt(project, frame, [], '', template);
+  assert.match(rebuilt, /На казацкой чайке стоят казаки/);
+  assert.doesNotMatch(rebuilt, /no people visible/);
+  const preservingStale = buildStoryboardDetailPrompt(project, frame, [], '', template, true);
+  assert.doesNotMatch(preservingStale, /no people visible/);
+  const previouslyReady = buildStoryboardDetailPrompt(project, { ...frame, promptDetailStatus: 'ready' }, [], '', template);
+  assert.doesNotMatch(previouslyReady, /no people visible/);
 });
 
 test('recognizes Gemini rate limits and uses provider retry hints', () => {

@@ -194,6 +194,16 @@ export const getDavinciStatus = projectId => projectRequest(projectId, "/davinci
 export const generateDavinciXml = (projectId, settings) =>
   projectRequest(projectId, "/davinci/export", "POST", settings);
 
+export const getShorts = projectId => projectRequest(projectId, '/shorts');
+export const suggestShorts = projectId => projectRequest(projectId, '/shorts/suggest', 'POST', {});
+export const createShort = (projectId, draft) => projectRequest(projectId, '/shorts', 'POST', draft);
+export const saveShort = (projectId, shortId, draft) => projectRequest(projectId, `/shorts/${shortId}`, 'PATCH', draft);
+export const deleteShort = (projectId, shortId) => projectRequest(projectId, `/shorts/${shortId}`, 'DELETE');
+export const generateShortAudio = (projectId, shortId) => projectRequest(projectId, `/shorts/${shortId}/audio`, 'POST', {});
+export const exportShortXml = (projectId, shortId, settings) => projectRequest(projectId, `/shorts/${shortId}/export`, 'POST', settings);
+export const shortAudioUrl = (projectId, shortId, generatedAt) =>
+  `${SERVER_URL}/api/projects/${projectId}/shorts/${shortId}/audio?v=${encodeURIComponent(generatedAt || '0')}`;
+
 async function flowFileRequest(url, options = {}) {
   const response = await fetch(url, { credentials: "include", ...options });
   if (!response.ok) {

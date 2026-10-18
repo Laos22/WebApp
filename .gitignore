@@ -6,3 +6,4 @@ server/config/*.json
 server/server.log
 server/project_state.json
 server/uploads/
+.local-webapp/

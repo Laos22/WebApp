@@ -273,7 +273,7 @@ export async function generateStoryboard(project, references, currentFrames, ins
   }
 }
 
-export function buildStoryboardDetailPrompt(project, frame, references, instruction, template) {
+export function buildStoryboardDetailPrompt(project, frame, references, instruction, template, preserveCurrentPrompt = false) {
   const source = typeof template === 'string' && template.trim()
     ? template : DEFAULT_STORYBOARD_DETAIL_PROMPT;
   const selectedIds = new Set(frame.referenceIds || []);
@@ -281,21 +281,23 @@ export function buildStoryboardDetailPrompt(project, frame, references, instruct
     id: reference.id, name: reference.name, type: reference.type,
     description: reference.description, prompt: reference.prompt,
   }));
-  return source.split('{{PROJECT_TITLE}}').join(project.title || '')
+  const currentPrompt = preserveCurrentPrompt && frame.promptDetailStatus !== 'stale' ? frame.prompt || '' : '';
+  const prepared = source.split('{{PROJECT_TITLE}}').join(project.title || '')
     .split('{{FRAME}}').join(JSON.stringify({
       id: frame.id, order: frame.order, scriptText: frame.scriptText,
       visualDescription: frame.visualDescription,
     }))
     .split('{{REFERENCES}}').join(JSON.stringify(selectedReferences))
-    .split('{{CURRENT_PROMPT}}').join(frame.prompt || '')
+    .split('{{CURRENT_PROMPT}}').join(currentPrompt)
     .split('{{INSTRUCTION}}').join(instruction || 'Нет дополнительной инструкции.');
+  return `${prepared}\n\nОБЯЗАТЕЛЬНОЕ ВИЗУАЛЬНОЕ ОПИСАНИЕ КАДРА: ${frame.visualDescription}\nОБЯЗАТЕЛЬНЫЙ ПРИОРИТЕТ: финальный prompt должен точно показывать всё, что указано в visualDescription кадра. Состав людей и объектов бери из visualDescription; референсы уточняют их внешний вид, но не отменяют их присутствие. Не добавляй отрицаний, запретов или деталей из прежнего prompt, если они противоречат visualDescription. ${currentPrompt ? 'Прежний prompt служит только второстепенным контекстом.' : 'Прежний prompt намеренно не передан: составь новый с нуля по описанию кадра.'}`;
 }
 
-export async function detailStoryboardFramePrompt(project, frame, references, instruction, template, profile) {
+export async function detailStoryboardFramePrompt(project, frame, references, instruction, template, profile, preserveCurrentPrompt = false) {
   try {
     const response = await generateTextResponse(profile, "detail-storyboard-frame-prompt", {
       contents: [{ role: 'user', parts: [{
-        text: buildStoryboardDetailPrompt(project, frame, references, instruction, template),
+        text: buildStoryboardDetailPrompt(project, frame, references, instruction, template, preserveCurrentPrompt),
       }] }],
     });
     const text = modelText(response);

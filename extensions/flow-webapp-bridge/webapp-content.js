@@ -1,7 +1,7 @@
 const pending = new Map();
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type !== "IMPORT_FLOW_FRAME" && message?.type !== "IMPORT_FLOW_REFERENCE" && message?.type !== "IMPORT_FLOW_VIDEO") return;
+  if (!["IMPORT_FLOW_FRAME", "IMPORT_FLOW_REFERENCE", "IMPORT_FLOW_VIDEO", "IMPORT_DAVINCI_VIDEO"].includes(message?.type)) return;
   const requestId = crypto.randomUUID();
   const timeout = setTimeout(() => {
     pending.delete(requestId);
@@ -32,18 +32,18 @@ window.addEventListener("message", event => {
 window.addEventListener("message", event => {
   if (event.source !== window || event.origin !== location.origin ||
       event.data?.source !== "webapp-flow-bridge" ||
-      !["START_FLOW_BATCH", "START_FLOW_VIDEO"].includes(event.data?.type) ||
+      !["START_FLOW_BATCH", "START_FLOW_VIDEO", "START_DAVINCI_VIDEO"].includes(event.data?.type) ||
       typeof event.data.requestId !== "string" || !event.data.requestId) return;
   const { requestId, payload } = event.data;
-  const video = event.data.type === "START_FLOW_VIDEO";
+  const video = event.data.type !== "START_FLOW_BATCH";
   chrome.runtime.sendMessage({ type: event.data.type, payload }, response => {
     const error = chrome.runtime.lastError;
     window.postMessage({
       source: "flow-webapp-bridge-extension",
-      type: video ? "START_FLOW_VIDEO_RESULT" : "START_FLOW_BATCH_RESULT",
+      type: video ? `${event.data.type}_RESULT` : "START_FLOW_BATCH_RESULT",
       requestId,
       ok: !error && response?.ok === true,
-      error: error ? "Расширение не смогло связаться с Google Flow." : response?.error || "",
+      error: error ? "Расширение не смогло связаться с сервисом генерации." : response?.error || "",
     }, location.origin);
   });
 });
@@ -51,11 +51,11 @@ window.addEventListener("message", event => {
 window.addEventListener("message", event => {
   if (event.source !== window || event.origin !== location.origin ||
       event.data?.source !== "webapp-flow-bridge" ||
-      event.data?.type !== "FLOW_BRIDGE_PING" ||
+      !["FLOW_BRIDGE_PING", "DAVINCI_BRIDGE_PING"].includes(event.data?.type) ||
       typeof event.data.requestId !== "string") return;
   window.postMessage({
     source: "flow-webapp-bridge-extension",
-    type: "FLOW_BRIDGE_PING_RESULT",
+    type: `${event.data.type}_RESULT`,
     requestId: event.data.requestId,
     ok: true,
     version: chrome.runtime.getManifest().version,

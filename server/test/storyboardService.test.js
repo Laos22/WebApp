@@ -171,6 +171,12 @@ test('manual save preserves detail progress until the prompt changes', () => {
   const changed = validateStoryboardFrames([{ ...input, prompt: 'Manual replacement' }], current, allowed, voiceBlocks);
   assert.equal(changed[0].promptDetailStatus, 'pending');
   assert.equal(changed[0].promptDetailedAt, null);
+  const changedScene = validateStoryboardFrames([{ ...input, visualDescription: 'На лодке стоят казаки' }], current, allowed, voiceBlocks);
+  assert.equal(changedScene[0].promptDetailStatus, 'stale');
+  assert.equal(changedScene[0].promptDetailedAt, null);
+  assert.equal(storyboardImageMatchesFrame({ sourcePrompt: input.prompt, sourceReferenceIds: [] }, changedScene[0]), false);
+  const savedAgain = validateStoryboardFrames([{ ...input, visualDescription: 'На лодке стоят казаки' }], changedScene, allowed, voiceBlocks);
+  assert.equal(savedAgain[0].promptDetailStatus, 'stale');
 });
 
 test('storyboard freshness follows script, voiceover and reference revisions', () => {

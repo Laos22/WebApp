@@ -12,6 +12,8 @@ import express from "express";
 import referenceImageRoutes from './referenceImageRoutes.js';
 import coverRoutes from './coverRoutes.js';
 import youtubeDescriptionRoutes from './youtubeDescriptionRoutes.js';
+import shortsRoutes from './shortsRoutes.js';
+import ShortVideo from '../models/ShortVideo.js';
 import multer from "multer";
 import JSZip from "jszip";
 import { ensureAuthenticated } from "../middleware/auth.js";
@@ -95,6 +97,7 @@ const router = express.Router();
 router.use(referenceImageRoutes);
 router.use(coverRoutes);
 router.use(youtubeDescriptionRoutes);
+router.use(shortsRoutes);
 const configuredFlowArchiveMb = Number(process.env.MAX_FLOW_ARCHIVE_MB || 100);
 const maxFlowArchiveBytes = Math.min(
   250,
@@ -241,6 +244,7 @@ router.delete("/:id", ensureAuthenticated, async (req, res) => {
     await VisualReference.deleteMany({ projectId: project._id, userId: req.user._id });
     await StoryboardImage.deleteMany({ projectId: project._id, userId: req.user._id });
     await StoryboardVideo.deleteMany({ projectId: project._id, userId: req.user._id });
+    await ShortVideo.deleteMany({ projectId: project._id, userId: req.user._id });
     await Promise.all(references.map(reference => deleteVisualReferenceFile(reference.storageKey, project.projectPath, req.user._id)
       .catch(() => console.error("VISUAL_REFERENCE_PROJECT_DELETE_FAILED"))));
     await Promise.all(storyboardImages.map(image => deleteStoryboardImageFile(image.storageKey, project.projectPath, req.user._id)
@@ -1626,8 +1630,9 @@ router.post('/:id/storyboard/frames/:frameId/detail-prompt', ensureAuthenticated
   try {
     const body = req.body;
     if (!body || typeof body !== 'object' || Array.isArray(body) ||
-        Object.keys(body).some(key => !['instruction', 'expectedEditVersion', 'sourceScriptRevision', 'sourceReferencePlanRevision', 'sourceVoiceoverRevision', 'profileId'].includes(key)) ||
+        Object.keys(body).some(key => !['instruction', 'expectedEditVersion', 'sourceScriptRevision', 'sourceReferencePlanRevision', 'sourceVoiceoverRevision', 'profileId', 'preserveCurrentPrompt'].includes(key)) ||
         typeof body.instruction !== 'string' || body.instruction.length > 2000 ||
+        (body.preserveCurrentPrompt !== undefined && typeof body.preserveCurrentPrompt !== 'boolean') ||
         !Number.isSafeInteger(body.expectedEditVersion) || body.expectedEditVersion < 1 ||
         !Number.isSafeInteger(body.sourceScriptRevision) || body.sourceScriptRevision < 1 ||
         !Number.isSafeInteger(body.sourceReferencePlanRevision) || body.sourceReferencePlanRevision < 1 ||
@@ -1647,16 +1652,19 @@ router.post('/:id/storyboard/frames/:frameId/detail-prompt', ensureAuthenticated
         storyboard.sourceVoiceoverRevision !== body.sourceVoiceoverRevision) {
       return res.status(409).json({ error: 'Раскадровка или исходные данные изменились. Обновите страницу.' });
     }
-    failureContext = { owner, frameId: frame.id, editVersion: body.expectedEditVersion };
+    const keepConfirmed = storyboard.status === 'confirmed';
+    failureContext = { owner, frameId: frame.id, editVersion: body.expectedEditVersion, wasStale: frame.promptDetailStatus === 'stale' };
     const references = selectedStoryboardReferences(project);
     const settings = await Settings.findOne({ userId: req.user._id });
     const prompt = await detailStoryboardFramePrompt(
       project, frame, references, body.instruction.trim(),
       settings?.prompts?.storyboardDetailPrompt || DEFAULT_STORYBOARD_DETAIL_PROMPT,
       resolveRequestedProfile(settings, 'text', body.profileId),
+      body.preserveCurrentPrompt === true,
     );
     const saved = await Project.findOneAndUpdate({
       ...owner, 'storyboard.editVersion': body.expectedEditVersion,
+      'storyboard.status': storyboard.status, 'storyboard.revision': storyboard.revision,
       'storyboard.sourceScriptRevision': body.sourceScriptRevision,
       'storyboard.sourceReferencePlanRevision': body.sourceReferencePlanRevision,
       'storyboard.sourceVoiceoverRevision': body.sourceVoiceoverRevision,
@@ -1669,9 +1677,10 @@ router.post('/:id/storyboard/frames/:frameId/detail-prompt', ensureAuthenticated
       'storyboard.frames.$[frame].promptDetailStatus': 'ready',
       'storyboard.frames.$[frame].promptDetailedAt': new Date(),
       'storyboard.frames.$[frame].promptDetailErrorCode': '',
-      'storyboard.status': 'draft', 'storyboard.confirmedAt': null,
+      'storyboard.status': keepConfirmed ? 'confirmed' : 'draft',
+      'storyboard.confirmedAt': keepConfirmed ? new Date() : null,
       'storyboard.updatedAt': new Date(), updatedAt: new Date(),
-    }, $inc: { 'storyboard.editVersion': 1 } }, {
+    }, $inc: { 'storyboard.editVersion': 1, ...(keepConfirmed ? { 'storyboard.revision': 1 } : {}) } }, {
       new: true, runValidators: true, arrayFilters: [{ 'frame.id': frame.id }],
     });
     if (!saved) return res.status(409).json({ error: 'Кадр изменился во время детализации. Повторите запрос.' });
@@ -1684,7 +1693,7 @@ router.post('/:id/storyboard/frames/:frameId/detail-prompt', ensureAuthenticated
           ...failureContext.owner, 'storyboard.editVersion': failureContext.editVersion,
           'storyboard.frames.id': failureContext.frameId,
         }, { $set: {
-          'storyboard.frames.$[frame].promptDetailStatus': 'error',
+          'storyboard.frames.$[frame].promptDetailStatus': failureContext.wasStale ? 'stale' : 'error',
           'storyboard.frames.$[frame].promptDetailErrorCode': error.code,
           'storyboard.frames.$[frame].promptDetailedAt': null,
         } }, { arrayFilters: [{ 'frame.id': failureContext.frameId }] }).catch(() => {});
@@ -1860,6 +1869,9 @@ router.post('/:id/storyboard/confirm', ensureAuthenticated, async (req, res) => 
     const project = await Project.findOne(owner);
     if (!project) return res.status(404).json({ error: 'Проект не найден' });
     const storyboard = normalizeStoryboard(project);
+    if (storyboard.frames.some(frame => frame.promptDetailStatus === 'stale')) {
+      return res.status(409).json({ code: 'STORYBOARD_PROMPT_OUTDATED', error: 'После правки описания сначала обновите prompt изменённых кадров.' });
+    }
     if (storyboard.status !== 'draft' || storyboard.editVersion !== expectedEditVersion ||
         storyboard.sourceScriptRevision !== sourceScriptRevision ||
         storyboard.sourceReferencePlanRevision !== sourceReferencePlanRevision ||
@@ -2049,6 +2061,9 @@ router.get('/:id/storyboard/flow/export', ensureAuthenticated, async (req, res) 
         error: requestedFrameId ? 'Кадр не найден' : 'Все изображения кадров уже готовы',
       });
     }
+    if (frames.some(frame => frame.promptDetailStatus === 'stale')) {
+      return res.status(409).json({ code: 'STORYBOARD_PROMPT_OUTDATED', error: 'Сначала обновите prompt кадров после правки описания.' });
+    }
 
     const neededReferenceIds = [...new Set(frames.flatMap(frame => frame.referenceIds))];
     const selectedItems = (project.referencePlan?.items || []).filter(item =>
@@ -2237,6 +2252,9 @@ router.post('/:id/storyboard/frames/:frameId/generate-image', ensureAuthenticate
     if (storyboard.status !== 'confirmed' || storyboard.revision !== sourceStoryboardRevision ||
         !storyboardIsCurrent(project, storyboard)) {
       return res.status(409).json({ error: 'Раскадровка изменилась. Обновите страницу.' });
+    }
+    if (frame.promptDetailStatus === 'stale') {
+      return res.status(409).json({ code: 'STORYBOARD_PROMPT_OUTDATED', error: 'Сначала обновите prompt кадра после правки описания.' });
     }
     const settings = await Settings.findOne({ userId: req.user._id });
     const profile = settings?.profiles?.id(profileId);

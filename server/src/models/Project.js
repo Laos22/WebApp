@@ -223,7 +223,7 @@ const storyboardFrameSchema = new mongoose.Schema({
     validate: value => value.length <= 100 && new Set(value).size === value.length,
   },
   promptDetailStatus: {
-    type: String, enum: ['pending', 'ready', 'error'], default: 'pending',
+    type: String, enum: ['pending', 'ready', 'error', 'stale'], default: 'pending',
   },
   promptDetailedAt: { type: Date, default: null },
   promptDetailErrorCode: { type: String, default: '', maxlength: 120 },

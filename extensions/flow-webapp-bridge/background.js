@@ -2,6 +2,7 @@ const FLOW_TOOL_URL = "https://flow.google.com/project/de86267f-f3e0-4767-b161-3
 const FLOW_TOOL_PATH = new URL(FLOW_TOOL_URL).pathname;
 const FLOW_VIDEO_TOOL_URL = "https://flow.google.com/project/de86267f-f3e0-4767-b161-3e297c3cbe5a/tool/705e5ae1-f454-4a7c-a516-bff7b843bcd9";
 const FLOW_VIDEO_TOOL_PATH = new URL(FLOW_VIDEO_TOOL_URL).pathname;
+const DAVINCI_VIDEO_URL = "https://davinci.ai/app/video/creations";
 const LOCAL_ORIGIN = "http://localhost:5173";
 const PRODUCTION_ORIGIN = "https://aihub-webapp.onrender.com";
 
@@ -16,6 +17,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "START_FLOW_VIDEO") {
     handleStartVideo(message.payload, sender).then(sendResponse, error => sendResponse({
       ok: false, error: error?.message || "Не удалось открыть видеоинструмент Google Flow.",
+    }));
+    return true;
+  }
+
+  if (message?.type === "START_DAVINCI_VIDEO") {
+    handleStartDavinciVideo(message.payload, sender).then(sendResponse, error => sendResponse({
+      ok: false, error: error?.message || "Не удалось открыть видеогенератор DaVinci AI.",
+    }));
+    return true;
+  }
+
+  if (message?.type === "DAVINCI_VIDEO_READY" && sender.url?.startsWith("https://davinci.ai/app/video/")) {
+    handleDavinciVideoReady(message.payload, sender).then(sendResponse, error => sendResponse({
+      ok: false, error: error?.message || "Не удалось передать видео из DaVinci AI.",
     }));
     return true;
   }
@@ -100,6 +115,82 @@ async function handleVideoResult(payload) {
   } catch {
     return { ok: false, error: "Не удалось связаться с WebApp. Обновите страницу и повторите передачу." };
   }
+}
+
+async function handleStartDavinciVideo(payload, sender) {
+  const pageUrl = sender.tab?.url || sender.url || "about:blank";
+  const origin = new URL(pageUrl).origin;
+  if (![LOCAL_ORIGIN, PRODUCTION_ORIGIN].includes(origin) ||
+      webAppProject(pageUrl, origin, "video") !== payload?.projectId) {
+    return { ok: false, error: "Откройте страницу видео нужного проекта в WebApp." };
+  }
+  const payloadError = videoStartPayloadError({ ...payload, modelDisplayName: "Omni 1.1 Flash" });
+  if (payloadError) return { ok: false, error: payloadError };
+  if (payload.modelDisplayName !== "Gemini Omni Flash 1.1" || payload.resolution !== "720p" ||
+      payload.durationSeconds !== 8 || payload.aspectRatio !== "16:9") {
+    return { ok: false, error: "DaVinci AI поддерживает здесь только Omni Flash 1.1, 720p, 8 секунд, 16:9." };
+  }
+  if (!Number.isInteger(sender.tab?.id)) return { ok: false, error: "Не найдена вкладка WebApp." };
+  // A dedicated tab keeps the user's current DaVinci draft untouched.
+  const tab = await chrome.tabs.create({ url: DAVINCI_VIDEO_URL, active: true });
+  if (!Number.isInteger(tab?.id)) throw new Error("Не удалось открыть вкладку DaVinci AI.");
+  const routeKey = `davinciVideoRoute:${tab.id}`;
+  await chrome.storage.session.set({ [routeKey]: {
+    tabId: sender.tab.id, davinciTabId: tab.id, origin,
+    projectId: payload.projectId, frameId: payload.frameId,
+    inputFingerprint: payload.inputFingerprint,
+  } });
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    try {
+      const response = await chrome.tabs.sendMessage(tab.id, { type: "START_DAVINCI_VIDEO", payload });
+      if (response?.ok !== true) await chrome.storage.session.remove(routeKey);
+      return response;
+    } catch (error) {
+      const noReceiver = /Receiving end does not exist|Could not establish connection/i.test(error?.message || "");
+      if (!noReceiver || attempt === 59) {
+        await chrome.storage.session.remove(routeKey);
+        throw new Error("DaVinci AI не открылся. Проверьте вход в аккаунт и обновите расширение.");
+      }
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  }
+  return { ok: false, error: "DaVinci AI не ответил." };
+}
+
+async function handleDavinciVideoReady(payload, sender) {
+  const routeKey = `davinciVideoRoute:${sender.tab?.id}`;
+  const { [routeKey]: route } = await chrome.storage.session.get(routeKey);
+  if (!route || route.davinciTabId !== sender.tab?.id ||
+      route.projectId !== payload?.projectId || route.frameId !== payload?.frameId ||
+      route.inputFingerprint !== payload?.inputFingerprint) {
+    return { ok: false, error: "Видеозадание устарело. Повторите запуск из WebApp." };
+  }
+  let url;
+  try { url = new URL(payload.videoUrl); } catch { /* Invalid URL. */ }
+  if (url?.origin !== "https://storage.googleapis.com" ||
+      !url.pathname.startsWith("/davinciweb-b8892.appspot.com/user-outputs/") ||
+      !url.pathname.endsWith(".mp4")) {
+    return { ok: false, error: "DaVinci AI вернул неожиданный адрес видео." };
+  }
+  const response = await fetch(url.href, { credentials: "omit" });
+  if (!response.ok || Number(response.headers.get("content-length")) > 64 * 1024 * 1024)
+    return { ok: false, error: "Не удалось загрузить MP4 из DaVinci AI или файл превышает 64 МБ." };
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!bytes.length || bytes.length > 64 * 1024 * 1024)
+    return { ok: false, error: "MP4 из DaVinci AI пустой или превышает 64 МБ." };
+  const chunks = [];
+  for (let offset = 0; offset < bytes.length; offset += 32768)
+    chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 32768)));
+  const tab = await chrome.tabs.get(route.tabId).catch(() => null);
+  if (webAppProject(tab?.url, route.origin, "video") !== route.projectId)
+    return { ok: false, error: "Откройте страницу видео проекта в WebApp для импорта." };
+  const result = await chrome.tabs.sendMessage(route.tabId, {
+    type: "IMPORT_DAVINCI_VIDEO",
+    payload: { projectId: route.projectId, frameId: route.frameId,
+      inputFingerprint: route.inputFingerprint, mimeType: "video/mp4", base64: btoa(chunks.join("")) },
+  });
+  if (result?.ok) await chrome.storage.session.remove(routeKey);
+  return result;
 }
 
 async function handleStart(payload, sender) {

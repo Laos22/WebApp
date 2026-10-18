@@ -158,6 +158,7 @@ export default function ImageGen() {
   const [frames, setFrames] = useState([]);
   const [instructions, setInstructions] = useState("");
   const [detailInstruction, setDetailInstruction] = useState("");
+  const [preserveCurrentPrompt, setPreserveCurrentPrompt] = useState(false);
   const [storyboardProfileId, setStoryboardProfileId] = useState("");
   const [detailProgress, setDetailProgress] = useState(null);
   const [imageProfiles, setImageProfiles] = useState([]);
@@ -284,6 +285,7 @@ export default function ImageGen() {
     const generating = storedFrames.filter(frame => frame.image?.status === "generating").length;
     return { ready, failed, generating, pending: storedFrames.length - ready, total: storedFrames.length };
   }, [storyboard]);
+  const stalePromptCount = storyboard?.frames.filter(frame => frame.promptDetailStatus === "stale").length || 0;
 
   useEffect(() => {
     if (!dirty || generationActive) return undefined;
@@ -366,8 +368,9 @@ export default function ImageGen() {
     });
   };
 
-  const detailOne = (frameId, currentData) => detailStoryboardFramePrompt(projectId, frameId, {
+  const detailOne = (frameId, currentData, preservePrompt = false) => detailStoryboardFramePrompt(projectId, frameId, {
     instruction: detailInstruction,
+    preserveCurrentPrompt: preservePrompt,
     expectedEditVersion: currentData.storyboard.editVersion,
     sourceScriptRevision: currentData.storyboard.sourceScriptRevision,
     sourceReferencePlanRevision: currentData.storyboard.sourceReferencePlanRevision,
@@ -375,7 +378,20 @@ export default function ImageGen() {
     profileId: storyboardProfileId,
   });
 
-  const detailFrame = (frameId) => run(`detail:${frameId}`, () => detailOne(frameId, data), "Prompt кадра детализирован.");
+  const detailFrame = (frameId) => run(`detail:${frameId}`, async () => {
+    let currentData = data;
+    if (activeFrameDirty && canSaveActiveFrame && activeFrame?.id === frameId) {
+      currentData = await saveStoryboardFrame(projectId, frameId, {
+        frame: activeFrame,
+        expectedEditVersion: storyboard.editVersion,
+        sourceStoryboardRevision: storyboard.revision,
+      });
+      if (mounted.current) applyData(currentData);
+    }
+    return detailOne(frameId, currentData, preserveCurrentPrompt && !activeDescriptionChanged && !activePromptStale);
+  }, storyboard.status === "confirmed"
+    ? "Prompt кадра обновлён, раскадровка осталась утверждённой. Проверьте prompt и создайте изображение заново."
+    : "Prompt кадра обновлён. Проверьте его перед утверждением раскадровки.");
 
   const detailAll = async (restart = false) => {
     if (pending || dirty || !frames.length) return;
@@ -823,9 +839,11 @@ export default function ImageGen() {
     instructions === (storyboard.instructions || "") && frameStructureUnchanged &&
     changedFrameIds.length === 1 && changedFrameIds[0] === activeFrame.id);
   const activeDetailStatus = activeStoredFrame?.promptDetailStatus || "pending";
+  const activePromptStale = activeDetailStatus === "stale";
+  const activeDescriptionChanged = Boolean(activeStoredFrame && activeFrame?.visualDescription !== activeStoredFrame.visualDescription);
   const activeImage = activeStoredFrame?.image || { status: "pending", hasImage: false };
   const activeImageStatus = activeFrame && pending === `image:${activeFrame.id}` ? "generating" : activeImage.status;
-  const imageStatusLabel = activeImageStatus === "ready" ? "Готово" : activeImageStatus === "error" ? "Ошибка" : activeImageStatus === "generating" ? "Генерируется" : activeImage.stale ? "Требует обновления" : "Ожидает";
+  const imageStatusLabel = activePromptStale ? "Обновите prompt" : activeImageStatus === "ready" ? "Готово" : activeImageStatus === "error" ? "Ошибка" : activeImageStatus === "generating" ? "Генерируется" : activeImage.stale ? "Требует обновления" : "Ожидает";
   const activePreviewUrl = activeFrame?.id && activeImage.hasImage
     ? getStoryboardFramePreviewUrl(projectId, activeFrame.id, activeImage.updatedAt)
     : "";
@@ -918,14 +936,14 @@ export default function ImageGen() {
               <div className="flex items-center gap-2"><h2 className="font-bold">{frameLabel(activeFrame, frames, data.voiceoverBlocks)}</h2>
                 <span className={`text-xs px-2 py-0.5 rounded-full ${activeImageStatus === "ready" ? "bg-emerald-950 text-emerald-300" : activeImageStatus === "error" ? "bg-red-950 text-red-300" : activeImageStatus === "generating" ? "bg-cyan-950 text-cyan-300" : "bg-slate-800 text-slate-300"}`}>{imageStatusLabel}</span>
               </div>
-              <p className="text-xs text-slate-500 truncate">Prompt: {activeDetailStatus === "ready" ? "детализирован" : activeDetailStatus === "error" ? "ошибка детализации" : "ожидает детализации"}</p>
+              <p className={`text-xs truncate ${activePromptStale ? "text-amber-300" : "text-slate-500"}`}>Prompt: {activePromptStale ? "устарел после правки кадра" : activeDetailStatus === "ready" ? "детализирован" : activeDetailStatus === "error" ? "ошибка детализации" : "ожидает детализации"}</p>
             </div>
             <div className="shrink-0 flex gap-2">
               <button type="button" title={activeImage.status === "ready" ? "Перегенерировать через Google API" : "Сгенерировать через Google API"} aria-label={activeImage.status === "ready" ? "Перегенерировать через Google API" : "Сгенерировать через Google API"}
-                className="w-11 h-10 rounded-xl bg-cyan-700 hover:bg-cyan-600 disabled:opacity-40 font-bold" disabled={Boolean(pending) || dirty || storyboard.status !== "confirmed" || !imageProfileId || !activeFrame.id}
+                className="w-11 h-10 rounded-xl bg-cyan-700 hover:bg-cyan-600 disabled:opacity-40 font-bold" disabled={Boolean(pending) || dirty || activePromptStale || storyboard.status !== "confirmed" || !imageProfileId || !activeFrame.id}
                 onClick={() => generateFrameImage(activeFrame.id)}>{pending === `image:${activeFrame.id}` ? "…" : "✨G"}</button>
               <button type="button" title={activeImage.hasImage ? "У кадра уже есть изображение" : "Сгенерировать через Google Flow"} aria-label="Сгенерировать через Google Flow"
-                className="w-11 h-10 rounded-xl bg-blue-700 hover:bg-blue-600 disabled:opacity-40 font-bold" disabled={Boolean(pending) || dirty || storyboard.status !== "confirmed" || !activeFrame.id || activeImage.hasImage}
+                className="w-11 h-10 rounded-xl bg-blue-700 hover:bg-blue-600 disabled:opacity-40 font-bold" disabled={Boolean(pending) || dirty || activePromptStale || storyboard.status !== "confirmed" || !activeFrame.id || activeImage.hasImage}
                 onClick={() => launchFlowBatch(activeFrame.id)}>{pending === "flow-start" ? "…" : "Flow"}</button>
               <button type="button" aria-label="Меню кадра" className="w-11 h-10 rounded-xl bg-purple-700 hover:bg-purple-600 text-xl leading-none" onClick={() => setFrameMenuOpen(true)}>•••</button>
             </div>
@@ -982,6 +1000,7 @@ export default function ImageGen() {
         <p className="text-sm text-slate-400">Статус: <span className="text-white font-semibold">{statuses[storyboard.status] || storyboard.status}</span> · кадров {frames.length}</p>
         {dirty && <span className="text-sm text-amber-300">Есть несохранённые изменения</span>}
       </div>
+      {stalePromptCount > 0 && <p className="rounded-xl border border-amber-700/60 bg-amber-950/30 p-3 text-sm text-amber-200">У {stalePromptCount} кадров описание или референсы изменились, а prompt остался прежним. Обновите prompt этих кадров перед генерацией изображений.</p>}
       <label className="block"><span className="block text-sm text-slate-300 mb-2">Общие инструкции для раскадровки</span>
         <textarea disabled={generationActive} value={instructions} maxLength={4000} onChange={event => setInstructions(event.target.value)} placeholder="Например: больше крупных планов, избегай повторяющихся композиций" className="w-full min-h-24 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
       <ProfileSelector type="text" projectId={projectId} operation="storyboard" value={storyboardProfileId} onChange={setStoryboardProfileId} disabled={Boolean(pending)} />
@@ -994,7 +1013,7 @@ export default function ImageGen() {
         {frames.length > 0 && <button type="button" className={`${button} bg-violet-800 hover:bg-violet-700`} disabled={Boolean(pending) || dirty || !prerequisitesReady} onClick={() => { if (window.confirm("Начать детализацию всех промтов заново с первого кадра?")) detailAll(true); }}>Детализировать заново</button>}
         {pending === "detail-all" && <button type="button" className={`${button} bg-red-800 hover:bg-red-700`} onClick={() => { stopDetail.current = true; }}>Остановить детализацию</button>}
         {frames.length > 0 && <button type="button" className={`${button} bg-slate-700 hover:bg-slate-600`} disabled={Boolean(pending) || !dirty || storyboard.status === "stale"} onClick={save}>Сохранить изменения</button>}
-        {frames.length > 0 && <button type="button" className={`${button} bg-emerald-700 hover:bg-emerald-600`} disabled={Boolean(pending) || dirty || storyboard.status !== "draft"} onClick={confirm}>Утвердить раскадровку</button>}
+        {frames.length > 0 && <button type="button" className={`${button} bg-emerald-700 hover:bg-emerald-600`} disabled={Boolean(pending) || dirty || stalePromptCount > 0 || storyboard.status !== "draft"} onClick={confirm}>Утвердить раскадровку</button>}
       </div>
       {(detailProgress || frames.length > 0) && <p className="text-sm text-slate-400">Детализация: <span className="text-emerald-400">готово {detailStats.ready}/{detailStats.total}</span>{detailStats.failed > 0 && <span className="text-red-400"> · ошибок {detailStats.failed}</span>}{detailProgress && <span className="text-fuchsia-300"> · в запуске {detailProgress.done}/{detailProgress.total}</span>}</p>}
       {frames.length > 0 && <div className="space-y-3 border-t border-slate-800 pt-4">
@@ -1021,8 +1040,8 @@ export default function ImageGen() {
         <Link to="/settings" className="inline-block text-sm text-purple-300 hover:text-purple-200">Открыть настройки профилей →</Link>
         {!imageProfiles.length && <p className="text-amber-300">Создайте профиль типа «Изображение» с провайдером Google Studio.</p>}
         <div className="grid sm:grid-cols-2 gap-2">
-          <button type="button" className={`${button} bg-cyan-700 hover:bg-cyan-600`} disabled={Boolean(pending) || dirty || storyboard.status !== "confirmed" || !imageProfileId || imageStats.pending === 0} onClick={() => generateAllImages(false)}>{pending === "image-all" ? "Генерация…" : "Продолжить генерацию"}</button>
-          <button type="button" className={`${button} bg-blue-800 hover:bg-blue-700`} disabled={Boolean(pending) || dirty || storyboard.status !== "confirmed" || !imageProfileId} onClick={() => { if (window.confirm("Начать генерацию всех изображений заново с первого кадра?")) generateAllImages(true); }}>Начать заново</button>
+          <button type="button" className={`${button} bg-cyan-700 hover:bg-cyan-600`} disabled={Boolean(pending) || dirty || stalePromptCount > 0 || storyboard.status !== "confirmed" || !imageProfileId || imageStats.pending === 0} onClick={() => generateAllImages(false)}>{pending === "image-all" ? "Генерация…" : "Продолжить генерацию"}</button>
+          <button type="button" className={`${button} bg-blue-800 hover:bg-blue-700`} disabled={Boolean(pending) || dirty || stalePromptCount > 0 || storyboard.status !== "confirmed" || !imageProfileId} onClick={() => { if (window.confirm("Начать генерацию всех изображений заново с первого кадра?")) generateAllImages(true); }}>Начать заново</button>
           {pending === "image-all" && <button type="button" className={`${button} bg-red-800 hover:bg-red-700 sm:col-span-2`} onClick={() => { stopImages.current = true; }}>Остановить после текущего кадра</button>}
         </div>
         {imageProgress && <p className="text-sm text-cyan-300">Обработано в этом запуске: {imageProgress.done}/{imageProgress.total}</p>}
@@ -1035,11 +1054,11 @@ export default function ImageGen() {
           <label className="text-sm text-slate-300">Модель Flow<select value={flowModel} disabled={Boolean(pending)} onChange={event => { setFlowModel(event.target.value); localStorage.setItem(FLOW_MODEL_KEY, event.target.value); }} className="mt-1 w-full bg-slate-950 border border-slate-700 rounded-xl p-3">{FLOW_MODELS.map(model => <option key={model.value} value={model.value}>{model.label}</option>)}</select></label>
           <label className="text-sm text-slate-300">Файл изображения<select value={flowOutputFormat} disabled={Boolean(pending)} onChange={event => { setFlowOutputFormat(event.target.value); localStorage.setItem(FLOW_OUTPUT_FORMAT_KEY, event.target.value); }} className="mt-1 w-full bg-slate-950 border border-slate-700 rounded-xl p-3"><option value="image/png">PNG</option><option value="image/jpeg">JPG</option></select></label>
         </div>
-        <button type="button" className={`${button} w-full bg-blue-700 hover:bg-blue-600`} disabled={Boolean(pending) || dirty || storyboard.status !== "confirmed" || imageStats.pending === 0} onClick={() => launchFlowBatch()}>{pending === "flow-start" ? "Передаём в Google Flow…" : `Запустить в Google Flow (${Math.min(flowBatchSize, imageStats.pending)})`}</button>
+        <button type="button" className={`${button} w-full bg-blue-700 hover:bg-blue-600`} disabled={Boolean(pending) || dirty || stalePromptCount > 0 || storyboard.status !== "confirmed" || imageStats.pending === 0} onClick={() => launchFlowBatch()}>{pending === "flow-start" ? "Передаём в Google Flow…" : `Запустить в Google Flow (${Math.min(flowBatchSize, imageStats.pending)})`}</button>
         <p className="text-xs text-slate-400">При первом запуске откроется вкладка Flow. Оставьте её открытой до окончания генерации.</p>
         <p className="text-sm text-slate-400">Ручной обмен файлами:</p>
         <div className="grid sm:grid-cols-2 gap-2">
-          <button type="button" className={`${button} bg-blue-700 hover:bg-blue-600`} disabled={Boolean(pending) || dirty || storyboard.status !== "confirmed" || imageStats.pending === 0} onClick={() => exportFlow()}>{pending === "flow-export" ? "Подготовка ZIP…" : `Экспортировать (${imageStats.pending})`}</button>
+          <button type="button" className={`${button} bg-blue-700 hover:bg-blue-600`} disabled={Boolean(pending) || dirty || stalePromptCount > 0 || storyboard.status !== "confirmed" || imageStats.pending === 0} onClick={() => exportFlow()}>{pending === "flow-export" ? "Подготовка ZIP…" : `Экспортировать (${imageStats.pending})`}</button>
           <a href="https://flow.google.com/" target="_blank" rel="noreferrer" className={`${button} bg-slate-700 hover:bg-slate-600 text-center`}>Открыть Google Flow</a>
           <label className={`${button} bg-emerald-700 hover:bg-emerald-600 cursor-pointer text-center sm:col-span-2 ${pending || dirty || storyboard.status !== "confirmed" ? "opacity-50 pointer-events-none" : ""}`}>{pending === "flow-import" ? "Импорт ZIP…" : "Импортировать результаты Flow"}<input type="file" accept=".zip,application/zip" className="hidden" onChange={importFlowArchive} /></label>
           {pending === "flow-import" && <button type="button" className={`${button} bg-red-800 hover:bg-red-700 sm:col-span-2`} onClick={() => { stopFlowImport.current = true; }}>Остановить после текущего файла</button>}
@@ -1062,8 +1081,10 @@ export default function ImageGen() {
       <label className="block"><span className="text-sm text-slate-400">Маркер DaVinci Resolve</span><textarea value={activeFrame.marker || ""} maxLength={2000} onChange={event => updateFrame(currentFrameIndex, "marker", event.target.value)} className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
       <label className="block"><span className="text-sm text-slate-400">Точный фрагмент текста озвучки</span><textarea value={activeFrame.scriptText} maxLength={4000} onChange={event => updateFrame(currentFrameIndex, "scriptText", event.target.value)} className="w-full min-h-24 mt-1 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
       <label className="block"><span className="text-sm text-slate-400">Что происходит в кадре</span><textarea value={activeFrame.visualDescription} maxLength={4000} onChange={event => updateFrame(currentFrameIndex, "visualDescription", event.target.value)} className="w-full min-h-28 mt-1 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
+      {(activeDescriptionChanged || activePromptStale) && <p className="rounded-xl border border-amber-700/60 bg-amber-950/30 p-3 text-sm text-amber-200">Описание кадра изменилось, но английский prompt сам не переписывается. Нажмите «Пересобрать prompt по описанию» и проверьте результат перед генерацией изображения.</p>}
       <label className="block"><span className="text-sm text-slate-400">Prompt для изображения</span><textarea value={activeFrame.prompt} maxLength={12000} onChange={event => updateFrame(currentFrameIndex, "prompt", event.target.value)} className="w-full min-h-40 mt-1 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
-      <div className="flex flex-wrap items-center gap-3"><span className={`text-sm ${activeDetailStatus === "ready" ? "text-emerald-400" : activeDetailStatus === "error" ? "text-red-400" : "text-slate-500"}`}>Детализация: {activeDetailStatus === "ready" ? "готово" : activeDetailStatus === "error" ? "ошибка" : "ожидает"}</span><button type="button" className={`${button} bg-fuchsia-700 hover:bg-fuchsia-600`} disabled={Boolean(pending) || dirty || !prerequisitesReady || !activeFrame.id} onClick={() => detailFrame(activeFrame.id)}>{pending === `detail:${activeFrame.id}` ? "ИИ детализирует…" : "Детализировать prompt"}</button></div>
+      <label className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={preserveCurrentPrompt && !activePromptStale && !activeDescriptionChanged} disabled={activePromptStale || activeDescriptionChanged} onChange={event => setPreserveCurrentPrompt(event.target.checked)} /> Использовать прежний prompt как основу вместо создания с нуля</label>
+      <div className="flex flex-wrap items-center gap-3"><span className={`text-sm ${activeDetailStatus === "ready" ? "text-emerald-400" : activeDetailStatus === "error" || activePromptStale ? "text-amber-300" : "text-slate-500"}`}>Детализация: {activeDetailStatus === "ready" ? "готово" : activePromptStale ? "prompt устарел" : activeDetailStatus === "error" ? "ошибка" : "ожидает"}</span><button type="button" className={`${button} bg-fuchsia-700 hover:bg-fuchsia-600`} disabled={Boolean(pending) || (dirty && !canSaveActiveFrame) || !prerequisitesReady || !activeFrame.id} onClick={() => detailFrame(activeFrame.id)}>{pending === `detail:${activeFrame.id}` ? "ИИ детализирует…" : activeFrameDirty && canSaveActiveFrame ? "Сохранить и пересобрать prompt" : "Пересобрать prompt по описанию"}</button></div>
       <fieldset className="border border-slate-700 rounded-xl p-4 space-y-3"><legend className="px-2 text-sm text-slate-300">Референсы этого кадра</legend>{data.references.length ? <div className="grid sm:grid-cols-2 gap-2">{data.references.map(reference => <label key={reference.id} className="flex items-start gap-2 p-2 rounded-lg bg-slate-950/60"><input type="checkbox" checked={activeFrame.referenceIds.includes(reference.id)} onChange={() => toggleReference(currentFrameIndex, reference.id)} /><span><span className="block">{reference.name}</span><span className={`text-xs ${reference.imageReady ? "text-emerald-400" : "text-slate-500"}`}>{reference.imageReady ? "Изображение загружено" : "Только текстовый референс"}</span></span></label>)}</div> : <p className="text-slate-500">Нет выбранных референсов.</p>}</fieldset>
       {activeFrameDirty && <section className="rounded-xl border border-amber-700/60 bg-amber-950/20 p-4 space-y-3">
         <p className="text-sm text-amber-200">Изменения этого кадра ещё не сохранены.</p>
@@ -1076,8 +1097,8 @@ export default function ImageGen() {
       {storyboard.status === "confirmed" && !dirty && activeFrame.id && <section className="border border-cyan-800/60 bg-cyan-950/20 rounded-xl p-4 space-y-3">
         <div className="flex items-center justify-between gap-2"><h3 className="font-semibold">Изображение кадра</h3><span className="text-sm text-slate-300">{imageStatusLabel}</span></div>
         <div className="flex flex-wrap gap-2">
-          {imageMethod === "api" && <button type="button" className={`${button} bg-cyan-700 hover:bg-cyan-600`} disabled={Boolean(pending) || !imageProfileId} onClick={() => generateFrameImage(activeFrame.id)}>{pending === `image:${activeFrame.id}` ? "Генерация…" : activeImage.status === "ready" ? "Перегенерировать" : "Сгенерировать"}</button>}
-          {imageMethod === "flow" && <><button type="button" className={`${button} bg-slate-700 hover:bg-slate-600`} disabled={Boolean(pending)} onClick={() => copyFramePrompt({ ...activeFrame, order: currentFrameIndex + 1 })}>Скопировать prompt</button><button type="button" className={`${button} bg-slate-700 hover:bg-slate-600`} disabled={Boolean(pending)} onClick={() => exportFlow(activeFrame.id)}>{pending === `flow-export:${activeFrame.id}` ? "Подготовка…" : "Скачать пакет кадра"}</button><a href={FLOW_TOOL_URL} target="_blank" rel="noreferrer" className={`${button} bg-slate-700 hover:bg-slate-600`}>Открыть Flow</a><label className={`${button} bg-emerald-700 hover:bg-emerald-600 cursor-pointer ${pending ? "opacity-50 pointer-events-none" : ""}`}>{pending === `flow-frame:${activeFrame.id}` ? "Загрузка…" : "Загрузить изображение"}<input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={event => importFlowFrame(activeFrame.id, event)} /></label></>}
+          {imageMethod === "api" && <button type="button" className={`${button} bg-cyan-700 hover:bg-cyan-600`} disabled={Boolean(pending) || activePromptStale || !imageProfileId} onClick={() => generateFrameImage(activeFrame.id)}>{pending === `image:${activeFrame.id}` ? "Генерация…" : activeImage.status === "ready" ? "Перегенерировать" : "Сгенерировать"}</button>}
+          {imageMethod === "flow" && <><button type="button" className={`${button} bg-slate-700 hover:bg-slate-600`} disabled={Boolean(pending) || activePromptStale} onClick={() => copyFramePrompt({ ...activeFrame, order: currentFrameIndex + 1 })}>Скопировать prompt</button><button type="button" className={`${button} bg-slate-700 hover:bg-slate-600`} disabled={Boolean(pending) || activePromptStale} onClick={() => exportFlow(activeFrame.id)}>{pending === `flow-export:${activeFrame.id}` ? "Подготовка…" : "Скачать пакет кадра"}</button><a href={FLOW_TOOL_URL} target="_blank" rel="noreferrer" className={`${button} bg-slate-700 hover:bg-slate-600`}>Открыть Flow</a><label className={`${button} bg-emerald-700 hover:bg-emerald-600 cursor-pointer ${pending ? "opacity-50 pointer-events-none" : ""}`}>{pending === `flow-frame:${activeFrame.id}` ? "Загрузка…" : "Загрузить изображение"}<input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={event => importFlowFrame(activeFrame.id, event)} /></label></>}
           {activeImage.hasImage && <a className={`${button} bg-slate-700 hover:bg-slate-600`} href={getStoryboardFrameImageUrl(projectId, activeFrame.id, activeImage.updatedAt, true)}>Скачать</a>}
         </div>
       </section>}

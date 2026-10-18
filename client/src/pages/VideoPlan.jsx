@@ -34,12 +34,22 @@ function readFlowVideoSettings() {
   } catch { return DEFAULT_FLOW_VIDEO_SETTINGS; }
 }
 
+function bridgeVersionAtLeast(version, minimum) {
+  const actual = String(version || '').split('.').map(Number);
+  const required = minimum.split('.').map(Number);
+  if (actual.length !== 3 || actual.some(value => !Number.isInteger(value))) return false;
+  for (let i = 0; i < 3; i += 1) {
+    if (actual[i] !== required[i]) return actual[i] > required[i];
+  }
+  return true;
+}
+
 function requestFlowVideoBridge(type, payload, timeoutMs) {
   return new Promise((resolve, reject) => {
     const requestId = crypto.randomUUID();
     const timer = setTimeout(() => {
       window.removeEventListener('message', onMessage);
-      reject(new Error('Нет ответа от расширения Google Flow ↔ WebApp. Обновите расширение и страницы WebApp и Flow.'));
+      reject(new Error('Нет ответа от расширения Flow и DaVinci AI ↔ WebApp. Обновите расширение и страницу WebApp.'));
     }, timeoutMs);
     function onMessage(event) {
       if (event.source !== window || event.origin !== window.location.origin ||
@@ -48,7 +58,7 @@ function requestFlowVideoBridge(type, payload, timeoutMs) {
       clearTimeout(timer);
       window.removeEventListener('message', onMessage);
       if (event.data.ok) resolve(event.data);
-      else reject(new Error(event.data.error || 'Видеоинструмент Google Flow не принял задание.'));
+      else reject(new Error(event.data.error || 'Сервис генерации не принял задание.'));
     }
     window.addEventListener('message', onMessage);
     window.postMessage({ source: 'webapp-flow-bridge', type, requestId, payload }, window.location.origin);
@@ -67,7 +77,7 @@ function blobBase64(blob) {
 function videoBase64File(base64, name) {
   if (typeof base64 !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(base64) ||
       base64.length % 4 !== 0 || base64.length * 3 / 4 > VIDEO_BRIDGE_MP4_LIMIT + 2) {
-    throw new Error('Видео от Flow имеет недопустимый формат или превышает лимит 64 МБ.');
+    throw new Error('Видео имеет недопустимый формат или превышает лимит 64 МБ.');
   }
   const chunks = [];
   let bytesCount = 0;
@@ -76,7 +86,7 @@ function videoBase64File(base64, name) {
     const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
     chunks.push(bytes);
     bytesCount += bytes.length;
-    if (bytesCount > VIDEO_BRIDGE_MP4_LIMIT) throw new Error('Видео от Flow превышает лимит 64 МБ.');
+    if (bytesCount > VIDEO_BRIDGE_MP4_LIMIT) throw new Error('Видео превышает лимит 64 МБ.');
   }
   return new File(chunks, name, { type: 'video/mp4' });
 }
@@ -248,12 +258,19 @@ function VideoPlanEditor({ projectId }) {
     } catch (err) { setError(err.message); }
     finally { setFlowBusy(''); }
   }
-  async function launchFlowVideo() {
+  async function launchFlowVideo(provider = 'flow') {
     if (!frame || flowBusy || busy || unsaved || data.videoPlan.status !== 'confirmed' ||
         !frame.videoInputFingerprint || !saved?.videoPrompt || saved.promptStatus !== 'ready') return;
+    const davinci = provider === 'davinci';
+    const providerName = davinci ? 'DaVinci AI' : 'Google Flow';
+    const settings = davinci
+      ? { modelDisplayName: 'Gemini Omni Flash 1.1', resolution: '720p', durationSeconds: 8, aspectRatio: '16:9' }
+      : flowSettings;
     setFlowBusy(`start:${frame.frameId}`); setError(''); setMessage('');
     try {
-      await requestFlowVideoBridge('FLOW_BRIDGE_PING', {}, 4000);
+      const bridge = await requestFlowVideoBridge(davinci ? 'DAVINCI_BRIDGE_PING' : 'FLOW_BRIDGE_PING', {}, 4000);
+      if (davinci && !bridgeVersionAtLeast(bridge.version, '0.7.3'))
+        throw new Error('Обновите расширение «Flow и DaVinci AI ↔ WebApp» до версии 0.7.3 на chrome://extensions и перезагрузите WebApp.');
       const { blob } = await exportFlowVideoPackage(projectId, data.videoPlan.editVersion, frame.frameId);
       const { BlobReader, BlobWriter, TextWriter, ZipReader } = await import('@zip.js/zip.js');
       const zip = new ZipReader(new BlobReader(blob), { strictness: 'balanced' });
@@ -286,11 +303,11 @@ function VideoPlanEditor({ projectId }) {
       const imageMimeType = extension === 'jpg' || extension === 'jpeg' ? 'image/jpeg'
         : extension === 'webp' ? 'image/webp' : 'image/png';
       const imageBase64 = await blobBase64(image);
-      await requestFlowVideoBridge('START_FLOW_VIDEO', {
+      await requestFlowVideoBridge(davinci ? 'START_DAVINCI_VIDEO' : 'START_FLOW_VIDEO', {
         projectId, frameId: frame.frameId, inputFingerprint: frame.videoInputFingerprint,
-        imageMimeType, imageBase64, prompt, ...flowSettings,
-      }, 75000);
-      setMessage(`Кадр ${frame.blockNumber}–${frame.frameInBlock} передан в Google Flow (${flowSettings.modelDisplayName}, ${flowSettings.resolution}, ${flowSettings.durationSeconds} с, ${flowSettings.aspectRatio}). После генерации MP4 появится здесь автоматически.`);
+        imageMimeType, imageBase64, prompt, ...settings,
+      }, davinci ? 120000 : 75000);
+      setMessage(`Кадр ${frame.blockNumber}–${frame.frameInBlock} передан в ${providerName} (${settings.modelDisplayName}, ${settings.resolution}, ${settings.durationSeconds} с, ${settings.aspectRatio}). После генерации MP4 появится здесь автоматически.`);
     } catch (err) { setError(err.message); }
     finally { setFlowBusy(value => value === `start:${frame.frameId}` ? '' : value); }
   }
@@ -299,8 +316,9 @@ function VideoPlanEditor({ projectId }) {
     const onVideo = async event => {
       if (event.source !== window || event.origin !== window.location.origin ||
           event.data?.source !== 'flow-webapp-bridge-extension' ||
-          event.data?.type !== 'IMPORT_FLOW_VIDEO' || typeof event.data.requestId !== 'string') return;
+          !['IMPORT_FLOW_VIDEO', 'IMPORT_DAVINCI_VIDEO'].includes(event.data?.type) || typeof event.data.requestId !== 'string') return;
       const { requestId, payload } = event.data;
+      const providerName = event.data.type === 'IMPORT_DAVINCI_VIDEO' ? 'DaVinci AI' : 'Google Flow';
       const reply = (ok, error = '') => window.postMessage({
         source: 'webapp-flow-bridge', type: 'IMPORT_RESULT', requestId, ok, error,
       }, window.location.origin);
@@ -313,7 +331,7 @@ function VideoPlanEditor({ projectId }) {
         return;
       }
       if (flowVideoImport.current) { reply(false, 'WebApp уже импортирует видео.'); return; }
-      if (payload.mimeType !== 'video/mp4') { reply(false, 'Flow вернул неподдерживаемый формат видео.'); return; }
+      if (payload.mimeType !== 'video/mp4') { reply(false, 'Сервис вернул неподдерживаемый формат видео.'); return; }
       flowVideoImport.current = true;
       setFlowBusy(`import:${payload.frameId}`); setError('');
       try {
@@ -323,7 +341,7 @@ function VideoPlanEditor({ projectId }) {
         const result = await getVideoPlan(projectId);
         currentData.current = result;
         setData(result);
-        setMessage(`Видео кадра ${target.blockNumber}–${target.frameInBlock} получено из Google Flow и импортировано.`);
+        setMessage(`Видео кадра ${target.blockNumber}–${target.frameInBlock} получено из ${providerName} и импортировано.`);
         reply(true);
       } catch (err) {
         setError(err.message);
@@ -467,8 +485,13 @@ function VideoPlanEditor({ projectId }) {
               <p>Видео: {({ pending: 'ожидает', generating: 'создаётся', ready: 'готово', stale: 'устарело', error: 'ошибка' })[frame.video?.status || 'pending']}</p>
               <button className={button} disabled={busy || Boolean(flowBusy) || unsaved || conflict ||
                 data.videoPlan.status !== 'confirmed' || !frame.hasImage || !frame.videoInputFingerprint ||
-                saved?.promptStatus !== 'ready' || frame.video?.status === 'ready'} onClick={launchFlowVideo}>
+                saved?.promptStatus !== 'ready' || frame.video?.status === 'ready'} onClick={() => launchFlowVideo('flow')}>
                 {flowBusy === `start:${frame.frameId}` ? 'Передаём в Flow…' : 'Создать в Google Flow'}
+              </button>
+              <button className={button} disabled={busy || Boolean(flowBusy) || unsaved || conflict ||
+                data.videoPlan.status !== 'confirmed' || !frame.hasImage || !frame.videoInputFingerprint ||
+                saved?.promptStatus !== 'ready' || frame.video?.status === 'ready'} onClick={() => launchFlowVideo('davinci')}>
+                {flowBusy === `start:${frame.frameId}` ? 'Передаём задание…' : 'Создать в DaVinci AI · 720p · 8 с'}
               </button>
               <label className={`${secondary} cursor-pointer ${flowBusy ? 'pointer-events-none opacity-40' : ''}`}>
                 {flowBusy === `import:${frame.frameId}` ? 'Импортируем…' : frame.video?.status === 'ready' ? 'Заменить MP4' : 'Импортировать MP4'}
@@ -504,6 +527,6 @@ function VideoPlanEditor({ projectId }) {
         </section>
       </div>
     </>}
-    <p className="text-xs text-slate-500">Кнопка «Создать в Google Flow» передаёт один кадр с выбранными настройками без скачивания ZIP. Ручной пакет и импорт MP4 остаются доступны.</p>
+    <p className="text-xs text-slate-500">Кнопка DaVinci AI запускает Gemini Omni Flash 1.1 с настройками 720p, 8 секунд и 16:9 в вашем аккаунте Chrome. Оставьте вкладки открытыми до импорта MP4. Ручной пакет и импорт MP4 остаются доступны.</p>
   </div>;
 }

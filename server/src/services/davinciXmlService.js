@@ -19,7 +19,8 @@ function escapeXml(value) {
 export function frameDurations(frames, totalTicks, frameRate = 24) {
   const minimum = TIMEBASE / frameRate;
   if (!frames.length || totalTicks < frames.length * minimum) fail('DAVINCI_BLOCK_TOO_SHORT');
-  const weights = frames.map(frame => Array.from(frame.scriptText || '').length);
+  const weights = frames.map(frame => Number.isFinite(frame.durationWeight) && frame.durationWeight > 0
+    ? frame.durationWeight : Array.from(frame.scriptText || '').length);
   const totalWeight = weights.reduce((sum, value) => sum + value, 0);
   let used = 0;
   let cumulativeWeight = 0;
@@ -63,7 +64,7 @@ export function timelinePlan(voiceoverBlocks, frames, frameRate = 24, charsPerSe
   return { blocks, duration: offset };
 }
 
-function transform(animation, duration, frameRate) {
+function transform(animation, duration, frameRate, horizontalOffset = 0) {
   const anim = String(animation || '').toLowerCase();
   const end = duration - TIMEBASE / frameRate;
   if (end <= 0) return [];
@@ -71,13 +72,16 @@ function transform(animation, duration, frameRate) {
     'pan left': ['5 0', '0 0', '-5 0'], 'pan right': ['-5 0', '0 0', '5 0'],
     'pan up': ['0 5', '0 0', '0 -5'], 'pan down': ['0 -5', '0 0', '0 5'],
   };
-  const position = positions[anim];
+  const position = positions[anim]?.map(value => {
+    const [x, y] = value.split(' ').map(Number);
+    return `${x + horizontalOffset} ${y}`;
+  });
   const scale = anim === 'zoom in' ? ['1 1', '1.07 1.07', '1.15 1.15']
     : anim === 'zoom out' ? ['1.15 1.15', '1.07 1.07', '1 1']
       : position ? ['1.20 1.20', '1.25 1.25', '1.30 1.30'] : null;
   if (!scale) return [];
   const times = [0, Math.floor(end / 2), end];
-  const lines = [`          <adjust-transform position="${position?.[0] || '0 0'}" scale="${scale[0]}" anchor="0 0">`];
+  const lines = [`          <adjust-transform position="${position?.[0] || `${horizontalOffset} 0`}" scale="${scale[0]}" anchor="0 0">`];
   for (const [name, values] of [['position', position], ['scale', scale]]) {
     if (!values) continue;
     lines.push(`            <param name="${name}" value="${values[0]}"><keyframeAnimation>`);
@@ -98,17 +102,21 @@ export function createDavinciXml({
   projectName, frames, voiceoverBlocks, imageFiles, videoFiles = new Map(), frameRate = 24, charsPerSecond = 15,
   addAnimations = true, animationTypes = DEFAULT_DAVINCI_ANIMATION_TYPES, addTransitions = false, transitionDurationSec = 0.5,
   mediaRootPath = '', audioTrim = {}, backgroundMusic = null, backgroundMusicVolume = DEFAULT_BACKGROUND_MUSIC_VOLUME,
-  soundEffects = [], onWarning = () => {},
+  soundEffects = [], onWarning = () => {}, outputWidth = 1920, outputHeight = 1080,
+  horizontalOffsets = new Map(),
 }) {
   if (![24, 25, 30].includes(frameRate) || !Number.isFinite(charsPerSecond) || charsPerSecond < 5 || charsPerSecond > 30 ||
       typeof addAnimations !== 'boolean' || !validDavinciAnimationTypes(animationTypes, addAnimations) || typeof addTransitions !== 'boolean' ||
       !Number.isFinite(transitionDurationSec) || transitionDurationSec <= 0 || transitionDurationSec > 5 ||
-      !validBackgroundMusicVolume(backgroundMusicVolume)) fail('INVALID_DAVINCI_SETTINGS');
+      !validBackgroundMusicVolume(backgroundMusicVolume) ||
+      ![1080, 1920].includes(outputWidth) || ![1080, 1920].includes(outputHeight) ||
+      !((outputWidth === 1920 && outputHeight === 1080) || (outputWidth === 1080 && outputHeight === 1920)) ||
+      !(horizontalOffsets instanceof Map) || [...horizontalOffsets.values()].some(value => !Number.isFinite(value) || Math.abs(value) > 40)) fail('INVALID_DAVINCI_SETTINGS');
   validateAudioTrim(audioTrim);
   if (mediaRootPath !== '') normalizeMediaRoot(mediaRootPath);
   const plan = timelinePlan(voiceoverBlocks, frames, frameRate, charsPerSecond);
   const resources = [
-    `    <format id="r0" name="FFVideoFormat1080p${frameRate}" frameDuration="1/${frameRate}s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>`,
+    `    <format id="r0" name="${outputWidth === 1920 ? `FFVideoFormat1080p${frameRate}` : `FFVideoFormat1080x1920p${frameRate}`}" frameDuration="1/${frameRate}s" width="${outputWidth}" height="${outputHeight}" colorSpace="1-1-1 (Rec. 709)"/>`,
     '    <format id="r1" name="FFVideoFormatRateUndefined" width="1920" height="1080"/>',
   ];
   let resourceNumber = 2;
@@ -135,7 +143,8 @@ export function createDavinciXml({
     const audibleDuration = duration - trimStart - trimEnd;
     if (audibleDuration <= 0) fail('INVALID_AUDIO_TRIM');
     const audioId = `r${resourceNumber++}`;
-    const audioName = `audio_block_${block.order}.mp3`;
+    const audioName = block.audioFilename || `audio_block_${block.order}.mp3`;
+    if (!/^(?:audio_block_[1-9]\d*|short_[a-f0-9]{24}_[a-f0-9]{32})\.mp3$/.test(audioName)) fail('INVALID_DAVINCI_SETTINGS');
     resources.push(`    <asset id="${audioId}" name="${audioName}" start="0s" hasAudio="1" duration="${time(duration)}" audioSources="1" audioChannels="2" audioRate="48k"><media-rep src="${escapeXml(mediaSourceUrl(mediaRootPath, `audio/${audioName}`))}" kind="original-media"/></asset>`);
     let blockOffset = 0;
     item.frames.forEach((frame, index) => {
@@ -146,6 +155,7 @@ export function createDavinciXml({
       const displayName = `frame_${block.order}_${index + 1}.${video ? 'mp4' : filename.split('.').at(-1)}`;
       const imageId = `r${resourceNumber++}`;
       const clipDuration = durations[index];
+      const horizontalOffset = horizontalOffsets.get(frame.id) || 0;
       if (video) {
         if (!/^video_[1-9]\d*_[1-9]\d*(?:__[0-9a-zA-Z_-]{1,72})?\.mp4$/.test(video.filename) || !(video.durationSec > 0)) fail('INVALID_DAVINCI_SETTINGS');
         const formatId = `r${resourceNumber++}`;
@@ -172,11 +182,13 @@ export function createDavinciXml({
         clips.push(`        <asset-clip name="${displayName}" ref="${imageId}" srcEnable="video" start="0s" duration="${time(clipDuration)}" offset="${time(offset + blockOffset)}" enabled="1">`);
         const sourceDuration = Math.round(video.durationSec * TIMEBASE);
         if (sourceDuration < clipDuration) clips.push(`          <timeMap><timept time="0s" value="0s" interp="linear"/><timept time="${time(clipDuration)}" value="${time(sourceDuration)}" interp="linear"/></timeMap>`);
-        clips.push('          <adjust-conform type="fit"/>');
+        clips.push(`          <adjust-conform type="${outputHeight > outputWidth ? 'fill' : 'fit'}"/>`);
+        if (horizontalOffset) clips.push(`          <adjust-transform position="${horizontalOffset} 0" scale="1 1" anchor="0 0"/>`);
       } else {
         clips.push(`        <asset-clip name="${displayName}" ref="${imageId}" start="0s" duration="${time(clipDuration)}" offset="${time(offset + blockOffset)}" enabled="1">`,
-          `          <adjust-conform type="${/^Pan /.test(animation) ? 'fill' : 'fit'}"/>`);
-        if (animation) clips.push(...transform(animation, clipDuration, frameRate));
+          `          <adjust-conform type="${outputHeight > outputWidth || /^Pan /.test(animation) ? 'fill' : 'fit'}"/>`);
+        if (animation) clips.push(...transform(animation, clipDuration, frameRate, horizontalOffset));
+        else if (horizontalOffset) clips.push(`          <adjust-transform position="${horizontalOffset} 0" scale="1 1" anchor="0 0"/>`);
       }
       if (audioAnchorIndex === undefined) audioAnchorIndex = clips.length;
       if (index === 0) clips.push(`          <asset-clip name="${audioName}" ref="${audioId}" lane="-1" start="${time(trimStart)}" offset="${time(trimStart)}" duration="${time(audibleDuration)}" audioRole="dialogue"/>`);

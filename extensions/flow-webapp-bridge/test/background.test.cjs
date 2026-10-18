@@ -18,6 +18,7 @@ function setup(pageUrl = webAppUrl) {
   const tab = { id: 7, url: pageUrl };
   const flowTab = { id: 8, url: toolUrl };
   const imageFlowTab = { id: 9, url: imageToolUrl };
+  const davinciTab = { id: 10, url: 'https://davinci.ai/app/video/creations' };
   const storage = {};
   const delivered = [];
   const chrome = {
@@ -28,13 +29,15 @@ function setup(pageUrl = webAppUrl) {
       async remove(key) { delete storage[key]; },
     } },
     tabs: {
-      async get(id) { return id === tab.id ? tab : flowTab; },
+      async get(id) { return id === tab.id ? tab : id === davinciTab.id ? davinciTab : flowTab; },
       async query({ url }) { return String(url).includes('flow.google.com') ? [flowTab, imageFlowTab] : [tab]; },
+      async create() { return davinciTab; },
       async sendMessage(id, message) { delivered.push({ id, message }); return { ok: true }; },
     },
   };
-  const context = { chrome, URL, RegExp, crypto: webcrypto, setTimeout, clearTimeout };
-  vm.runInNewContext(`${script}\nthis.testApi = { handleStart, startPayloadError, handleStartVideo, handleVideoResult, handleFrameResult, videoStartPayloadError };`, context);
+  const context = { chrome, URL, RegExp, crypto: webcrypto, setTimeout, clearTimeout,
+    Uint8Array, btoa, fetch: async () => ({ ok: true, headers: { get: () => '4' }, arrayBuffer: async () => Uint8Array.of(0, 0, 0, 1).buffer }) };
+  vm.runInNewContext(`${script}\nthis.testApi = { handleStart, startPayloadError, handleStartVideo, handleVideoResult, handleFrameResult, videoStartPayloadError, handleStartDavinciVideo, handleDavinciVideoReady };`, context);
   return { api: context.testApi, storage, delivered };
 }
 
@@ -109,4 +112,35 @@ test('reference image job starts from references page and result returns to that
   assert.equal(delivered.at(-1).message.type, 'IMPORT_FLOW_REFERENCE');
   assert.equal(delivered.at(-1).message.payload.referenceId, referenceId);
   assert.equal(delivered.at(-1).message.payload.inputFingerprint, inputFingerprint);
+});
+
+test('DaVinci AI job uses a dedicated tab and imports only its signed MP4', async () => {
+  const { api, storage, delivered } = setup();
+  const payload = { projectId, frameId, inputFingerprint, imageMimeType: 'image/jpeg',
+    imageBase64: 'aGVsbG8=', prompt: 'Slow camera movement.', modelDisplayName: 'Gemini Omni Flash 1.1',
+    resolution: '720p', durationSeconds: 8, aspectRatio: '16:9' };
+  const sender = { tab: { id: 7, url: webAppUrl } };
+  assert.equal((await api.handleStartDavinciVideo(payload, sender)).ok, true);
+  assert.equal(storage['davinciVideoRoute:10'].davinciTabId, 10);
+  assert.equal(delivered[0].message.type, 'START_DAVINCI_VIDEO');
+  const result = await api.handleDavinciVideoReady({ projectId, frameId, inputFingerprint,
+    videoUrl: 'https://storage.googleapis.com/davinciweb-b8892.appspot.com/user-outputs/account/result.mp4?signature=test' },
+  { tab: { id: 10 }, url: 'https://davinci.ai/app/video/creations' });
+  assert.equal(result.ok, true);
+  assert.equal(delivered.at(-1).message.type, 'IMPORT_DAVINCI_VIDEO');
+  assert.equal(delivered.at(-1).message.payload.base64, 'AAAAAQ==');
+  assert.equal(storage['davinciVideoRoute:10'], undefined);
+});
+
+test('DaVinci AI job rejects wrong settings or an unrelated video URL', async () => {
+  const { api } = setup();
+  const payload = { projectId, frameId, inputFingerprint, imageMimeType: 'image/jpeg',
+    imageBase64: 'aGVsbG8=', prompt: 'Slow camera movement.', modelDisplayName: 'Gemini Omni Flash 1.1',
+    resolution: '720p', durationSeconds: 8, aspectRatio: '16:9' };
+  assert.match((await api.handleStartDavinciVideo({ ...payload, resolution: '360p' },
+    { tab: { id: 7, url: webAppUrl } })).error, /DaVinci AI/);
+  await api.handleStartDavinciVideo(payload, { tab: { id: 7, url: webAppUrl } });
+  assert.match((await api.handleDavinciVideoReady({ projectId, frameId, inputFingerprint,
+    videoUrl: 'https://example.com/result.mp4' }, { tab: { id: 10 }, url: 'https://davinci.ai/app/video/creations' })).error,
+  /адрес/);
 });

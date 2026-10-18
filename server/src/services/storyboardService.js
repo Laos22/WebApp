@@ -168,11 +168,17 @@ function normalizeFrames(input, currentFrames, allowedReferenceIds, voiceoverBlo
     const marker = value.marker ?? previous?.marker ?? '';
     if (!['', 'Zoom In', 'Zoom Out', 'Pan Left', 'Pan Right', 'Pan Up', 'Pan Down'].includes(animation) ||
         typeof marker !== 'string' || marker.length > 2000) invalid();
-    const keepDetailState = !generated && previous && prompt === previous.prompt;
+    const samePrompt = !generated && previous && prompt === previous.prompt;
+    const sourceChanged = samePrompt && (
+      visualDescription !== previous.visualDescription ||
+      scriptText !== previous.scriptText ||
+      !sameReferenceIds(value.referenceIds ?? [], previous.referenceIds)
+    );
+    const keepDetailState = samePrompt && !sourceChanged;
     return {
       id, order: index + 1, sourceVoiceoverBlockId, scriptText, visualDescription, prompt, animation, marker,
       referenceIds: normalizeReferenceIds(value.referenceIds ?? [], allowedReferenceIds),
-      promptDetailStatus: keepDetailState ? previous.promptDetailStatus || 'pending' : 'pending',
+      promptDetailStatus: sourceChanged ? 'stale' : keepDetailState ? previous.promptDetailStatus || 'pending' : 'pending',
       promptDetailedAt: keepDetailState ? previous.promptDetailedAt || null : null,
       promptDetailErrorCode: keepDetailState ? previous.promptDetailErrorCode || '' : '',
     };
@@ -268,6 +274,7 @@ function sameReferenceIds(left, right) {
 // confirmed again. The record belongs to the stable frame id and its inputs.
 export function storyboardImageMatchesFrame(image, frame) {
   return Boolean(image && frame &&
+    frame.promptDetailStatus !== 'stale' &&
     image.sourcePrompt === frame.prompt &&
     sameReferenceIds(image.sourceReferenceIds, frame.referenceIds));
 }
