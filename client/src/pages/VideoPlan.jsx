@@ -6,8 +6,8 @@ import { pendingVideoFrames, runVideoQueue } from '../services/videoPlanQueue';
 import { videoPlanView, filterVideoFrames } from '../services/videoPlanView';
 import ProfileSelector from '../components/ProfileSelector';
 
-const button = 'rounded-xl bg-purple-700 px-4 py-3 text-white disabled:opacity-40';
-const secondary = 'rounded-xl border border-slate-600 px-4 py-3 text-slate-200 disabled:opacity-40';
+const button = 'rounded-xl bg-purple-700 px-2.5 py-1.5 text-white disabled:opacity-40';
+const secondary = 'rounded-xl border border-slate-600 px-2.5 py-1.5 text-slate-200 disabled:opacity-40';
 const VIDEO_BRIDGE_IMAGE_LIMIT = 15 * 1024 * 1024;
 const VIDEO_BRIDGE_MP4_LIMIT = 64 * 1024 * 1024;
 const FLOW_VIDEO_SETTINGS_KEY = 'flow-video-generation-settings-v1';
@@ -115,6 +115,7 @@ function VideoPlanEditor({ projectId }) {
   const [flowBusy, setFlowBusy] = useState('');
   const [profileId, setProfileId] = useState('');
   const [flowSettings, setFlowSettings] = useState(readFlowVideoSettings);
+  const [previewMode, setPreviewMode] = useState('video');
   useEffect(() => {
     try { localStorage.setItem(FLOW_VIDEO_SETTINGS_KEY, JSON.stringify(flowSettings)); } catch { /* Storage can be disabled. */ }
   }, [flowSettings]);
@@ -228,7 +229,7 @@ function VideoPlanEditor({ projectId }) {
     } catch (err) { setError(err.message || 'Не удалось выполнить запрос. Повторите позже.'); setConflict(err.status === 409); }
     finally { setBusy(false); setRunning(false); setProgress(''); }
   }
-  function chooseFrame(i) { setIndex(i); setPickerOpen(false); setMessage(''); pickerToggle.current?.focus(); }
+  function chooseFrame(i) { setIndex(i); setPickerOpen(false); setMessage(''); setPreviewMode('video'); pickerToggle.current?.focus(); }
   function downloadBlob(blob, filename) {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
@@ -358,34 +359,38 @@ function VideoPlanEditor({ projectId }) {
   const canResumeAnalysis = analysis && data.videoPlan.status !== 'stale' && analysis.completedChunks.length < data.analysisChunks.length;
   const scopeBlocks = analysis?.allowedBlockIds ? [...new Set(data.frames.filter(f =>
     data.analysisChunks.some(c => analysis.allowedBlockIds.includes(c.blockId) && c.frameIds.includes(f.frameId))).map(f => f.blockNumber))] : null;
-  return <div className="mx-auto max-w-5xl p-4 sm:p-8 text-left text-slate-200 space-y-5">
-    <Link onClick={event => { if ((unsaved || busy) && !window.confirm('Есть несохранённые правки или выполняется запрос. Покинуть страницу?')) event.preventDefault(); }}
-      className="text-purple-300" to={`/projects/${projectId}`}>← К проекту</Link>
-    <h1 className="text-2xl sm:text-3xl font-bold">Работа с видео</h1>
-    {data && <p className="break-words text-slate-400">{data.projectTitle}</p>}
-    {data && <ProfileSelector type="text" projectId={projectId} operation="video-plan" value={profileId} onChange={setProfileId} disabled={busy || flowBusy} />}
-    {data && <div className="sticky top-0 z-10 rounded-xl bg-slate-900 p-3 sm:p-4 shadow-lg space-y-3" role="status">
-      <div className="grid grid-cols-3 gap-2 sm:gap-5">
-        {[[view.total, 'Всего кадров'], [view.selected, 'Выбрано для анимации'], [view.ready, 'Готово к генерации']].map(([count, label]) =>
-          <div key={label}><div className="text-xl sm:text-2xl font-bold">{count}</div><div className="text-xs sm:text-sm text-slate-300">{label}</div></div>)}
+  return <div className="w-full p-3 sm:px-6 sm:py-2 text-left text-slate-200 space-y-2">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+    <header className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      <Link onClick={event => { if ((unsaved || busy) && !window.confirm('Есть несохранённые правки или выполняется запрос. Покинуть страницу?')) event.preventDefault(); }}
+        className="text-purple-300" to={`/projects/${projectId}`}>← К проекту</Link>
+      <h1 className="!m-0 !text-2xl !leading-tight font-bold">Работа с видео</h1>
+      {data && <p className="hidden min-w-0 truncate text-sm text-slate-400 2xl:block" title={data.projectTitle}>{data.projectTitle}</p>}
+    </header>
+    {data && <div className="rounded-xl bg-slate-900 px-2 py-1 shadow-lg flex flex-1 flex-wrap items-center gap-x-3 gap-y-1" role="status">
+      <div className="flex flex-wrap gap-3">
+        {[[view.total, 'Кадров'], [view.selected, 'Анимация'], [view.ready, 'Готово']].map(([count, label]) =>
+          <div key={label} className="flex items-baseline gap-1"><strong className="text-base">{count}</strong><span className="text-xs text-slate-300">{label}</span></div>)}
       </div>
-      <div className="text-xs text-slate-400">{({ empty: 'Выберите кадры для анимации', draft: 'Черновик видеоплана', confirmed: 'Видеоплан утверждён', stale: 'Раскадровка изменилась — проверьте план' })[data.videoPlan.status]}</div>
-      <div className="flex flex-wrap gap-2 border-t border-slate-700 pt-3">
+      <span className="hidden 2xl:block text-xs text-slate-400">{({ empty: 'Выберите кадры для анимации', draft: 'Черновик видеоплана', confirmed: 'Видеоплан утверждён', stale: 'Раскадровка изменилась — проверьте план' })[data.videoPlan.status]}</span>
+      <div className="flex flex-wrap gap-2 ml-auto">
         <button className={button} disabled={busy || flowBusy || data.videoPlan.status !== 'confirmed' || !view.selected}
           onClick={exportFlowVideo}>{flowBusy === 'export' ? 'Готовим пакет…' : 'Скачать пакет Google Flow Video'}</button>
-        <span className="self-center text-xs text-slate-400">Экспортируются выбранные кадры без актуального видео.</span>
       </div>
-      {progress && <p>{progress}</p>}
+      {progress && <p className="w-full text-sm">{progress}</p>}
       {running && <button className={secondary} onClick={() => { stop.current = true; setProgress('Остановка после текущего запроса…'); }}>Остановить после текущего запроса</button>}
     </div>}
+    </div>
     {error && <div role="alert" className="rounded-xl border border-red-800 bg-red-950/40 p-4 text-red-200 space-y-2"><p>{error}</p>
       {!data && <button className={button} onClick={() => { setError(''); setReload(value => value + 1); }}>Повторить загрузку</button>}
       {conflict && <button className={button} disabled={busy} onClick={refreshConflict}>Обновить данные, сохранив мои правки</button>}
     </div>}
     {message && <p role="status" className="text-emerald-300">{message}</p>}
     {!data && !error && <p role="status">Загрузка…</p>}
-    {data && <section className="rounded-2xl border border-slate-800 p-4 space-y-3" aria-labelledby="selection-heading">
-      <h2 id="selection-heading" className="text-xl font-semibold">1. Выбор кадров</h2>
+    {data && <div className="flex flex-wrap items-center gap-2"><details className="min-w-0 flex-1 rounded-xl border border-slate-800 px-3 py-1.5 group" aria-labelledby="selection-heading">
+      <summary id="selection-heading" className="cursor-pointer font-semibold">1. Выбор кадров и общие настройки <span className="ml-2 text-xs font-normal text-slate-400">Развернуть для анализа, детализации и утверждения плана</span></summary>
+      <div className="space-y-3 pt-3">
+      <ProfileSelector type="text" projectId={projectId} operation="video-plan" value={profileId} onChange={setProfileId} disabled={busy || flowBusy} />
       <p className="text-sm text-slate-400">Попросите ИИ предложить кадры или выберите их вручную. Можно указать количество и блоки: «Выбери только 3 кадра в первом блоке».</p>
       <label className="block">Общие инструкции
         <textarea value={instructions} maxLength={4000} disabled={busy} onChange={e => setInstructions(e.target.value)}
@@ -409,24 +414,25 @@ function VideoPlanEditor({ projectId }) {
       <p className="text-xs text-slate-400">Инструкции сохраняются при запуске ИИ. Повторный анализ пересматривает выбор кадров; во время анализа выбор предварительный.</p>
       {analysis?.selectionLimit != null && <p className="text-sm text-emerald-300">Лимит анализа: не более {analysis.selectionLimit} кадров {scopeBlocks ? 'в указанных блоках' : 'на весь проект'}. Ручной выбор можно изменить.</p>}
       {scopeBlocks && <p className="text-sm text-emerald-300">Блоки анализа: {scopeBlocks.join(', ')}. Кадры остальных блоков не выбираются.</p>}
-    </section>}
-    {frameEdits && <p className="text-amber-300 text-sm">Есть несохранённые правки кадров ({Object.keys(drafts).length}). Сохраните или отмените их перед анализом или массовой детализацией.</p>}
-    {data && <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Фильтр кадров">
+      </div>
+    </details>
+    <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Фильтр кадров">
       <button className={filter === 'all' ? button : secondary} disabled={busy} aria-pressed={filter === 'all'}
         onClick={() => setFilter('all')}>Все кадры ({view.total})</button>
       <button className={filter === 'animation' ? button : secondary} disabled={busy} aria-pressed={filter === 'animation'}
         onClick={() => setFilter('animation')}>Только с анимацией ({view.selected})</button>
       {filter === 'animation' && frameEdits && <p className="text-xs text-amber-300">Кадры с несохранёнными правками остаются видимыми до сохранения.</p>}
-    </div>}
+    </div></div>}
+    {frameEdits && <p className="text-amber-300 text-sm">Есть несохранённые правки кадров ({Object.keys(drafts).length}). Сохраните или отмените их перед анализом или массовой детализацией.</p>}
     {data && !frame && <p>{filter === 'animation' ? 'Для анимации пока не выбран ни один кадр. Переключитесь на все кадры.' : 'В раскадровке пока нет кадров.'}</p>}
     {frame && <>
       <nav aria-label="Выбор кадра" className="grid grid-cols-2 gap-2 items-center sm:flex">
-        <button className={secondary} disabled={busy || position === 0} onClick={() => setIndex(visibleFrames[position - 1].index)}>← Предыдущий</button>
+        <button className={secondary} disabled={busy || position === 0} onClick={() => { setIndex(visibleFrames[position - 1].index); setPreviewMode('video'); }}>← Предыдущий</button>
         <button ref={pickerToggle} className={`${secondary} col-span-2 row-start-1 min-w-0 sm:flex-1`} disabled={busy}
           aria-expanded={pickerOpen} aria-controls="video-frame-picker" onClick={() => setPickerOpen(value => !value)}>
           Кадр {frame?.blockNumber ?? '—'}–{frame?.frameInBlock ?? activeIndex + 1} · Список кадров ({visibleFrames.length}) {pickerOpen ? '▴' : '▾'}
         </button>
-        <button className={secondary} disabled={busy || position === visibleFrames.length - 1} onClick={() => setIndex(visibleFrames[position + 1].index)}>Следующий →</button>
+        <button className={secondary} disabled={busy || position === visibleFrames.length - 1} onClick={() => { setIndex(visibleFrames[position + 1].index); setPreviewMode('video'); }}>Следующий →</button>
       </nav>
       {pickerOpen && <section id="video-frame-picker" aria-label="Список кадров" className="rounded-xl border border-slate-700 p-3 space-y-3"
         onKeyDown={event => { if (event.key === 'Escape') { setPickerOpen(false); pickerToggle.current?.focus(); } }}>
@@ -440,26 +446,41 @@ function VideoPlanEditor({ projectId }) {
           </button>)}
         </div>
       </section>}
-      <div className="grid gap-5 md:grid-cols-2">
-        <div className="space-y-3 min-w-0">
-          <h2 className="font-semibold">Кадр {frame.blockNumber ?? '—'}–{frame.frameInBlock ?? activeIndex + 1}</h2>
-          {frame.hasImage ? <img key={frame.previewUrl} src={videoPreviewUrl(frame.previewUrl)} alt={`Исходное изображение кадра ${frame.blockNumber ?? '—'}–${frame.frameInBlock ?? activeIndex + 1}`}
-            className="w-full max-h-[55vh] object-contain rounded-xl bg-slate-900" />
-            : <div className="rounded-xl bg-slate-900 p-10 text-slate-400">Исходное изображение отсутствует или устарело.</div>}
-          <label className="flex gap-3 items-center rounded-xl border border-slate-700 p-3"><input type="checkbox" checked={draft.selected} disabled={busy}
-            onChange={event => edit({ selected: event.target.checked })} className="size-5 accent-emerald-500" />Анимировать этот кадр</label>
-          <p className="whitespace-pre-wrap break-words text-sm">{frame.text}</p>
-          <p className="text-sm text-slate-400">Длительность: {frame.targetDurationSec === null ? 'недоступна — проверьте раскадровку и озвучку' : `${frame.targetDurationSec.toFixed(2)} с${frame.durationExact ? '' : ' (оценка)'}`}</p>
-          <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-3 space-y-3">
-            <div className="grid gap-3 sm:grid-cols-2" aria-label="Настройки генерации Google Flow">
+      <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-[minmax(0,1.1fr)_minmax(18rem,.9fr)_minmax(20rem,1fr)] items-start">
+        <div className="space-y-2 min-w-0">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="!m-0 font-semibold">Кадр {frame.blockNumber ?? '—'}–{frame.frameInBlock ?? activeIndex + 1}</h2>
+            {frame.video?.status === 'ready' && <div className="flex gap-1 text-xs" role="group" aria-label="Просмотр кадра">
+              <button className={previewMode === 'image' ? button : secondary} aria-pressed={previewMode === 'image'} onClick={() => setPreviewMode('image')}>Изображение</button>
+              <button className={previewMode === 'video' ? button : secondary} aria-pressed={previewMode === 'video'} onClick={() => setPreviewMode('video')}>MP4</button>
+            </div>}
+          </div>
+          {frame.video?.status === 'ready' && previewMode === 'video' ? <video controls preload="metadata"
+            className="w-full max-h-[42dvh] rounded-lg bg-black"
+            src={videoFileUrl(projectId, frame.frameId, frame.video.generatedAt || frame.video.filename)} />
+            : frame.hasImage ? <img key={frame.previewUrl} src={videoPreviewUrl(frame.previewUrl)} alt={`Исходное изображение кадра ${frame.blockNumber ?? '—'}–${frame.frameInBlock ?? activeIndex + 1}`}
+              className="w-full max-h-[42dvh] object-contain rounded-xl bg-slate-900" />
+              : <div className="rounded-xl bg-slate-900 p-10 text-slate-400">Исходное изображение отсутствует или устарело.</div>}
+          {frame.video?.status === 'ready' && <a className="text-sm text-purple-300 hover:text-purple-200" download={frame.video.filename}
+            href={videoFileUrl(projectId, frame.frameId, frame.video.generatedAt || frame.video.filename)}>Скачать MP4</a>}
+        </div>
+        <div className="space-y-2 min-w-0 rounded-2xl border border-slate-800 p-3">
+          <label className="flex gap-2 items-center rounded-xl border border-slate-700 p-2"><input type="checkbox" checked={draft.selected} disabled={busy}
+            onChange={event => edit({ selected: event.target.checked })} className="size-5 accent-emerald-500" />Анимировать кадр
+            <span className="ml-auto text-xs text-slate-400 whitespace-nowrap">Видео: {({ pending: 'ожидает', generating: 'создаётся', ready: 'готово', stale: 'устарело', error: 'ошибка' })[frame.video?.status || 'pending']}</span>
+          </label>
+          <p className="max-h-20 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-5" title={frame.text}>{frame.text}</p>
+          <p className="text-xs text-slate-400">Длительность: {frame.targetDurationSec === null ? 'недоступна — проверьте раскадровку и озвучку' : `${frame.targetDurationSec.toFixed(2)} с${frame.durationExact ? '' : ' (оценка)'}`}</p>
+          <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-2.5 space-y-2">
+            <div className="grid gap-2 grid-cols-2" aria-label="Настройки генерации Google Flow">
               <label className="text-sm text-slate-300">Модель
-                <select className="mt-1 block w-full rounded-lg border border-slate-600 bg-slate-950 p-2 text-white" value={flowSettings.modelDisplayName}
+                <select className="mt-1 block w-full rounded-lg border border-slate-600 bg-slate-950 p-1.5 text-white" value={flowSettings.modelDisplayName}
                   disabled={Boolean(flowBusy)} onChange={event => setFlowSettings(current => normalizeFlowVideoSettings({ ...current, modelDisplayName: event.target.value }))}>
                   {FLOW_VIDEO_MODELS.map(model => <option key={model} value={model}>{model}</option>)}
                 </select>
               </label>
               <label className="text-sm text-slate-300">Качество
-                <select className="mt-1 block w-full rounded-lg border border-slate-600 bg-slate-950 p-2 text-white" value={flowSettings.resolution}
+                <select className="mt-1 block w-full rounded-lg border border-slate-600 bg-slate-950 p-1.5 text-white" value={flowSettings.resolution}
                   disabled={Boolean(flowBusy) || flowSettings.modelDisplayName !== 'Omni 1.1 Flash'}
                   onChange={event => setFlowSettings(current => normalizeFlowVideoSettings({ ...current, resolution: event.target.value }))}>
                   <option value="360p">360p · черновик</option>
@@ -467,55 +488,47 @@ function VideoPlanEditor({ projectId }) {
                 </select>
               </label>
               <label className="text-sm text-slate-300">Длительность
-                <select className="mt-1 block w-full rounded-lg border border-slate-600 bg-slate-950 p-2 text-white" value={flowSettings.durationSeconds}
+                <select className="mt-1 block w-full rounded-lg border border-slate-600 bg-slate-950 p-1.5 text-white" value={flowSettings.durationSeconds}
                   disabled={Boolean(flowBusy)} onChange={event => setFlowSettings(current => normalizeFlowVideoSettings({ ...current, durationSeconds: event.target.value }))}>
                   {[4, 6, 8, ...(flowSettings.modelDisplayName === 'Omni 1.1 Flash' ? [10] : [])].map(seconds =>
                     <option key={seconds} value={seconds}>{seconds} с</option>)}
                 </select>
               </label>
               <label className="text-sm text-slate-300">Соотношение сторон
-                <select className="mt-1 block w-full rounded-lg border border-slate-600 bg-slate-950 p-2 text-white" value={flowSettings.aspectRatio}
+                <select className="mt-1 block w-full rounded-lg border border-slate-600 bg-slate-950 p-1.5 text-white" value={flowSettings.aspectRatio}
                   disabled={Boolean(flowBusy)} onChange={event => setFlowSettings(current => normalizeFlowVideoSettings({ ...current, aspectRatio: event.target.value }))}>
                   <option value="16:9">16:9 · горизонтально</option>
                   <option value="9:16">9:16 · вертикально</option>
                 </select>
               </label>
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p>Видео: {({ pending: 'ожидает', generating: 'создаётся', ready: 'готово', stale: 'устарело', error: 'ошибка' })[frame.video?.status || 'pending']}</p>
-              <button className={button} disabled={busy || Boolean(flowBusy) || unsaved || conflict ||
+            <div className="grid grid-cols-2 gap-1.5 text-xs">
+              <button className={`${button} min-h-9 leading-tight`} disabled={busy || Boolean(flowBusy) || unsaved || conflict ||
                 data.videoPlan.status !== 'confirmed' || !frame.hasImage || !frame.videoInputFingerprint ||
                 saved?.promptStatus !== 'ready' || frame.video?.status === 'ready'} onClick={() => launchFlowVideo('flow')}>
                 {flowBusy === `start:${frame.frameId}` ? 'Передаём в Flow…' : 'Создать в Google Flow'}
               </button>
-              <button className={button} disabled={busy || Boolean(flowBusy) || unsaved || conflict ||
+              <button className={`${button} min-h-9 leading-tight`} disabled={busy || Boolean(flowBusy) || unsaved || conflict ||
                 data.videoPlan.status !== 'confirmed' || !frame.hasImage || !frame.videoInputFingerprint ||
                 saved?.promptStatus !== 'ready' || frame.video?.status === 'ready'} onClick={() => launchFlowVideo('davinci')}>
                 {flowBusy === `start:${frame.frameId}` ? 'Передаём задание…' : 'Создать в DaVinci AI · 720p · 8 с'}
               </button>
-              <label className={`${secondary} cursor-pointer ${flowBusy ? 'pointer-events-none opacity-40' : ''}`}>
+              <label className={`${secondary} col-span-2 block text-center cursor-pointer ${flowBusy ? 'pointer-events-none opacity-40' : ''}`}>
                 {flowBusy === `import:${frame.frameId}` ? 'Импортируем…' : frame.video?.status === 'ready' ? 'Заменить MP4' : 'Импортировать MP4'}
                 <input type="file" accept="video/mp4,.mp4" className="sr-only" disabled={Boolean(flowBusy)}
                   onChange={importFrameVideo} />
               </label>
             </div>
-            {frame.video?.status === 'ready' && <>
-              <video controls preload="metadata" className="w-full max-h-[45vh] rounded-lg bg-black"
-                src={videoFileUrl(projectId, frame.frameId, frame.video.generatedAt || frame.video.filename)} />
-              <a className="text-sm text-purple-300 hover:text-purple-200" download={frame.video.filename}
-                href={videoFileUrl(projectId, frame.frameId, frame.video.generatedAt || frame.video.filename)}>Скачать MP4</a>
-            </>}
             {!frame.videoInputFingerprint && <p className="text-xs text-slate-400">Сначала сохраните и утвердите готовый промт кадра.</p>}
           </div>
         </div>
-        <section className="space-y-3 min-w-0 rounded-2xl border border-slate-800 p-4" aria-labelledby="detail-heading">
-          <h2 id="detail-heading" className="text-xl font-semibold">2. Детализация промта</h2>
-          <p className="text-sm text-slate-400">Напишите идею движения или используйте черновик ИИ. Детализация подготовит английский промт для видео.</p>
+        <section className="space-y-2 min-w-0 rounded-2xl border border-slate-800 p-3 lg:col-span-2 xl:col-span-1" aria-labelledby="detail-heading">
+          <h2 id="detail-heading" className="!m-0 text-xl font-semibold">2. Детализация промта</h2>
           <label className="block text-sm" htmlFor="videoPrompt">{draft.promptStatus === 'ready' ? 'Детализированный промт' : 'Черновой промт движения'}</label>
           <textarea id="videoPrompt" value={draft.videoPrompt} maxLength={12000} disabled={busy}
             placeholder="Например: камера медленно приближается к поезду, туман плавно движется."
             onChange={event => edit({ videoPrompt: event.target.value })}
-            className="w-full min-h-52 rounded-xl border border-slate-700 bg-slate-900 p-3 resize-y" />
+            className="w-full h-[28dvh] min-h-32 rounded-xl border border-slate-700 bg-slate-900 p-3 resize-y" />
           <div className="flex flex-wrap gap-2">
             <button className={secondary} disabled={busy || !dirty || conflict} onClick={save}>Сохранить кадр</button>
             {drafts[frame.frameId] && <button className={secondary} disabled={busy} onClick={cancelFrame}>Отменить правки кадра</button>}
@@ -523,7 +536,10 @@ function VideoPlanEditor({ projectId }) {
           <button className={`${button} w-full`} disabled={busy || !draft.selected || conflict || !frame.hasImage}
             onClick={() => operation('prepare', 'single')}>{saved.promptStatus === 'ready' ? 'Детализировать промт заново' : 'Детализировать промт кадра'}</button>
           {!draft.selected && <p className="text-xs text-slate-400">Отметьте «Анимировать этот кадр», чтобы детализировать его промт.</p>}
-          <p className="text-xs text-slate-400">Правки текущего кадра сохраняются перед детализацией. Готово к генерации = выбранный кадр с готовым промтом и актуальным изображением.</p>
+          <details className="text-xs text-slate-400"><summary className="cursor-pointer">Как работает детализация</summary>
+            <p>Напишите идею движения или используйте черновик ИИ. Детализация подготовит английский промт для видео.</p>
+            <p>Правки текущего кадра сохраняются перед детализацией. Готово к генерации = выбранный кадр с готовым промтом и актуальным изображением.</p>
+          </details>
         </section>
       </div>
     </>}

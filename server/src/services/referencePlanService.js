@@ -79,3 +79,36 @@ export function validateReferenceItems(input, currentItems = []) {
     return { ...next, version: old ? old.version + (changed ? 1 : 0) : 1 };
   });
 }
+
+// Adding cards to an approved plan must not invalidate a finished storyboard.
+// Only a strict append is safe: edits, removals and reordering still use the
+// normal draft/confirm flow so existing frame inputs cannot silently change.
+export function isAdditiveReferenceEdit(plan, items, instructions) {
+  if (plan.status !== 'confirmed' || instructions.trim() !== plan.instructions ||
+      items.length <= plan.items.length) return false;
+  const fields = ['id', 'name', 'type', 'description', 'reason', 'mentions', 'prompt', 'selected', 'version'];
+  return plan.items.every((old, index) => fields.every(key => old[key] === items[index]?.[key]));
+}
+
+// Recover a board that was marked stale by an older server when cards were
+// appended. Every reference already used by a frame must still have its
+// original ready image and version from before the board was last edited.
+export function canAdoptAddedReferences(project, assets) {
+  const board = project?.storyboard;
+  const plan = project?.referencePlan;
+  if (board?.status !== 'confirmed' || plan?.status !== 'confirmed' ||
+      !Number.isSafeInteger(board.sourceReferencePlanRevision) ||
+      board.sourceReferencePlanRevision >= plan.revision ||
+      project.script?.status !== 'confirmed' || board.sourceScriptRevision !== project.script.revision ||
+      project.voiceover?.status !== 'confirmed' || board.sourceVoiceoverRevision !== project.voiceover.revision ||
+      !board.updatedAt) return false;
+  const items = new Map((plan.items || []).map(item => [item.id, item]));
+  const images = new Map((assets || []).map(asset => [asset.referenceId, asset]));
+  const used = new Set((board.frames || []).flatMap(frame => frame.referenceIds || []));
+  return [...used].every(id => {
+    const item = items.get(id);
+    const image = images.get(id);
+    return item?.selected && image?.status === 'ready' && image.sourceReferenceVersion === item.version &&
+      image.updatedAt && new Date(image.updatedAt) <= new Date(board.updatedAt);
+  });
+}

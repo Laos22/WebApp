@@ -71,6 +71,29 @@ test('invalid batch is retried once without repeating completed batches', async 
   assert.deepEqual(calls, [['1', 0], ['13', 0], ['13', 1]]);
 });
 
+test('large invalid batches split while valid checkpoints and resumed frames remain intact', async () => {
+  const plan = planStoryboardFrames([{ ...voiceBlock, adaptedText: Array(72).fill('word').join(' ') }]);
+  const calls = [];
+  const checkpoints = [];
+  const options = { batchSize: 4, maxAttempts: 2, splitOnInvalidResponse: true,
+    onBatch: frames => checkpoints.push(frames.length) };
+  const request = async (batch, attempt) => {
+    calls.push([batch[0].slot, batch.length, attempt]);
+    return batch.length > 2 ? '{"frames":[]}' : visualBatch(batch);
+  };
+  const raw = await generatePlannedStoryboard(plan, allowed, request, options);
+  assert.deepEqual(calls, [['1', 4, 0], ['1', 4, 1], ['1', 2, 0], ['3', 4, 0], ['3', 4, 1], ['3', 2, 0], ['5', 2, 0]]);
+  assert.deepEqual(checkpoints, [2, 4, 6]);
+  const completedFrames = JSON.parse(raw).frames.slice(0, 4);
+  const resumedCalls = [];
+  const resumed = await generatePlannedStoryboard(plan, allowed, async batch => {
+    resumedCalls.push(batch[0].slot);
+    return visualBatch(batch);
+  }, { batchSize: 2, completedFrames });
+  assert.deepEqual(resumedCalls, ['5']);
+  assert.deepEqual(JSON.parse(resumed).frames.slice(0, 4), completedFrames);
+});
+
 test('missing, duplicate, unknown slots and invalid references fail after bounded retry', async () => {
   const plan = planStoryboardFrames([{ ...voiceBlock, adaptedText: Array(24).fill('word').join(' ') }]);
   for (const corrupt of [

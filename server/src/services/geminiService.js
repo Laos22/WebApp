@@ -119,6 +119,20 @@ export function geminiRetryAfterMs(error, fallback = 60_000) {
   return fallback;
 }
 
+export async function retryGeminiRateLimit(send, { beforeRetry = async () => {},
+  sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)), maxRetries = 2 } = {}) {
+  for (let retry = 0; ; retry++) {
+    try { return await send(); }
+    catch (error) {
+      if (!isGeminiRateLimitError(error) || retry >= maxRetries ||
+          /(?:per day|daily|\brpd\b|RequestsPerDay)/i.test(String(error?.message || ''))) throw error;
+      const delay = Math.min(120_000, Math.max(15_000, geminiRetryAfterMs(error) + 2_000) * (retry + 1));
+      await sleep(delay);
+      await beforeRetry();
+    }
+  }
+}
+
 export function buildVoiceoverAdaptationPrompt(project, sourceBlocks, instructions, template) {
   const source = typeof template === 'string' && template.trim()
     ? template : DEFAULT_AUDIO_ADAPTATION_PROMPT;
@@ -229,22 +243,48 @@ export function buildStoryboardPrompt(project, references, currentFrames, instru
   return prompt;
 }
 
+// Each batch needs its own narration and nearby context. Repeating the whole
+// script, all voiceover blocks and all previous frame prompts can exhaust TPM
+// even when the individual request is below the model's context limit.
+export function buildStoryboardBatchPrompt(project, references, currentFrames, instructions, template, plan, batch) {
+  const offset = plan.findIndex(frame => frame.slot === batch[0]?.slot);
+  if (offset < 0) throw new Error('Unknown storyboard slot');
+  const nearby = plan.slice(Math.max(0, offset - 2), Math.min(plan.length, offset + batch.length + 2));
+  const blockIds = new Set(nearby.map(frame => frame.sourceVoiceoverBlockId));
+  const scopedProject = {
+    title: project.title,
+    script: { content: nearby.map(frame => frame.scriptText).join(' ') },
+    voiceover: { blocks: (project.voiceover?.blocks || []).filter(block => blockIds.has(block.id)).map(block => ({
+      id: block.id, order: block.order,
+      adaptedText: nearby.filter(frame => frame.sourceVoiceoverBlockId === block.id).map(frame => frame.scriptText).join(' '),
+    })) },
+  };
+  const compactReferences = references.map(reference => ({
+    id: reference.id, name: reference.name, type: reference.type,
+    description: String(reference.description || '').slice(0, 600),
+    prompt: String(reference.prompt || '').slice(0, 400),
+  }));
+  const nearbyCurrentFrames = currentFrames.length === plan.length
+    ? currentFrames.slice(Math.max(0, offset - 2), Math.min(plan.length, offset + batch.length + 2)) : [];
+  return buildStoryboardPrompt(scopedProject, compactReferences, nearbyCurrentFrames, instructions, template);
+}
+
 export async function generateStoryboard(project, references, currentFrames, instructions, template, profile, options = {}) {
   try {
     const plan = planStoryboardFrames(project.voiceover?.blocks || []);
-    const basePrompt = buildStoryboardPrompt(project, references, currentFrames, instructions, template);
     const config = profile?.provider === 'openrouter' ? null : resolveTextConfig(profile, 'generate-storyboard');
     const ai = config ? new GoogleGenAI({ apiKey: config.apiKey }) : null;
     const longStoryboard = plan.length > 200;
     return await generatePlannedStoryboard(plan, new Set(references.map(reference => reference.id)), async (batch, attempt) => {
-      const text = `${basePrompt}\n\nСервер уже разделил утверждённый текст на кадры. Для этого запроса создай только визуальные описания для следующих слотов, ровно по одному на слот. Не объединяй и не добавляй кадры. Верни {"frames":[{"slot":"...","visualDescription":"...","prompt":"...","referenceIds":[]}]}. Поля scriptText и sourceVoiceoverBlockId служат контекстом и не возвращаются. Эта структура ответа заменяет структуру из шаблона выше.\n${JSON.stringify(batch)}${attempt ? '\nПредыдущий ответ не прошёл проверку: проверь все slot, обязательные поля и допустимые referenceIds.' : ''}`;
+      const batchPrompt = buildStoryboardBatchPrompt(project, references, currentFrames, instructions, template, plan, batch);
+      const text = `${batchPrompt}\n\nВыше дан только ближайший контекст этого пакета, а не весь сценарий. Сервер уже разделил утверждённый текст на кадры. Для этого запроса создай только визуальные описания для следующих слотов, ровно по одному на слот. Не объединяй и не добавляй кадры. Верни {"frames":[{"slot":"...","visualDescription":"...","prompt":"...","referenceIds":[]}]}. Поля scriptText и sourceVoiceoverBlockId служат контекстом и не возвращаются. Эта структура ответа заменяет структуру из шаблона выше. Для каждого кадра дай конкретное visualDescription и самостоятельный английский prompt примерно на 60–100 слов, не повторяя общий контекст.\n${JSON.stringify(batch)}${attempt ? '\nПредыдущий ответ не прошёл проверку: проверь все slot, обязательные поля и допустимые referenceIds.' : ''}`;
       if (text.length > 196608) {
         const error = new Error('Storyboard input too long');
         error.code = 'STORYBOARD_INPUT_TOO_LONG';
         throw error;
       }
       if (!ai) return generateOpenRouterText(text, profile, true, 120_000);
-      const response = await ai.models.generateContent({
+      const response = await retryGeminiRateLimit(() => ai.models.generateContent({
         model: config.model, contents: [{ role: 'user', parts: [{ text }] }],
         config: { httpOptions: { timeout: 120_000 }, responseMimeType: 'application/json', responseJsonSchema: {
           type: 'object', required: ['frames'], properties: { frames: {
@@ -256,9 +296,10 @@ export async function generateStoryboard(project, references, currentFrames, ins
             } },
           } },
         } },
-      });
+      }), { beforeRetry: options.beforeBatch });
       return modelText(response);
-    }, { batchSize: longStoryboard ? 6 : 12, maxAttempts: longStoryboard ? 3 : 2, ...options });
+    }, { batchSize: longStoryboard ? 6 : 12, maxAttempts: 2,
+      splitOnInvalidResponse: longStoryboard, ...options });
   } catch (cause) {
     console.error('[STORYBOARD_PROVIDER_ERROR]', {
       status: cause?.status || cause?.statusCode || cause?.response?.status || null,
@@ -266,7 +307,13 @@ export async function generateStoryboard(project, references, currentFrames, ins
       message: String(cause?.message || '').slice(0, 500),
     });
     if (['STORYBOARD_INPUT_TOO_LONG', 'STORYBOARD_TOO_MANY_FRAMES', 'INVALID_STORYBOARD_RESPONSE',
-      'STORYBOARD_JOB_CONFLICT', 'STORYBOARD_LEASE_LOST', 'INVALID_STORYBOARD_CHECKPOINT'].includes(cause.code)) throw cause;
+      'STORYBOARD_JOB_CONFLICT', 'STORYBOARD_LEASE_LOST', 'STORYBOARD_STOP_REQUESTED',
+      'INVALID_STORYBOARD_CHECKPOINT'].includes(cause.code)) throw cause;
+    if (isGeminiRateLimitError(cause)) {
+      const error = new Error('Лимит текстовой модели временно исчерпан. Сохранённые кадры можно продолжить позже.');
+      error.code = 'STORYBOARD_RATE_LIMIT';
+      throw error;
+    }
     const error = new Error('Не удалось создать раскадровку');
     error.code = 'STORYBOARD_GENERATION_FAILED';
     throw error;
@@ -290,7 +337,7 @@ export function buildStoryboardDetailPrompt(project, frame, references, instruct
     .split('{{REFERENCES}}').join(JSON.stringify(selectedReferences))
     .split('{{CURRENT_PROMPT}}').join(currentPrompt)
     .split('{{INSTRUCTION}}').join(instruction || 'Нет дополнительной инструкции.');
-  return `${prepared}\n\nОБЯЗАТЕЛЬНОЕ ВИЗУАЛЬНОЕ ОПИСАНИЕ КАДРА: ${frame.visualDescription}\nОБЯЗАТЕЛЬНЫЙ ПРИОРИТЕТ: финальный prompt должен точно показывать всё, что указано в visualDescription кадра. Состав людей и объектов бери из visualDescription; референсы уточняют их внешний вид, но не отменяют их присутствие. Не добавляй отрицаний, запретов или деталей из прежнего prompt, если они противоречат visualDescription. ${currentPrompt ? 'Прежний prompt служит только второстепенным контекстом.' : 'Прежний prompt намеренно не передан: составь новый с нуля по описанию кадра.'}`;
+  return `${prepared}\n\nОБЯЗАТЕЛЬНОЕ ВИЗУАЛЬНОЕ ОПИСАНИЕ КАДРА: ${frame.visualDescription}\nВЫБРАННЫЕ РЕФЕРЕНСЫ ЭТОГО КАДРА: ${JSON.stringify(selectedReferences)}\nОБЯЗАТЕЛЬНЫЙ ПРИОРИТЕТ: финальный prompt должен точно показывать всё, что указано в visualDescription кадра. Выбранные референсы персонажей, предметов и локаций включай в сцену явно, а не только как стиль; описание кадра задаёт их действия и расположение. Не добавляй отрицаний, запретов или деталей из прежнего prompt, если они противоречат visualDescription или выбранным референсам. ${currentPrompt ? 'Прежний prompt служит только второстепенным контекстом.' : 'Прежний prompt намеренно не передан: составь новый с нуля по описанию кадра и выбранным референсам.'}`;
 }
 
 export async function detailStoryboardFramePrompt(project, frame, references, instruction, template, profile, preserveCurrentPrompt = false) {

@@ -14,6 +14,17 @@ listener_pid() {
   /usr/sbin/lsof -nP -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null | head -n 1
 }
 
+process_cwd() {
+  /usr/sbin/lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1
+}
+
+project_listener_pid() {
+  local pid
+  pid="$(listener_pid "$1")"
+  [ -n "$pid" ] && [ "$(process_cwd "$pid")" = "$2" ] || return 1
+  printf '%s' "$pid"
+}
+
 tracked_pid() {
   local file="$RUNTIME/$1.pid"
   local pid
@@ -27,7 +38,7 @@ managed_process() {
   local name="$1" directory="$2" pid cwd
   pid="$(tracked_pid "$name")" || return 1
   kill -0 "$pid" 2>/dev/null || return 1
-  cwd="$(/usr/sbin/lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)"
+  cwd="$(process_cwd "$pid")"
   [ "$cwd" = "$directory" ]
 }
 
@@ -42,18 +53,29 @@ stop_one() {
   local name="$1" port="$2" directory="$3" pid attempt
   if managed_process "$name" "$directory"; then
     pid="$(tracked_pid "$name")"
+  elif pid="$(project_listener_pid "$port" "$directory")"; then
+    echo "Найден $name этого проекта без файла PID (PID $pid)."
+  else
+    if [ -n "$(listener_pid "$port")" ]; then
+      echo "Порт $port занят другим процессом. Он не будет остановлен."
+      return 1
+    fi
+    rm -f "$RUNTIME/$name.pid"
+    echo "$name уже остановлен."
+    return 0
+  fi
+  if [ -n "$pid" ]; then
     kill -TERM "$pid" 2>/dev/null || true
     for ((attempt=0; attempt<30; attempt++)); do
-      managed_process "$name" "$directory" || break
+      kill -0 "$pid" 2>/dev/null || break
+      [ "$(process_cwd "$pid")" = "$directory" ] || break
       sleep 0.2
     done
-    if managed_process "$name" "$directory"; then
+    if [ "$(project_listener_pid "$port" "$directory" 2>/dev/null)" = "$pid" ]; then
       echo "Не удалось остановить $name (PID $pid). Подробности: $RUNTIME/$name.log"
       return 1
     fi
     echo "Остановлен $name."
-  elif [ -f "$RUNTIME/$name.pid" ]; then
-    echo "У $name нет запущенного процесса, созданного этой кнопкой."
   fi
   rm -f "$RUNTIME/$name.pid"
 }
@@ -84,7 +106,9 @@ case "${1:-}" in
     # Recover from an interrupted start, but never touch an unrelated listener.
     for entry in "server:$SERVER_PORT:$SERVER_DIR" "client:$CLIENT_PORT:$CLIENT_DIR"; do
       IFS=: read -r name port directory <<< "$entry"
-      if managed_process "$name" "$directory"; then stop_one "$name" "$port" "$directory" || exit 1; fi
+      if managed_process "$name" "$directory" || project_listener_pid "$port" "$directory" >/dev/null; then
+        stop_one "$name" "$port" "$directory" || exit 1
+      fi
       if [ -n "$(listener_pid "$port")" ]; then
         echo "Порт $port уже занят другим процессом. WebApp не запущен."
         exit 1
@@ -128,6 +152,8 @@ case "${1:-}" in
       IFS=: read -r name port directory <<< "$entry"
       if managed_listener "$name" "$port" "$directory"; then
         echo "$name: работает на порту $port"
+      elif project_listener_pid "$port" "$directory" >/dev/null; then
+        echo "$name: работает на порту $port (без файла PID)"
       elif [ -n "$(listener_pid "$port")" ]; then
         echo "$name: порт $port занят другим процессом"
       else

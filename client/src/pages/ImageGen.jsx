@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
-  adoptStoryboardVoiceover, confirmStoryboard, detailStoryboardFramePrompt, generateStoryboard,
+  adoptStoryboardAddedReferences, adoptStoryboardVoiceover, confirmStoryboard, detailStoryboardFramePrompt, generateStoryboard,
   exportStoryboardFlowPackage, generateStoryboardFrameImage, getStoryboard, getStoryboardFrameImageUrl,
   getStoryboardFramePreviewUrl,
   getVisualReferenceImageUrl,
   importStoryboardFlowFrameImage,
   reconcileStoryboardImages, resetStoryboardImages, resetStoryboardPromptDetails, saveStoryboard,
-  saveStoryboardFrame,
-  getStoryboardGeneration, resumeStoryboardGeneration,
+  saveStoryboardFrame, saveStoryboardFrames,
+  getStoryboardGeneration, getStoryboardGenerationFrames, resumeStoryboardGeneration,
+  stopStoryboardGeneration,
 } from "../services/api";
 import { fetchProfiles } from "../services/profileService";
 import ProfileSelector from "../components/ProfileSelector";
@@ -116,21 +117,58 @@ function editableFrame(frame = {}) {
   };
 }
 
-function GenerationProgress({ generation, connectionError, busy, onResume }) {
+function GenerationProgress({ generation, connectionError, busy, onResume, onStop }) {
   if (!generation || generation.status === 'completed') return null;
   const failed = generation.status === 'failed';
+  const paused = generation.status === 'paused';
+  const active = ['queued', 'running'].includes(generation.status);
   const stale = generation.errorCode === 'STORYBOARD_JOB_CONFLICT';
+  const failureMessage = generation.errorCode === 'STORYBOARD_RATE_LIMIT'
+    ? 'Достигнут лимит выбранной модели. Готовые кадры сохранены; нажмите «Продолжить генерацию» после восстановления лимита или выберите другой профиль.'
+    : generation.errorCode === 'INVALID_STORYBOARD_RESPONSE'
+      ? 'Модель вернула некорректный пакет кадров. Готовые кадры сохранены; можно продолжить без повторной генерации сохранённой части.'
+      : 'Не удалось завершить запрос. Готовые части сохранены. Можно продолжить, при необходимости выбрав другой профиль в управлении раскадровкой.';
   return <section className="p-4 rounded-xl border border-purple-500/40 bg-slate-900 space-y-3" aria-label="Прогресс создания раскадровки">
     <div className="flex flex-wrap justify-between gap-2">
-      <strong>{failed ? 'Генерация приостановлена' : generation.status === 'queued' ? 'Раскадровка в очереди' : 'Создаётся раскадровка'}</strong>
+      <strong>{failed ? 'Генерация прервана' : paused ? 'Генерация остановлена' : generation.stopRequested ? 'Останавливаем после текущей группы…' : generation.status === 'queued' ? 'Раскадровка в очереди' : 'Создаётся раскадровка'}</strong>
       <span>Сохранено {generation.completed} из {generation.total} кадров</span>
     </div>
     <progress className="w-full h-3 accent-purple-500" value={generation.completed} max={generation.total} />
     <p className="text-sm text-slate-300">{stale ? 'Сценарий, озвучка, референсы или раскадровка изменились. Начните генерацию заново.'
-      : failed ? 'Не удалось завершить запрос. Готовые части сохранены. Можно продолжить, при необходимости выбрав другой профиль в управлении раскадровкой.'
-        : 'Можно уходить со страницы. Сервер сохранит каждую готовую часть; кадры появятся после завершения всей раскадровки.'}</p>
+      : failed ? failureMessage
+        : paused ? 'Готовые кадры сохранены. Измените инструкции и продолжите; новые инструкции повлияют только на оставшиеся кадры.'
+          : 'Готовые кадры появляются ниже по мере сохранения. Остановка произойдёт после текущей группы кадров.'}</p>
     {connectionError && <p className="text-sm text-amber-300">Не удалось обновить прогресс. Проверяем соединение…</p>}
-    {failed && !stale && <button type="button" className={button} disabled={busy} onClick={onResume}>Продолжить генерацию</button>}
+    <div className="flex flex-wrap gap-2">
+      {active && <button type="button" className={`${button} bg-red-800 hover:bg-red-700`} disabled={busy || generation.stopRequested} onClick={onStop}>Остановить</button>}
+      {(failed || paused) && !stale && <button type="button" className={button} disabled={busy} onClick={onResume}>Продолжить генерацию</button>}
+    </div>
+  </section>;
+}
+
+function GenerationFramePreview({ generation, frames, index, onSelect, onLatest, references }) {
+  if (!generation || generation.status === 'completed' || !frames.length) return null;
+  const frame = frames[Math.min(index, frames.length - 1)];
+  const names = (frame.referenceIds || []).map(id => references.find(reference => reference.id === id)?.name || id);
+  return <section className="overflow-hidden rounded-2xl border border-purple-700/50 bg-slate-900/85" aria-label="Готовые кадры генерации">
+    <header className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-slate-800">
+      <div><h2 className="font-semibold">Готовые кадры · кадр {frame.slot}</h2><p className="text-xs text-slate-400">Показано {frames.length} из {generation.completed} сохранённых кадров. Изображения создаются после утверждения раскадровки.</p></div>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" className="px-3 py-2 rounded-lg bg-slate-800 disabled:opacity-40" disabled={index === 0} onClick={() => onSelect(index - 1)}>←</button>
+        <span className="px-2 py-2 text-sm">{index + 1}/{frames.length}</span>
+        <button type="button" className="px-3 py-2 rounded-lg bg-slate-800 disabled:opacity-40" disabled={index >= frames.length - 1} onClick={() => onSelect(index + 1)}>→</button>
+        <button type="button" className="px-3 py-2 rounded-lg bg-purple-800 disabled:opacity-40" disabled={index >= frames.length - 1} onClick={onLatest}>К последнему</button>
+      </div>
+    </header>
+    <div className="grid lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,1fr)]">
+      <div className="aspect-video bg-slate-950 flex flex-col items-center justify-center gap-2 p-6 text-center text-slate-400"><span className="text-4xl">▧</span><p>Описание кадра готово</p><p className="text-sm">Изображение ещё не создавалось</p></div>
+      <div className="p-4 md:p-5 space-y-4 max-h-[55vh] overflow-y-auto">
+        <section><h3 className="text-xs uppercase text-slate-400 mb-2">Текст кадра</h3><p className="whitespace-pre-wrap break-words">{frame.scriptText}</p></section>
+        <section className="pt-3 border-t border-slate-800"><h3 className="text-xs uppercase text-slate-400 mb-2">Что происходит в кадре</h3><p className="text-sm whitespace-pre-wrap break-words">{frame.visualDescription}</p></section>
+        <section className="pt-3 border-t border-slate-800"><h3 className="text-xs uppercase text-slate-400 mb-2">Prompt для изображения</h3><p className="text-sm whitespace-pre-wrap break-words text-slate-300">{frame.prompt}</p></section>
+        {names.length > 0 && <section className="pt-3 border-t border-slate-800"><h3 className="text-xs uppercase text-slate-400 mb-2">Референсы</h3><p className="text-sm">{names.join(', ')}</p></section>}
+      </div>
+    </div>
   </section>;
 }
 
@@ -182,6 +220,11 @@ export default function ImageGen() {
   const [frameMenuOpen, setFrameMenuOpen] = useState(false);
   const [requestPending, setPending] = useState("load");
   const [generation, setGeneration] = useState(null);
+  const [generationFrames, setGenerationFrames] = useState([]);
+  const [generationFrameIndex, setGenerationFrameIndex] = useState(0);
+  const generationFramesRef = useRef([]);
+  const generationRunRef = useRef('');
+  const generationBrowseRef = useRef(false);
   const [generationConnectionError, setGenerationConnectionError] = useState(false);
   const generationActive = ['queued', 'running'].includes(generation?.status);
   const pending = requestPending || (generationActive ? 'storyboard-background' : '');
@@ -189,8 +232,11 @@ export default function ImageGen() {
   const localDraft = useRef({ dirty: false, acceptedRunId: '' });
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [imageLoading, setImageLoading] = useState(false);
-  const [imageLoadError, setImageLoadError] = useState(false);
+  const [imageLoadState, setImageLoadState] = useState({ url: '', status: 'loading' });
+  const [imageFullscreen, setImageFullscreen] = useState(false);
+  const [fullscreenLoadState, setFullscreenLoadState] = useState({ url: '', status: 'loading' });
+  const imageOpenButton = useRef(null);
+  const imageCloseButton = useRef(null);
   const mounted = useRef(true);
   const stopDetail = useRef(false);
   const stopImages = useRef(false);
@@ -214,7 +260,8 @@ export default function ImageGen() {
         setGeneration(result.generation || null);
         loadedGeneration.current = result.generation?.status === 'completed' ? result.generation.runId : '';
         setFrames(result.storyboard.frames.map(editableFrame));
-        setInstructions(result.storyboard.instructions || "");
+        setInstructions(result.generation?.status !== 'completed' && typeof result.generation?.instructions === 'string'
+          ? result.generation.instructions : result.storyboard.instructions || "");
         const available = profiles.filter(profile => profile.type === "image" && profile.provider === "google_studio");
         setImageProfiles(available);
         setImageProfileId((available.find(profile => profile.isDefault) || available[0])?.id || "");
@@ -230,12 +277,31 @@ export default function ImageGen() {
     if (!hasLoaded) return undefined;
     let active = true;
     let timer;
+    const loadPreview = async current => {
+      if (!current || current.status === 'completed') return;
+      if (generationRunRef.current !== current.runId) {
+        generationRunRef.current = current.runId;
+        generationFramesRef.current = [];
+        generationBrowseRef.current = false;
+        setGenerationFrames([]);
+        setGenerationFrameIndex(0);
+      }
+      while (active && generationFramesRef.current.length < current.completed) {
+        const response = await getStoryboardGenerationFrames(projectId, generationFramesRef.current.length);
+        if (!active || response.preview?.runId !== current.runId || !response.preview.frames.length) break;
+        const next = [...generationFramesRef.current, ...response.preview.frames];
+        generationFramesRef.current = next;
+        setGenerationFrames(next);
+        if (!generationBrowseRef.current) setGenerationFrameIndex(next.length - 1);
+      }
+    };
     const poll = async () => {
       try {
         const result = await getStoryboardGeneration(projectId);
         if (!active) return;
         setGeneration(result.generation);
         setGenerationConnectionError(false);
+        await loadPreview(result.generation);
         if (result.generation?.status === 'completed' && loadedGeneration.current !== result.generation.runId) {
           if (localDraft.current.dirty && localDraft.current.acceptedRunId !== result.generation.runId) {
             loadedGeneration.current = result.generation.runId;
@@ -246,6 +312,8 @@ export default function ImageGen() {
           if (!active) return;
           applyData(latest);
           loadedGeneration.current = result.generation.runId;
+          generationFramesRef.current = [];
+          setGenerationFrames([]);
           setMessage('Раскадровка готова и сохранена. Проверьте кадры.');
         }
       } catch { if (active) setGenerationConnectionError(true); }
@@ -253,8 +321,6 @@ export default function ImageGen() {
     };
     void poll();
     return () => { active = false; clearTimeout(timer); };
-  // applyData uses only stable React setters; polling must survive progress renders.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, hasLoaded]);
   const baseline = useMemo(() => storyboard ? JSON.stringify({
     instructions: storyboard.instructions || "",
@@ -295,14 +361,27 @@ export default function ImageGen() {
   }, [dirty, generationActive]);
 
   useEffect(() => {
-    if (!openPanel && !frameMenuOpen) return undefined;
+    if (!openPanel && !frameMenuOpen && !imageFullscreen) return undefined;
     const previous = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => { document.body.style.overflow = previous; };
-  }, [openPanel, frameMenuOpen]);
+  }, [openPanel, frameMenuOpen, imageFullscreen]);
+
+  useEffect(() => {
+    if (!imageFullscreen) return undefined;
+    const openButton = imageOpenButton.current;
+    imageCloseButton.current?.focus();
+    return () => openButton?.focus();
+  }, [imageFullscreen]);
 
   useEffect(() => {
     const handleKeys = event => {
+      if (imageFullscreen) {
+        if (event.key === "Escape") setImageFullscreen(false);
+        if (event.key === "ArrowLeft") setCurrentFrameIndex(index => Math.max(0, index - 1));
+        if (event.key === "ArrowRight") setCurrentFrameIndex(index => Math.min(frames.length - 1, index + 1));
+        return;
+      }
       if (openPanel || frameMenuOpen) return;
       if (["INPUT", "TEXTAREA", "SELECT"].includes(event.target?.tagName)) return;
       if (event.key === "ArrowLeft") setCurrentFrameIndex(index => Math.max(0, index - 1));
@@ -310,7 +389,7 @@ export default function ImageGen() {
     };
     window.addEventListener("keydown", handleKeys);
     return () => window.removeEventListener("keydown", handleKeys);
-  }, [frames.length, frameMenuOpen, openPanel]);
+  }, [frames.length, frameMenuOpen, openPanel, imageFullscreen]);
 
   const run = async (name, action, success) => {
     if (pending) return;
@@ -333,6 +412,7 @@ export default function ImageGen() {
       if (mounted.current) {
         localDraft.current.acceptedRunId = result.generation.runId;
         setGeneration(result.generation);
+        setOpenPanel('');
         setMessage('Фоновая генерация запущена. Можно уходить со страницы.');
       }
     } catch (err) { if (mounted.current) setError(readableError(err)); }
@@ -341,10 +421,21 @@ export default function ImageGen() {
 
   const resumeGeneration = () => startGeneration({ runId: generation.runId,
     ...(storyboardProfileId ? { profileId: storyboardProfileId } : {}),
+    instructions,
   }, true);
 
+  const stopGeneration = async () => {
+    if (requestPending || !generation?.runId) return;
+    setPending('stop-generation'); setError('');
+    try {
+      const result = await stopStoryboardGeneration(projectId, generation.runId);
+      if (mounted.current) { setGeneration(result.generation); setMessage('Остановка запрошена. Текущая группа кадров будет сохранена.'); }
+    } catch (err) { if (mounted.current) setError(readableError(err)); }
+    finally { if (mounted.current) setPending(''); }
+  };
+
   const generate = () => {
-    if (generation?.status === 'failed' && !window.confirm('Начать заново? Сохранённые части незавершённой генерации будут заменены.')) return;
+    if (['failed', 'paused'].includes(generation?.status) && !window.confirm('Начать заново? Сохранённые части незавершённой генерации будут заменены.')) return;
     if (frames.length && !window.confirm("ИИ обновит текущую раскадровку с учётом ваших правок. Продолжить?")) return;
     startGeneration({
       instructions, frames, expectedEditVersion: storyboard.editVersion,
@@ -352,7 +443,7 @@ export default function ImageGen() {
       sourceReferencePlanRevision: data.referencePlanRevision,
       sourceVoiceoverRevision: data.voiceoverRevision,
       profileId: storyboardProfileId,
-      restartGeneration: generation?.status === 'failed',
+      restartGeneration: ['failed', 'paused'].includes(generation?.status),
     });
   };
 
@@ -364,7 +455,7 @@ export default function ImageGen() {
       sourceReferencePlanRevision: data.referencePlanRevision,
       sourceVoiceoverRevision: data.voiceoverRevision,
       profileId: storyboardProfileId,
-      restartGeneration: generation?.status === 'failed',
+      restartGeneration: ['failed', 'paused'].includes(generation?.status),
     });
   };
 
@@ -465,9 +556,20 @@ export default function ImageGen() {
     }
   };
 
-  const save = () => run("save", () => saveStoryboard(projectId, {
-    instructions, frames, expectedEditVersion: storyboard.editVersion,
-  }), "Изменения раскадровки сохранены.");
+  const save = () => {
+    const sameStructure = storyboard.status === "confirmed" &&
+      instructions === (storyboard.instructions || "") &&
+      frames.length === storyboard.frames.length &&
+      frames.every((frame, index) => frame.id === storyboard.frames[index].id);
+    return run("save", () => sameStructure ? saveStoryboardFrames(projectId, {
+      frames, expectedEditVersion: storyboard.editVersion,
+      sourceStoryboardRevision: storyboard.revision,
+    }) : saveStoryboard(projectId, {
+      instructions, frames, expectedEditVersion: storyboard.editVersion,
+    }), sameStructure
+      ? "Изменённые кадры сохранены. Изображения и видео остальных кадров не затронуты."
+      : "Изменения раскадровки сохранены.");
+  };
 
   const saveActiveFrame = () => {
     if (!activeFrame?.id) return;
@@ -499,6 +601,27 @@ export default function ImageGen() {
       expectedEditVersion: storyboard.editVersion,
       sourceVoiceoverRevision: data.voiceoverRevision,
     }), "Новая озвучка принята. Кадры, prompts и изображения сохранены.");
+  };
+
+  const adoptAddedReferences = async () => {
+    if (pending) return;
+    setPending("adopt-references"); setError(""); setMessage("");
+    try {
+      const result = await adoptStoryboardAddedReferences(projectId, {
+        expectedEditVersion: storyboard.editVersion,
+        sourceReferencePlanRevision: data.referencePlanRevision,
+      });
+      if (mounted.current) {
+        // The recovery changes only the source revision. Keep any unsaved frame
+        // selections so the user can save them after the board becomes current.
+        setData(result);
+        setMessage("Новые референсы доступны. Готовые изображения и видео не изменены. Сохраните изменения нужных кадров.");
+      }
+    } catch (err) {
+      if (mounted.current) setError(readableError(err));
+    } finally {
+      if (mounted.current) setPending("");
+    }
   };
 
   const generateImageOne = (frameId, currentData) => generateStoryboardFrameImage(projectId, frameId, {
@@ -838,6 +961,9 @@ export default function ImageGen() {
   const canSaveActiveFrame = Boolean(storyboard?.status === "confirmed" && activeFrameDirty &&
     instructions === (storyboard.instructions || "") && frameStructureUnchanged &&
     changedFrameIds.length === 1 && changedFrameIds[0] === activeFrame.id);
+  const canSaveChangedFrames = Boolean(storyboard?.status === "confirmed" && activeFrameDirty &&
+    instructions === (storyboard.instructions || "") && frameStructureUnchanged &&
+    changedFrameIds.length > 1);
   const activeDetailStatus = activeStoredFrame?.promptDetailStatus || "pending";
   const activePromptStale = activeDetailStatus === "stale";
   const activeDescriptionChanged = Boolean(activeStoredFrame && activeFrame?.visualDescription !== activeStoredFrame.visualDescription);
@@ -847,11 +973,13 @@ export default function ImageGen() {
   const activePreviewUrl = activeFrame?.id && activeImage.hasImage
     ? getStoryboardFramePreviewUrl(projectId, activeFrame.id, activeImage.updatedAt)
     : "";
-
-  useEffect(() => {
-    setImageLoading(Boolean(activePreviewUrl));
-    setImageLoadError(false);
-  }, [activePreviewUrl]);
+  const activeFullImageUrl = activeFrame?.id && activeImage.hasImage
+    ? getStoryboardFrameImageUrl(projectId, activeFrame.id, activeImage.updatedAt)
+    : "";
+  const imageLoading = Boolean(activePreviewUrl) && imageLoadState.url !== activePreviewUrl;
+  const imageLoadError = imageLoadState.url === activePreviewUrl && imageLoadState.status === 'error';
+  const fullscreenLoading = Boolean(activeFullImageUrl) && fullscreenLoadState.url !== activeFullImageUrl;
+  const fullscreenError = fullscreenLoadState.url === activeFullImageUrl && fullscreenLoadState.status === 'error';
 
   const preloadNextFrame = () => {
     const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
@@ -866,7 +994,7 @@ export default function ImageGen() {
   if (!data && pending === "load") return <div className="text-white p-8">Загрузка изображений…</div>;
 
   return <div className="min-h-[calc(100vh-4rem)] bg-slate-950 text-white px-3 pb-6 md:px-8 md:pb-10">
-    <div className="max-w-6xl mx-auto">
+    <div className="w-full">
       <header className="sticky top-16 z-30 -mx-3 px-3 py-1.5 md:-mx-8 md:px-8 bg-slate-950/95 backdrop-blur-xl border-b border-slate-800 shadow-xl shadow-black/20 space-y-1.5">
         <div className="flex items-center justify-between gap-2 h-8">
           <div className="min-w-0 flex items-center gap-2">
@@ -896,7 +1024,11 @@ export default function ImageGen() {
 
       <main className="pt-3 md:pt-5">
         <div className="mb-3"><GenerationProgress generation={generation} connectionError={generationConnectionError}
-          busy={Boolean(pending)} onResume={resumeGeneration} /></div>
+          busy={Boolean(requestPending)} onResume={resumeGeneration} onStop={stopGeneration} /></div>
+        <div className="mb-4"><GenerationFramePreview generation={generation} frames={generationFrames}
+          index={generationFrameIndex} references={data?.references || []}
+          onSelect={index => { generationBrowseRef.current = true; setGenerationFrameIndex(index); }}
+          onLatest={() => { generationBrowseRef.current = false; setGenerationFrameIndex(generationFrames.length - 1); }} /></div>
         {!prerequisitesReady && <div className="p-4 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-300 space-y-2">
           <p>Нужны утверждённый текст озвучки и набор референсов.</p>
           <Link className="underline" to={`/projects/${projectId}/references`}>Перейти к референсам</Link>
@@ -908,6 +1040,8 @@ export default function ImageGen() {
             : "Сценарий или референсы изменились. Откройте управление раскадровкой и обновите её."}</p>
           {storyboard.staleReasons?.voiceover && !storyboard.staleReasons?.script && !storyboard.staleReasons?.references &&
             <button type="button" className={`${button} bg-amber-700 hover:bg-amber-600`} disabled={Boolean(pending)} onClick={adoptVoiceover}>{pending === "adopt-voiceover" ? "Обновляем текст…" : "Принять новую озвучку без пересоздания"}</button>}
+          {storyboard.staleReasons?.references && !storyboard.staleReasons?.script && !storyboard.staleReasons?.voiceover &&
+            <button type="button" className={`${button} bg-amber-700 hover:bg-amber-600`} disabled={Boolean(pending)} onClick={adoptAddedReferences}>{pending === "adopt-references" ? "Проверяем референсы…" : "Принять добавленные референсы без пересоздания"}</button>}
         </div>}
 
         {frames.length > 0 && <div className="mb-4 space-y-3">
@@ -949,23 +1083,27 @@ export default function ImageGen() {
             </div>
           </header>
 
-          <div className="grid lg:grid-cols-[minmax(0,1.5fr)_minmax(320px,.9fr)]">
-            <div className="relative bg-black/40 min-h-52 lg:min-h-[55vh] flex items-center justify-center overflow-hidden">
+          <div className="grid lg:grid-cols-[minmax(0,1fr)_minmax(320px,32%)]">
+            <div className="relative bg-black/40 min-h-52 lg:min-h-[68vh] flex items-center justify-center overflow-hidden">
               {activeImage.hasImage ? <>
                 {imageLoading && <div role="status" className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-slate-950/70 text-slate-300">
                   <span className="w-9 h-9 rounded-full border-4 border-slate-700 border-t-purple-400 animate-spin" />
                   <span className="text-sm">Загрузка изображения…</span>
                 </div>}
                 {imageLoadError && <div role="alert" className="absolute inset-0 flex items-center justify-center p-6 bg-red-950/40 text-red-200 text-center">Не удалось загрузить изображение. Обновите страницу или войдите через Google заново.</div>}
-                <img key={activePreviewUrl} src={activePreviewUrl} alt={frameLabel(activeFrame, frames, data.voiceoverBlocks)}
-                  loading="eager" decoding="async" fetchPriority="high"
-                  onLoad={() => { setImageLoading(false); setImageLoadError(false); preloadNextFrame(); }}
-                  onError={() => { setImageLoading(false); setImageLoadError(true); }}
-                  className={`w-full max-h-[55vh] object-contain transition-opacity duration-200 ${imageLoading || imageLoadError ? "opacity-0" : "opacity-100"}`} />
+                <button ref={imageOpenButton} type="button" aria-label="Открыть изображение на весь экран" title="Нажмите, чтобы увеличить" onClick={() => setImageFullscreen(true)}
+                  className={`w-full h-full flex items-center justify-center cursor-zoom-in focus-visible:outline-2 focus-visible:outline-purple-400 ${imageLoading || imageLoadError ? "opacity-0" : "opacity-100"}`}>
+                  <img key={activePreviewUrl} src={activePreviewUrl} alt={frameLabel(activeFrame, frames, data.voiceoverBlocks)}
+                    loading="eager" decoding="async" fetchPriority="high"
+                    onLoad={() => { setImageLoadState({ url: activePreviewUrl, status: 'ready' }); preloadNextFrame(); }}
+                    onError={() => setImageLoadState({ url: activePreviewUrl, status: 'error' })}
+                    className="w-full max-h-[68vh] object-contain" />
+                  <span aria-hidden="true" className="absolute bottom-3 right-3 rounded-lg bg-black/75 px-3 py-1.5 text-xs text-white">⛶ Увеличить</span>
+                </button>
               </>
                 : <div className="aspect-video w-full flex flex-col items-center justify-center gap-2 text-slate-500 p-6 text-center"><span className="text-4xl">▧</span><p>Изображение ещё не создано</p></div>}
             </div>
-            <div className="p-4 md:p-5 flex flex-col gap-4 lg:max-h-[55vh] lg:overflow-y-auto">
+            <div className="p-4 md:p-5 flex flex-col gap-4 lg:max-h-[68vh] lg:overflow-y-auto">
               <section>
                 <h3 className="text-xs uppercase tracking-wide text-slate-400 mb-2">Текст кадра</h3>
                 <p className="text-base leading-relaxed whitespace-pre-wrap break-words">{activeFrame.scriptText || "Текст кадра не указан"}</p>
@@ -992,10 +1130,33 @@ export default function ImageGen() {
       </main>
     </div>
 
+    {imageFullscreen && <div role="dialog" aria-modal="true" aria-label={`Просмотр изображения ${frameLabel(activeFrame, frames, data.voiceoverBlocks)}`}
+      className="fixed inset-0 z-[100] bg-black/95 flex flex-col text-white">
+      <div className="shrink-0 flex items-center justify-between gap-3 px-4 py-3 bg-slate-950/90">
+        <div className="min-w-0"><p className="font-semibold truncate">{frameLabel(activeFrame, frames, data.voiceoverBlocks)}</p><p className="text-xs text-slate-400">Оригинал изображения · Esc — закрыть · ← → — кадры</p></div>
+        <button ref={imageCloseButton} type="button" aria-label="Закрыть просмотр" onClick={() => setImageFullscreen(false)}
+          className="shrink-0 rounded-xl bg-slate-800 hover:bg-slate-700 px-4 py-2 text-lg">✕</button>
+      </div>
+      <div className="min-h-0 flex-1 flex items-center justify-center gap-2 px-2 pb-2 md:gap-4 md:px-5">
+        <button type="button" aria-label="Предыдущее изображение" disabled={currentFrameIndex === 0} onClick={() => setCurrentFrameIndex(index => index - 1)}
+          className="shrink-0 rounded-xl bg-slate-800/80 hover:bg-slate-700 p-3 disabled:opacity-30">←</button>
+        <div className="relative min-w-0 min-h-0 flex-1 h-full flex items-center justify-center">
+          {fullscreenLoading && activeFullImageUrl && <div role="status" className="absolute inset-0 flex items-center justify-center text-slate-300">Загрузка оригинала…</div>}
+          {fullscreenError && <div role="alert" className="absolute inset-0 flex items-center justify-center text-red-300">Не удалось загрузить изображение.</div>}
+          {activeFullImageUrl ? <img key={activeFullImageUrl} src={activeFullImageUrl} alt={frameLabel(activeFrame, frames, data.voiceoverBlocks)}
+            onLoad={() => setFullscreenLoadState({ url: activeFullImageUrl, status: 'ready' })}
+            onError={() => setFullscreenLoadState({ url: activeFullImageUrl, status: 'error' })}
+            className={`max-w-full max-h-full object-contain ${fullscreenLoading || fullscreenError ? "opacity-0" : ""}`} />
+            : <p className="text-slate-400">У этого кадра пока нет изображения.</p>}
+        </div>
+        <button type="button" aria-label="Следующее изображение" disabled={currentFrameIndex >= frames.length - 1} onClick={() => setCurrentFrameIndex(index => index + 1)}
+          className="shrink-0 rounded-xl bg-slate-800/80 hover:bg-slate-700 p-3 disabled:opacity-30">→</button>
+      </div>
+    </div>}
 
     {openPanel === "storyboard" && <Drawer title="Управление раскадровкой" wide onClose={() => setOpenPanel("")}>
       <GenerationProgress generation={generation} connectionError={generationConnectionError}
-        busy={Boolean(pending)} onResume={resumeGeneration} />
+        busy={Boolean(requestPending)} onResume={resumeGeneration} onStop={stopGeneration} />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-slate-400">Статус: <span className="text-white font-semibold">{statuses[storyboard.status] || storyboard.status}</span> · кадров {frames.length}</p>
         {dirty && <span className="text-sm text-amber-300">Есть несохранённые изменения</span>}
@@ -1003,6 +1164,7 @@ export default function ImageGen() {
       {stalePromptCount > 0 && <p className="rounded-xl border border-amber-700/60 bg-amber-950/30 p-3 text-sm text-amber-200">У {stalePromptCount} кадров описание или референсы изменились, а prompt остался прежним. Обновите prompt этих кадров перед генерацией изображений.</p>}
       <label className="block"><span className="block text-sm text-slate-300 mb-2">Общие инструкции для раскадровки</span>
         <textarea disabled={generationActive} value={instructions} maxLength={4000} onChange={event => setInstructions(event.target.value)} placeholder="Например: больше крупных планов, избегай повторяющихся композиций" className="w-full min-h-24 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
+      {['paused', 'failed'].includes(generation?.status) && <p className="text-sm text-amber-200">При продолжении новые инструкции применятся только к оставшимся кадрам. Если вы изменили референсы, обновите страницу и начните генерацию заново: готовые части прежнего запуска будут заменены.</p>}
       <ProfileSelector type="text" projectId={projectId} operation="storyboard" value={storyboardProfileId} onChange={setStoryboardProfileId} disabled={Boolean(pending)} />
       {frames.length > 0 && <label className="block"><span className="block text-sm text-slate-300 mb-2">Общая инструкция для детализации промтов</span>
         <textarea value={detailInstruction} maxLength={2000} onChange={event => setDetailInstruction(event.target.value)} placeholder="Например: фотореализм, кинематографическое освещение" className="w-full min-h-24 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>}
@@ -1081,16 +1243,17 @@ export default function ImageGen() {
       <label className="block"><span className="text-sm text-slate-400">Маркер DaVinci Resolve</span><textarea value={activeFrame.marker || ""} maxLength={2000} onChange={event => updateFrame(currentFrameIndex, "marker", event.target.value)} className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
       <label className="block"><span className="text-sm text-slate-400">Точный фрагмент текста озвучки</span><textarea value={activeFrame.scriptText} maxLength={4000} onChange={event => updateFrame(currentFrameIndex, "scriptText", event.target.value)} className="w-full min-h-24 mt-1 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
       <label className="block"><span className="text-sm text-slate-400">Что происходит в кадре</span><textarea value={activeFrame.visualDescription} maxLength={4000} onChange={event => updateFrame(currentFrameIndex, "visualDescription", event.target.value)} className="w-full min-h-28 mt-1 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
-      {(activeDescriptionChanged || activePromptStale) && <p className="rounded-xl border border-amber-700/60 bg-amber-950/30 p-3 text-sm text-amber-200">Описание кадра изменилось, но английский prompt сам не переписывается. Нажмите «Пересобрать prompt по описанию» и проверьте результат перед генерацией изображения.</p>}
+      {(activeDescriptionChanged || activePromptStale) && <p className="rounded-xl border border-amber-700/60 bg-amber-950/30 p-3 text-sm text-amber-200">Описание или референсы кадра изменились, но английский prompt сам не переписывается. Нажмите «Пересобрать prompt по описанию» и проверьте результат перед генерацией изображения.</p>}
       <label className="block"><span className="text-sm text-slate-400">Prompt для изображения</span><textarea value={activeFrame.prompt} maxLength={12000} onChange={event => updateFrame(currentFrameIndex, "prompt", event.target.value)} className="w-full min-h-40 mt-1 bg-slate-950 border border-slate-700 rounded-xl p-3" /></label>
       <label className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={preserveCurrentPrompt && !activePromptStale && !activeDescriptionChanged} disabled={activePromptStale || activeDescriptionChanged} onChange={event => setPreserveCurrentPrompt(event.target.checked)} /> Использовать прежний prompt как основу вместо создания с нуля</label>
       <div className="flex flex-wrap items-center gap-3"><span className={`text-sm ${activeDetailStatus === "ready" ? "text-emerald-400" : activeDetailStatus === "error" || activePromptStale ? "text-amber-300" : "text-slate-500"}`}>Детализация: {activeDetailStatus === "ready" ? "готово" : activePromptStale ? "prompt устарел" : activeDetailStatus === "error" ? "ошибка" : "ожидает"}</span><button type="button" className={`${button} bg-fuchsia-700 hover:bg-fuchsia-600`} disabled={Boolean(pending) || (dirty && !canSaveActiveFrame) || !prerequisitesReady || !activeFrame.id} onClick={() => detailFrame(activeFrame.id)}>{pending === `detail:${activeFrame.id}` ? "ИИ детализирует…" : activeFrameDirty && canSaveActiveFrame ? "Сохранить и пересобрать prompt" : "Пересобрать prompt по описанию"}</button></div>
-      <fieldset className="border border-slate-700 rounded-xl p-4 space-y-3"><legend className="px-2 text-sm text-slate-300">Референсы этого кадра</legend>{data.references.length ? <div className="grid sm:grid-cols-2 gap-2">{data.references.map(reference => <label key={reference.id} className="flex items-start gap-2 p-2 rounded-lg bg-slate-950/60"><input type="checkbox" checked={activeFrame.referenceIds.includes(reference.id)} onChange={() => toggleReference(currentFrameIndex, reference.id)} /><span><span className="block">{reference.name}</span><span className={`text-xs ${reference.imageReady ? "text-emerald-400" : "text-slate-500"}`}>{reference.imageReady ? "Изображение загружено" : "Только текстовый референс"}</span></span></label>)}</div> : <p className="text-slate-500">Нет выбранных референсов.</p>}</fieldset>
+      <fieldset className="border border-slate-700 rounded-xl p-4 space-y-3"><legend className="px-2 text-sm text-slate-300">Референсы этого кадра</legend>{data.references.length ? <div className="grid sm:grid-cols-2 gap-2">{data.references.map(reference => <label key={reference.id} className="flex items-start gap-2 p-2 rounded-lg bg-slate-950/60"><input type="checkbox" checked={activeFrame.referenceIds.includes(reference.id)} onChange={() => toggleReference(currentFrameIndex, reference.id)} /><span><span className="block">{reference.name}</span><span className={`text-xs ${reference.imageReady ? "text-emerald-400" : "text-slate-500"}`}>{reference.imageReady ? "Изображение загружено" : "Только текстовый референс"}</span></span></label>)}</div> : <p className="text-slate-500">Нет выбранных референсов.</p>}<p className="text-xs text-slate-400">После выбора референса пересоберите prompt и изображение этого кадра. Если нужен конкретный персонаж или действие, укажите это также в поле «Что происходит в кадре». Видео этого кадра затем потребуется создать заново.</p></fieldset>
       {activeFrameDirty && <section className="rounded-xl border border-amber-700/60 bg-amber-950/20 p-4 space-y-3">
         <p className="text-sm text-amber-200">Изменения этого кадра ещё не сохранены.</p>
-        {!canSaveActiveFrame && <p className="text-xs text-amber-300">Одновременно изменены другие кадры, их порядок или общая инструкция. Для отдельного сохранения сначала отмените эти изменения либо используйте общее сохранение раскадровки.</p>}
+        {!canSaveActiveFrame && <p className="text-xs text-amber-300">{storyboard.status === "stale" ? "Сначала примите добавленные референсы в верхнем предупреждении. Выбранные галочки сохранятся на странице." : canSaveChangedFrames ? "Есть изменения в нескольких кадрах. Их можно сохранить вместе без пересоздания раскадровки." : "Изменены порядок кадров или общая инструкция. Используйте общее сохранение раскадровки."}</p>}
         <div className="grid sm:grid-cols-2 gap-2">
           <button type="button" className={`${button} bg-emerald-700 hover:bg-emerald-600`} disabled={Boolean(pending) || !canSaveActiveFrame} onClick={saveActiveFrame}>{pending === `save-frame:${activeFrame.id}` ? "Сохраняем…" : "Сохранить этот кадр"}</button>
+          {canSaveChangedFrames && <button type="button" className={`${button} bg-emerald-700 hover:bg-emerald-600`} disabled={Boolean(pending)} onClick={save}>{pending === "save" ? "Сохраняем…" : `Сохранить изменённые кадры (${changedFrameIds.length})`}</button>}
           <button type="button" className={`${button} bg-slate-700 hover:bg-slate-600`} disabled={Boolean(pending)} onClick={cancelActiveFrameChanges}>Отменить изменения кадра</button>
         </div>
       </section>}

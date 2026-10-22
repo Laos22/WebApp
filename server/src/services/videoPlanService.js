@@ -3,19 +3,35 @@ import { timelinePlan, TIMEBASE } from './davinciXmlService.js';
 import { storyboardImageMatchesFrame } from './storyboardService.js';
 
 const plain = value => value?.toObject ? value.toObject() : value;
-function storyboardFingerprint(project) {
+export function storyboardFingerprint(project) {
   return createHash('sha256').update(JSON.stringify((project.storyboard?.frames || []).map(frame =>
     [frame.id, frame.sourceVoiceoverBlockId, frame.scriptText, frame.visualDescription, frame.prompt, [...(frame.referenceIds || [])].sort()]
   ))).digest('hex');
+}
+// A single approved frame may be edited without making the entire video plan
+// stale. The edited frame's image/video freshness is checked separately by
+// their frame-local fingerprints.
+export function videoPlanFrameRebase(project, frames, nextStoryboardRevision) {
+  const plan = normalizeVideoPlan(project);
+  if (!['confirmed', 'draft'].includes(plan.status) ||
+      plan.frames.length !== frames.length ||
+      plan.frames.some((frame, index) => frame.frameId !== frames[index].id)) return null;
+  return {
+    'videoPlan.sourceStoryboardRevision': nextStoryboardRevision,
+    'videoPlan.sourceStoryboardFingerprint': storyboardFingerprint({ ...project, storyboard: { frames } }),
+  };
 }
 export function normalizeVideoPlan(project) {
   const stored = plain(project.videoPlan);
   const frames = project.storyboard?.frames || [];
   const byId = new Map((stored?.frames || []).map(frame => [frame.frameId, frame]));
+  const sameFrameStructure = (stored?.frames || []).length === frames.length &&
+    frames.every((frame, index) => stored.frames[index]?.frameId === frame.id);
+  const sourceChanged = stored?.sourceStoryboardRevision !== project.storyboard?.revision ||
+    (stored?.sourceStoryboardFingerprint && stored.sourceStoryboardFingerprint !== storyboardFingerprint(project));
   return {
     status: stored?.status && stored.status !== 'empty' &&
-      (stored.sourceStoryboardRevision !== project.storyboard?.revision ||
-        (stored.sourceStoryboardFingerprint && stored.sourceStoryboardFingerprint !== storyboardFingerprint(project))) ? 'stale' : stored?.status || 'empty',
+      (stored.status === 'confirmed' ? !sameFrameStructure : sourceChanged) ? 'stale' : stored?.status || 'empty',
     revision: stored?.revision || 0, editVersion: stored?.editVersion || 0,
     sourceStoryboardRevision: stored?.sourceStoryboardRevision ?? null,
     sourceStoryboardFingerprint: stored?.sourceStoryboardFingerprint || "",
@@ -75,6 +91,18 @@ export function videoInputFingerprint({ frame, planFrame, image, durationSec, ge
     videoPrompt: planFrame.videoPrompt, durationSec, generationProfileId, provider,
   })).digest('hex');
 }
+
+// Older video records have only an input fingerprint that also includes
+// narration text and timing. Those may change without changing the visual
+// source. For them, the creation dates let us retain the clip only when its
+// current image and video prompt both predate the MP4.
+function legacyVideoStillMatches(video, image, planFrame) {
+  const created = video?.generatedAt && new Date(video.generatedAt).getTime();
+  const imageCreated = image?.generatedAt && new Date(image.generatedAt).getTime();
+  const promptUpdated = planFrame?.promptUpdatedAt && new Date(planFrame.promptUpdatedAt).getTime();
+  return Boolean(Number.isFinite(created) && Number.isFinite(imageCreated) &&
+    Number.isFinite(promptUpdated) && imageCreated <= created && promptUpdated <= created);
+}
 export function videoPlanResponse(project, images = [], videos = []) {
   const videoPlan = normalizeVideoPlan(project);
   const frames = project.storyboard?.frames || [];
@@ -107,7 +135,10 @@ export function videoPlanResponse(project, images = [], videos = []) {
       // Explicit allowlist: internal file keys and provider operation IDs never leave the server.
       const safeVideo = video ? Object.fromEntries(['status', 'mimeType', 'filename', 'byteSize', 'durationSec',
         'width', 'height', 'generationProfileId', 'provider', 'errorCode', 'generatedAt', 'inputFingerprint'].map(key => [key, video[key]])) : null;
-      if (safeVideo?.status === 'ready' && (!hasImage || !timing || video.inputFingerprint !== fingerprint)) safeVideo.status = 'stale';
+      if (safeVideo?.status === 'ready' && (!hasImage || !timing ||
+          (video.inputFingerprint !== fingerprint && !legacyVideoStillMatches(video, sourceImage, videoPlan.frames[index])))) {
+        safeVideo.status = 'stale';
+      }
       return { frameId: frame.id, blockNumber: block?.order ?? null,
         frameInBlock: frames.filter(item => item.sourceVoiceoverBlockId === frame.sourceVoiceoverBlockId).findIndex(item => item.id === frame.id) + 1,
         text: frame.scriptText, hasImage,

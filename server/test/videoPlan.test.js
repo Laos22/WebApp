@@ -54,6 +54,7 @@ test('partial draft preserves other frames and stable IDs, rejects duplicate/unk
   project.storyboard.revision++;
   assert.equal(normalizeVideoPlan(project).status, 'stale');
   project.storyboard.frames.shift();
+  assert.equal(normalizeVideoPlan(project).status, 'stale');
   assert.deepEqual(normalizeVideoPlan(project).frames.map(frame => frame.frameId), ['f2']);
 });
 
@@ -92,6 +93,30 @@ test('fingerprints ignore unrelated storyboard revisions but detect source image
   for (const changes of [{ durationSec: 20 }, { planFrame: { videoPrompt: 'new' } }, { image: null }, { provider: 'new' }]) {
     assert.notEqual(videoInputFingerprint({ frame, planFrame, image, durationSec, ...changes }), inputFingerprint);
   }
+});
+
+test('legacy MP4 survives narration edits but becomes stale after its image or video prompt changes', () => {
+  const project = fixture();
+  project.videoPlan = patchVideoPlan(project, patch());
+  project.videoPlan.status = 'confirmed';
+  const frame = project.storyboard.frames[0];
+  const image = { frameId: frame.id, status: 'ready', storageKey: 'original.jpg', byteSize: 100,
+    sourcePrompt: frame.prompt, sourceReferenceIds: [], generatedAt: new Date('2026-10-19T10:00:00Z') };
+  const planFrame = project.videoPlan.frames[0];
+  planFrame.promptUpdatedAt = new Date('2026-10-19T11:00:00Z');
+  const originalTiming = videoPlanResponse(project, [image]).frames[0].targetDurationSec;
+  const originalFingerprint = videoInputFingerprint({ frame, planFrame, image, durationSec: originalTiming });
+  const video = { frameId: frame.id, status: 'ready', inputFingerprint: originalFingerprint,
+    generatedAt: new Date('2026-10-19T12:00:00Z') };
+  project.storyboard.revision += 3;
+  frame.scriptText = 'updated narration';
+  assert.equal(normalizeVideoPlan(project).status, 'confirmed');
+  assert.equal(videoPlanResponse(project, [image], [video]).frames[0].video.status, 'ready');
+  image.generatedAt = new Date('2026-10-20T10:00:00Z');
+  assert.equal(videoPlanResponse(project, [image], [video]).frames[0].video.status, 'stale');
+  image.generatedAt = new Date('2026-10-19T10:00:00Z');
+  planFrame.promptUpdatedAt = new Date('2026-10-20T11:00:00Z');
+  assert.equal(videoPlanResponse(project, [image], [video]).frames[0].video.status, 'stale');
 });
 
 test('stable video names, strict paths, local replacement rollback/commit and symlink safety', async t => {

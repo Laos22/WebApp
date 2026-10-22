@@ -9,7 +9,7 @@ import { normalizeStoryboard, parseGeneratedStoryboard, planStoryboardFrames } f
 const LEASE_MS = 60_000;
 const activeStatuses = ['queued', 'running'];
 const jobError = (code, message, status = 409) => Object.assign(new Error(message), { code, status });
-const publicFields = 'runId status total completed profileId errorCode createdAt updatedAt';
+const publicFields = 'runId status total completed profileId instructions stopRequested errorCode createdAt updatedAt';
 
 export function generationSummary(job) {
   if (!job) return null;
@@ -35,12 +35,24 @@ export function createStoryboardGenerationService({ Jobs = StoryboardGeneration,
     return generationSummary(await Jobs.findOne({ projectId, userId }).select(publicFields));
   }
 
+  async function preview(projectId, userId, offset = 0, limit = 50) {
+    const job = await Jobs.findOne({ projectId, userId }).select('+frames');
+    if (!job) return null;
+    const start = Math.max(0, Math.min(job.frames?.length || 0, offset));
+    return { runId: job.runId, completed: job.completed, offset: start,
+      frames: (job.frames || []).slice(start, start + limit).map((frame, index) => ({
+        slot: String(start + index + 1), sourceVoiceoverBlockId: frame.sourceVoiceoverBlockId,
+        scriptText: frame.scriptText, visualDescription: frame.visualDescription,
+        prompt: frame.prompt, referenceIds: frame.referenceIds,
+      })) };
+  }
+
   async function enqueue(project, userId, body, currentFrames, settings) {
     const owner = { projectId: project._id, userId };
     const previous = await Jobs.findOne(owner).select(publicFields);
     // Double clicks and retries of the start request reuse the active job.
     if (previous && activeStatuses.includes(previous.status)) return generationSummary(previous);
-    if (previous?.status === 'failed' && !body.restartGeneration) {
+    if (['failed', 'paused'].includes(previous?.status) && !body.restartGeneration) {
       throw jobError('STORYBOARD_JOB_FAILED', 'Есть незавершённая генерация. Продолжите её или начните заново.');
     }
     const profile = resolveRequestedProfile(settings, 'text', body.profileId);
@@ -55,7 +67,8 @@ export function createStoryboardGenerationService({ Jobs = StoryboardGeneration,
     const total = planStoryboardFrames(snapshot.voiceover.blocks).length;
     buildStoryboardPrompt(snapshot, references, currentFrames, body.instructions.trim(), template);
     const next = { ...owner, runId: randomUUID(), status: 'queued', total, completed: 0,
-      profileId: String(profile?._id || profile?.id || ''), frames: [], errorCode: '', leaseToken: '', leaseUntil: null,
+      profileId: String(profile?._id || profile?.id || ''), instructions: body.instructions.trim(),
+      stopRequested: false, frames: [], errorCode: '', leaseToken: '', leaseUntil: null,
       input: { project: snapshot, references, currentFrames, template, instructions: body.instructions.trim(),
         revision: normalizeStoryboard(project).revision || 0,
         expectedEditVersion: body.expectedEditVersion,
@@ -73,7 +86,22 @@ export function createStoryboardGenerationService({ Jobs = StoryboardGeneration,
     throw jobError('STORYBOARD_JOB_CONFLICT', 'Генерация изменилась. Обновите страницу.');
   }
 
-  async function resume(projectId, userId, runId, profileId) {
+  async function stop(projectId, userId, runId) {
+    const owner = { projectId, userId, runId };
+    const queued = await Jobs.findOneAndUpdate({ ...owner, status: 'queued' }, { $set: {
+      status: 'paused', stopRequested: false, leaseToken: '', leaseUntil: null,
+    } }, { returnDocument: 'after' });
+    if (queued) return generationSummary(queued);
+    const running = await Jobs.findOneAndUpdate({ ...owner, status: 'running' }, {
+      $set: { stopRequested: true },
+    }, { returnDocument: 'after' });
+    if (running) return generationSummary(running);
+    const job = await Jobs.findOne(owner).select(publicFields);
+    if (!job) throw jobError('STORYBOARD_JOB_MISSING', 'Генерация не найдена.', 404);
+    return generationSummary(job);
+  }
+
+  async function resume(projectId, userId, runId, profileId, instructions) {
     const job = await Jobs.findOne({ projectId, userId, runId }).select('+input');
     if (!job) throw jobError('STORYBOARD_JOB_MISSING', 'Генерация не найдена.', 404);
     if (activeStatuses.includes(job.status) || job.status === 'completed') return generationSummary(job);
@@ -87,9 +115,11 @@ export function createStoryboardGenerationService({ Jobs = StoryboardGeneration,
     }
     const settings = await UserSettings.findOne({ userId });
     const profile = resolveRequestedProfile(settings, 'text', profileId === undefined ? job.profileId : profileId);
-    const saved = await Jobs.findOneAndUpdate({ projectId, userId, runId, status: 'failed' }, { $set: {
-      status: 'queued', errorCode: '', leaseToken: '', leaseUntil: null,
+    const saved = await Jobs.findOneAndUpdate({ projectId, userId, runId, status: { $in: ['failed', 'paused'] } }, { $set: {
+      status: 'queued', errorCode: '', stopRequested: false, leaseToken: '', leaseUntil: null,
       profileId: String(profile?._id || profile?.id || ''),
+      ...(instructions === undefined ? {} : { instructions: instructions.trim(),
+        input: { ...job.input, instructions: instructions.trim() } }),
     } }, { returnDocument: 'after' });
     return generationSummary(saved) || summary(projectId, userId);
   }
@@ -116,12 +146,15 @@ export function createStoryboardGenerationService({ Jobs = StoryboardGeneration,
     };
     const heartbeat = setInterval(renew, 10_000);
     heartbeat.unref?.();
-    const assertCurrent = async () => {
+    const assertCurrent = async (allowStop = false) => {
       if (lostLease || !await Jobs.exists({ ...lock, leaseUntil: { $gt: new Date() } })) {
         throw jobError('STORYBOARD_LEASE_LOST', 'Задача передана другому обработчику.');
       }
       if (!await Projects.exists(generationSourceFilter(job))) {
         throw jobError('STORYBOARD_JOB_CONFLICT', 'Исходные данные изменились.');
+      }
+      if (!allowStop && await Jobs.exists({ ...lock, stopRequested: true })) {
+        throw jobError('STORYBOARD_STOP_REQUESTED', 'Генерация остановлена.');
       }
     };
     try {
@@ -136,7 +169,7 @@ export function createStoryboardGenerationService({ Jobs = StoryboardGeneration,
           completedFrames: job.frames,
           beforeBatch: assertCurrent,
           onBatch: async frames => {
-            await assertCurrent();
+            await assertCurrent(true);
             const result = await Jobs.updateOne({ ...lock, leaseUntil: { $gt: new Date() } },
               { $set: { frames, completed: frames.length } });
             if (!result.matchedCount) throw jobError('STORYBOARD_LEASE_LOST', 'Задача передана другому обработчику.');
@@ -157,7 +190,12 @@ export function createStoryboardGenerationService({ Jobs = StoryboardGeneration,
       await Jobs.updateOne(lock, { $set: { status: 'completed', completed: job.total, errorCode: '', leaseUntil: null }, $unset: { frames: 1, input: 1 } });
     } catch (error) {
       if (error.code !== 'STORYBOARD_LEASE_LOST' && !lostLease) {
-        const safeCodes = ['STORYBOARD_JOB_CONFLICT', 'INVALID_AI_PROFILE', 'INVALID_STORYBOARD_RESPONSE', 'STORYBOARD_INPUT_TOO_LONG'];
+        const stopped = error.code === 'STORYBOARD_STOP_REQUESTED' || await Jobs.exists({ ...lock, stopRequested: true });
+        if (stopped) {
+          await Jobs.updateOne(lock, { $set: { status: 'paused', stopRequested: false, leaseUntil: null } });
+          return true;
+        }
+        const safeCodes = ['STORYBOARD_JOB_CONFLICT', 'INVALID_AI_PROFILE', 'INVALID_STORYBOARD_RESPONSE', 'STORYBOARD_INPUT_TOO_LONG', 'STORYBOARD_RATE_LIMIT'];
         await Jobs.updateOne(lock, { $set: { status: 'failed', leaseUntil: null,
           errorCode: safeCodes.includes(error.code) ? error.code : 'STORYBOARD_GENERATION_FAILED' } });
         console.warn('[STORYBOARD_JOB_FAILED]', { runId: job.runId, code: error.code || 'STORYBOARD_GENERATION_FAILED' });
@@ -165,7 +203,7 @@ export function createStoryboardGenerationService({ Jobs = StoryboardGeneration,
     } finally { clearInterval(heartbeat); }
     return true;
   }
-  return { summary, enqueue, resume, processNext };
+  return { summary, preview, enqueue, stop, resume, processNext };
 }
 
 export const storyboardGeneration = createStoryboardGenerationService();

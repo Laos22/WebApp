@@ -165,6 +165,10 @@ export const getStoryboard = (projectId) => projectRequest(projectId, "/storyboa
 export const generateStoryboard = (projectId, payload) =>
   projectRequest(projectId, "/storyboard/generate", "POST", payload);
 export const getStoryboardGeneration = projectId => projectRequest(projectId, '/storyboard/generation');
+export const getStoryboardGenerationFrames = (projectId, offset = 0) =>
+  projectRequest(projectId, `/storyboard/generation/frames?offset=${offset}`);
+export const stopStoryboardGeneration = (projectId, runId) =>
+  projectRequest(projectId, '/storyboard/generation/stop', 'POST', { runId });
 export const resumeStoryboardGeneration = (projectId, payload) =>
   projectRequest(projectId, '/storyboard/generation/resume', 'POST', payload);
 export const detailStoryboardFramePrompt = (projectId, frameId, payload) =>
@@ -175,8 +179,12 @@ export const saveStoryboard = (projectId, payload) =>
   projectRequest(projectId, "/storyboard", "PUT", payload);
 export const saveStoryboardFrame = (projectId, frameId, payload) =>
   projectRequest(projectId, `/storyboard/frames/${encodeURIComponent(frameId)}`, "PATCH", payload);
+export const saveStoryboardFrames = (projectId, payload) =>
+  projectRequest(projectId, "/storyboard/frames", "PATCH", payload);
 export const adoptStoryboardVoiceover = (projectId, payload) =>
   projectRequest(projectId, "/storyboard/adopt-voiceover", "POST", payload);
+export const adoptStoryboardAddedReferences = (projectId, payload) =>
+  projectRequest(projectId, "/storyboard/adopt-added-references", "POST", payload);
 export const confirmStoryboard = (projectId, payload) =>
   projectRequest(projectId, "/storyboard/confirm", "POST", payload);
 export const generateStoryboardFrameImage = (projectId, frameId, payload) =>

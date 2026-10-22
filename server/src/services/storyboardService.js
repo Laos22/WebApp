@@ -99,8 +99,9 @@ export async function generatePlannedStoryboard(plan, allowedReferenceIds, reque
     frame.scriptText !== plan[index].scriptText || frame.sourceVoiceoverBlockId !== plan[index].sourceVoiceoverBlockId)) {
     invalid('INVALID_STORYBOARD_CHECKPOINT');
   }
-  for (let offset = frames.length; offset < plan.length; offset += batchSize) {
-    const batch = plan.slice(offset, offset + batchSize);
+  let nextBatchSize = batchSize;
+  for (let offset = frames.length; offset < plan.length;) {
+    const batch = plan.slice(offset, offset + nextBatchSize);
     let validated;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       await options.beforeBatch?.();
@@ -120,11 +121,19 @@ export async function generatePlannedStoryboard(plan, allowedReferenceIds, reque
         });
         break;
       } catch {
-        if (attempt === maxAttempts - 1) invalid('INVALID_STORYBOARD_RESPONSE');
+        if (attempt === maxAttempts - 1 && (!options.splitOnInvalidResponse || batch.length === 1)) {
+          invalid('INVALID_STORYBOARD_RESPONSE');
+        }
       }
+    }
+    if (!validated) {
+      nextBatchSize = Math.max(1, Math.floor(batch.length / 2));
+      continue;
     }
     frames.push(...validated);
     await options.onBatch?.(frames);
+    offset += batch.length;
+    nextBatchSize = batchSize;
   }
   return JSON.stringify({ frames });
 }

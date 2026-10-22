@@ -15,6 +15,7 @@ function matches(doc, filter) {
     if (expected && typeof expected === 'object' && !(expected instanceof Date)) {
       return Object.entries(expected).every(([op, value]) => {
         if (op === '$nin') return !value.includes(actual);
+        if (op === '$in') return value.includes(actual);
         if (op === '$exists') return (actual !== undefined) === value;
         if (op === '$lte') return actual <= value;
         if (op === '$gt') return actual > value;
@@ -162,6 +163,57 @@ test('failed checkpoint write stops further AI requests and resumes from last pe
   assert.equal(f.Jobs.doc.status, 'completed');
 });
 
+test('stop preserves completed frames, exposes a preview and applies new instructions only after resume', async () => {
+  const f = setup();
+  let releaseFirst;
+  let enteredFirst;
+  const firstStarted = new Promise(resolve => { enteredFirst = resolve; });
+  const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+  let hold = true;
+  const observed = [];
+  f.dependencies.generate = async (snapshot, references, current, instructions, template, profile, options) => {
+    observed.push(instructions);
+    return generatePlannedStoryboard(planStoryboardFrames(snapshot.voiceover.blocks), new Set(['reference']), async batch => {
+      f.calls.push(batch[0].slot);
+      if (hold) { enteredFirst(); await firstGate; hold = false; }
+      return JSON.stringify({ frames: batch.map(frame => ({ slot: frame.slot,
+        visualDescription: `Scene ${frame.slot}`, prompt: `Image ${frame.slot}`, referenceIds: ['reference'] })) });
+    }, { ...options, batchSize: 2 });
+  };
+  const service = createStoryboardGenerationService(f.dependencies);
+  const job = await service.enqueue(f.project, 'owner', f.body, [], f.settings);
+  const processing = service.processNext();
+  await firstStarted;
+  const stopping = await service.stop('project', 'owner', job.runId);
+  assert.equal(stopping.stopRequested, true);
+  releaseFirst();
+  await processing;
+  assert.equal(f.Jobs.doc.status, 'paused');
+  assert.equal(f.Jobs.doc.completed, 2);
+  assert.deepEqual(f.calls, ['1']);
+  assert.deepEqual((await service.preview('project', 'owner', 0)).frames.map(frame => frame.slot), ['1', '2']);
+  assert.equal(await service.preview('project', 'another-user', 0), null);
+  await service.resume('project', 'owner', job.runId, undefined, 'Add more close-ups');
+  await service.processNext();
+  assert.deepEqual(f.calls, ['1', '3']);
+  assert.deepEqual(observed, ['', 'Add more close-ups']);
+  assert.equal(f.Jobs.doc.status, 'completed');
+});
+
+test('a queued generation can be stopped before any AI request and resumed', async () => {
+  const f = setup();
+  f.recover();
+  const job = await f.service.enqueue(f.project, 'owner', f.body, [], f.settings);
+  const paused = await f.service.stop('project', 'owner', job.runId);
+  assert.equal(paused.status, 'paused');
+  assert.equal(await f.service.processNext(), false);
+  assert.deepEqual(f.calls, []);
+  await f.service.resume('project', 'owner', job.runId);
+  await f.service.processNext();
+  assert.equal(f.Jobs.doc.status, 'completed');
+  assert.deepEqual(f.calls, ['1', '3']);
+});
+
 test('storyboard uses OpenRouter for an OpenRouter profile and saves its validated response', async t => {
   const { generateStoryboard } = await import('../src/services/geminiService.js');
   const { encryptData } = await import('../src/services/encryptionService.js');
@@ -199,21 +251,25 @@ test('HTTP start returns 202 with job status and status/resume routes enforce pr
   t.mock.method(storyboardGeneration, 'enqueue', async () => job);
   t.mock.method(Project, 'exists', async filter => filter.userId === 'owner');
   t.mock.method(storyboardGeneration, 'summary', async () => job);
+  t.mock.method(storyboardGeneration, 'preview', async () => ({ runId: 'run', completed: 0, offset: 0, frames: [] }));
+  t.mock.method(storyboardGeneration, 'stop', async () => job);
   t.mock.method(storyboardGeneration, 'resume', async () => job);
   const invoke = async (path, method, userId, body = {}) => {
     const route = router.stack.find(layer => layer.route?.path === path && layer.route.methods[method]).route;
     assert.equal(route.stack[0].handle, ensureAuthenticated);
     const res = { statusCode: 200, status(code) { this.statusCode = code; return this; }, set() {}, json(value) { this.body = value; return this; } };
-    await route.stack.at(-1).handle({ params: { id: projectId }, user: { _id: userId }, body }, res);
+    await route.stack.at(-1).handle({ params: { id: projectId }, user: { _id: userId }, body, query: { offset: '0' } }, res);
     return res;
   };
   const started = await invoke('/:id/storyboard/generate', 'post', 'owner', f.body);
   assert.equal(started.statusCode, 202);
   assert.deepEqual(started.body, { success: true, generation: job });
-  for (const [path, method] of [['/:id/storyboard/generation', 'get'], ['/:id/storyboard/generation/resume', 'post']]) {
+  for (const [path, method] of [['/:id/storyboard/generation', 'get'],
+    ['/:id/storyboard/generation/frames', 'get'], ['/:id/storyboard/generation/stop', 'post'],
+    ['/:id/storyboard/generation/resume', 'post']]) {
     const foreign = await invoke(path, method, 'another-user', { runId: 'run' });
     assert.equal(foreign.statusCode, 404);
     const own = await invoke(path, method, 'owner', { runId: 'run' });
-    assert.equal(own.body.generation.runId, 'run');
+    assert.equal((own.body.generation || own.body.preview).runId, 'run');
   }
 });

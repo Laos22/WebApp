@@ -97,9 +97,16 @@ export default function References() {
     }), "Анализ завершён. Проверьте предложенные референсы.");
   };
 
-  const save = () => run("save", () => saveReferencePlan(projectId, {
-    instructions, items, expectedEditVersion: plan.editVersion,
-  }), "Изменения сохранены.");
+  const save = () => {
+    const onlyAdded = confirmed && instructions.trim() === plan.instructions &&
+      items.length > plan.items.length && plan.items.every((item, index) =>
+        JSON.stringify(editableItem(item)) === JSON.stringify(items[index]));
+    run("save", () => saveReferencePlan(projectId, {
+      instructions, items, expectedEditVersion: plan.editVersion,
+    }), onlyAdded
+      ? "Новый референс добавлен. Готовые кадры, изображения и видео сохранены. Теперь можно создать изображение референса и выбрать его в нужных кадрах."
+      : "Изменения сохранены.");
+  };
 
   const confirm = () => run("confirm", () => confirmReferencePlan(projectId, {
     expectedEditVersion: plan.editVersion, sourceScriptRevision: data.scriptRevision,
@@ -228,7 +235,10 @@ export default function References() {
             <button type="button" className={`${button} bg-red-800 hover:bg-red-700`} disabled={Boolean(pending) || Boolean(working)} onClick={() => removeItem(index)}>Удалить карточку</button>
           </article>;
         })}
-        {items.length > 0 && <button type="button" className={button} disabled={Boolean(pending)} onClick={() => setItems(current => [...current, editableItem({ selected: true })])}>Добавить референс</button>}
+        {items.length > 0 && <div className="space-y-2">
+          <button type="button" className={button} disabled={Boolean(pending)} onClick={() => setItems(current => [...current, editableItem({ selected: true })])}>Добавить референс</button>
+          {confirmed && <p className="text-sm text-slate-400">Заполните новую карточку и нажмите «Сохранить изменения». При добавлении без правок прежних карточек раскадровка, изображения и видео сохранятся. Затем создайте изображение референса и отметьте его только в нужных кадрах.</p>}
+        </div>}
         </fieldset>
       </>}
     </div>
