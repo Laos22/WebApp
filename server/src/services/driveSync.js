@@ -253,6 +253,42 @@ export async function listDriveFolderFiles({ userId, parentId, drive = null }) {
   return files;
 }
 
+// Copy files on Drive itself, preserving independent media without streaming large MP4s through WebApp.
+export async function copyDriveProjectWorkspace({ userId, sourceStorage, targetStorage, drive = null }) {
+  const client = drive || await driveForUser(userId);
+  const copiedIds = new Map();
+  async function copyFolder(sourceId, targetId, skipNames = new Set()) {
+    const entries = (await listDriveFolderFiles({ userId, parentId: sourceId, drive: client }))
+      .filter(file => !(skipNames.has(file.name) && file.mimeType === FOLDER_MIME_TYPE));
+    for (const file of entries.filter(item => item.mimeType === FOLDER_MIME_TYPE)) {
+      const created = await client.files.create({ requestBody: {
+        name: file.name, mimeType: FOLDER_MIME_TYPE, parents: [targetId],
+      }, fields: 'id' });
+      if (!created.data.id) throw new Error('DRIVE_FOLDER_FAILED');
+      await copyFolder(file.id, created.data.id);
+    }
+    const regularFiles = entries.filter(item => item.mimeType !== FOLDER_MIME_TYPE);
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(4, regularFiles.length) }, async () => {
+      while (next < regularFiles.length) {
+        const file = regularFiles[next++];
+        const copied = await client.files.copy({ fileId: file.id,
+          requestBody: { name: file.name, parents: [targetId] }, fields: 'id' });
+        if (!copied.data.id) throw new Error('DRIVE_COPY_FAILED');
+        copiedIds.set(file.id, copied.data.id);
+      }
+    }));
+  }
+  const directories = Object.keys(sourceStorage.driveFolderIds || {});
+  await copyFolder(sourceStorage.driveRootFolderId, targetStorage.driveRootFolderId, new Set(directories));
+  for (const name of directories) {
+    const targetId = targetStorage.driveFolderIds?.[name];
+    if (!targetId) throw new Error('DRIVE_FOLDER_FAILED');
+    await copyFolder(sourceStorage.driveFolderIds[name], targetId);
+  }
+  return copiedIds;
+}
+
 export async function copyDriveImagesForDavinci({ userId, parentId, images, filenameFor, drive = null }) {
   const client = drive || await driveForUser(userId);
   const existing = new Set((await listDriveFolderFiles({ userId, parentId, drive: client }))

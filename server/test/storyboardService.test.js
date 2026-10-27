@@ -94,6 +94,32 @@ test('large invalid batches split while valid checkpoints and resumed frames rem
   assert.deepEqual(JSON.parse(resumed).frames.slice(0, 4), completedFrames);
 });
 
+test('empty model text retries with smaller batches while preserving saved frames', async () => {
+  const plan = planStoryboardFrames([{ ...voiceBlock, adaptedText: Array(72).fill('word').join(' ') }]);
+  const completedFrames = JSON.parse(visualBatch(plan.slice(0, 2))).frames.map((frame, index) => ({
+    ...plan[index], visualDescription: frame.visualDescription, prompt: frame.prompt,
+    referenceIds: frame.referenceIds,
+  }));
+  const calls = [];
+  const checkpoints = [];
+  const raw = await generatePlannedStoryboard(plan, allowed, async (batch, attempt) => {
+    calls.push([batch[0].slot, batch.length, attempt]);
+    if (batch.length > 2) throw Object.assign(new Error('empty'), { code: 'STORYBOARD_EMPTY_RESPONSE' });
+    return visualBatch(batch);
+  }, { batchSize: 4, maxAttempts: 2, splitOnInvalidResponse: true, completedFrames,
+    onBatch: frames => checkpoints.push(frames.length) });
+  assert.deepEqual(calls, [['3', 4, 0], ['3', 4, 1], ['3', 2, 0], ['5', 2, 0]]);
+  assert.deepEqual(checkpoints, [4, 6]);
+  assert.deepEqual(JSON.parse(raw).frames.slice(0, 2), completedFrames);
+});
+
+test('persistent empty response on one frame remains a specific failure', async () => {
+  const plan = planStoryboardFrames(voiceBlocks);
+  await assert.rejects(generatePlannedStoryboard(plan, allowed, async () => {
+    throw Object.assign(new Error('empty'), { code: 'STORYBOARD_EMPTY_RESPONSE' });
+  }, { splitOnInvalidResponse: true }), { code: 'STORYBOARD_EMPTY_RESPONSE' });
+});
+
 test('missing, duplicate, unknown slots and invalid references fail after bounded retry', async () => {
   const plan = planStoryboardFrames([{ ...voiceBlock, adaptedText: Array(24).fill('word').join(' ') }]);
   for (const corrupt of [

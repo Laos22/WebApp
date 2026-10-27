@@ -52,7 +52,8 @@ test('resource IDs are unique and all refs resolve; mixed formats use only porta
   assert.deepEqual(['image/jpeg', 'image/png', 'image/webp'].map(imageExtension), ['jpg', 'png', 'webp']);
   assert.throws(() => imageExtension('image/gif'));
   assert.doesNotMatch(xml, /<track|\/Users\/|\/tmp\/|file:\/\//);
-  assert.equal((xml.match(/lane="-1"/g) || []).length, 2);
+  assert.equal((xml.match(/<spine lane=/g) || []).length, 0);
+  assert.equal((xml.match(/audioRole="dialogue"/g) || []).length, 2);
 });
 test('XML escapes Russian marker text and omits absent optional markers', () => {
   const input = fixture();
@@ -166,15 +167,19 @@ test('exports MP4, music, overlapping frame effects and transitions together at 
   assert.doesNotMatch(xml, /<video ref=/);
   assert.doesNotMatch(xml, /src="images\/frame_1_1.jpg"/);
   assert.match(xml, /<timeMap>/);
-  assert.match(xml, /lane="-2" audioRole="music"/);
-  assert.match(xml, /lane="-3" audioRole="effects"/);
-  assert.match(xml, /lane="-4" audioRole="effects"/);
+  assert.match(xml, /<asset-clip[^>]+lane="-2"[^>]+audioRole="music"/);
+  assert.match(xml, /<asset-clip[^>]+lane="-3"[^>]+audioRole="effects"/);
+  assert.match(xml, /<asset-clip[^>]+lane="-4"[^>]+audioRole="effects"/);
   assert.equal((xml.match(/<transition /g) || []).length, input.frames.length + 1);
-  const effects = [...xml.matchAll(/<asset-clip[^>]+audioRole="effects"[^>]*>/g)];
-  for (const [tag] of effects) assert.ok(tag.includes(`offset="${effectOffset}/${TIMEBASE}s"`));
+  const effects = [...xml.matchAll(/<asset-clip[^>]+lane="-[34]"[^>]+audioRole="effects"\/>/g)];
+  assert.equal(effects.length, 2);
+  for (const [clip] of effects) assert.ok(clip.includes(`offset="${effectOffset}/${TIMEBASE}s"`));
   const firstClipStart = xml.indexOf('<asset-clip name="frame_1_1.mp4"');
   const firstClip = xml.slice(firstClipStart, xml.indexOf('        </asset-clip>', firstClipStart));
   for (const role of ['dialogue', 'music', 'effects']) assert.ok(firstClip.includes(`audioRole="${role}"`));
+  const secondClipStart = xml.indexOf('<asset-clip name="frame_1_2.');
+  const secondClip = xml.slice(secondClipStart, xml.indexOf('        </asset-clip>', secondClipStart));
+  assert.doesNotMatch(secondClip, /audioRole=/);
   assert.ok(xml.includes(`sequence format="r0" duration="${plan.duration}/${TIMEBASE}s"`));
   const uniqueNameXml = createDavinciXml({ ...input, videoFiles: new Map([[input.frames[0].id, {
     filename: 'video_1_1__v123.mp4', durationSec: 1,
@@ -193,11 +198,35 @@ test('loopable music covers the complete narration timeline and trims only the f
   assert.equal(clips.length, Math.ceil(plan.duration / clipTicks));
   assert.equal((xml.match(/<adjust-volume amount="-10\.46dB"\/>/g) || []).length, clips.length);
   clips.forEach((clip, index) => {
-    assert.match(clip, new RegExp(`offset="${index * clipTicks}/${TIMEBASE}s"`));
     assert.match(clip, new RegExp(`duration="${Math.min(clipTicks, plan.duration - index * clipTicks)}/${TIMEBASE}s"`));
   });
+  assert.equal((xml.match(/<spine lane=/g) || []).length, 0);
+  assert.equal((xml.match(/lane="-3"/g) || []).length, 0);
   const legacy = createDavinciXml({ ...input, backgroundMusic: { filename: 'old.mp3', durationSec: 2.5 } });
   assert.equal((legacy.match(/audioRole="music"/g) || []).length, 1);
+});
+
+test('voice, music and effects retain absolute timing and lanes with one picture anchor', () => {
+  const xml = createDavinciXml({ ...fixture(), backgroundMusic: {
+    filename: 'background_music_loop.mp3', durationSec: 2, loop: true,
+  }, soundEffects: [4, 1, 2].map(second => ({
+    filename: `sound_effect_${second}.mp3`, durationSec: 1.5, offsetTicks: second * TIMEBASE,
+  })) });
+  const audioClips = [...xml.matchAll(/<asset-clip[^>]+lane="(-\d+)" offset="(\d+)\/35280000s"[^>]+audioRole="(dialogue|music|effects)"/g)];
+  const byRole = role => audioClips.filter(([, , , audioRole]) => audioRole === role);
+  assert.deepEqual(byRole('dialogue').map(([, lane, offset]) => [lane, Number(offset)]), [
+    ['-1', 0], ['-1', Math.round(3.123 * TIMEBASE)],
+  ]);
+  assert.deepEqual(byRole('music').map(([, lane, offset]) => [lane, Number(offset)]), [
+    ['-2', 0], ['-2', 2 * TIMEBASE], ['-2', 4 * TIMEBASE], ['-2', 6 * TIMEBASE],
+  ]);
+  assert.deepEqual(byRole('effects').map(([, lane, offset]) => [lane, Number(offset)]), [
+    ['-3', TIMEBASE], ['-3', 4 * TIMEBASE], ['-4', 2 * TIMEBASE],
+  ]);
+  assert.doesNotMatch(xml, /<spine lane=|<gap /);
+  const firstClipStart = xml.indexOf('<asset-clip name="frame_1_1.');
+  const firstClipEnd = xml.indexOf('        </asset-clip>', firstClipStart);
+  assert.ok(audioClips.every(([clip]) => xml.indexOf(clip) > firstClipStart && xml.indexOf(clip) < firstClipEnd));
 });
 
 test('background music volume changes only music clips and rejects invalid levels', () => {

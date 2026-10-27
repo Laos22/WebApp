@@ -195,7 +195,7 @@ export function createStoryboardGenerationService({ Jobs = StoryboardGeneration,
           await Jobs.updateOne(lock, { $set: { status: 'paused', stopRequested: false, leaseUntil: null } });
           return true;
         }
-        const safeCodes = ['STORYBOARD_JOB_CONFLICT', 'INVALID_AI_PROFILE', 'INVALID_STORYBOARD_RESPONSE', 'STORYBOARD_INPUT_TOO_LONG', 'STORYBOARD_RATE_LIMIT'];
+        const safeCodes = ['STORYBOARD_JOB_CONFLICT', 'INVALID_AI_PROFILE', 'INVALID_STORYBOARD_RESPONSE', 'STORYBOARD_EMPTY_RESPONSE', 'STORYBOARD_CONTENT_BLOCKED', 'STORYBOARD_INPUT_TOO_LONG', 'STORYBOARD_RATE_LIMIT'];
         await Jobs.updateOne(lock, { $set: { status: 'failed', leaseUntil: null,
           errorCode: safeCodes.includes(error.code) ? error.code : 'STORYBOARD_GENERATION_FAILED' } });
         console.warn('[STORYBOARD_JOB_FAILED]', { runId: job.runId, code: error.code || 'STORYBOARD_GENERATION_FAILED' });

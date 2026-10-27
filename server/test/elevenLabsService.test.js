@@ -18,8 +18,29 @@ const profile = {
 
 test('returns documented character limits for known ElevenLabs models', () => {
   assert.equal(getElevenLabsCharacterLimit('eleven_v3'), 5000);
+  assert.equal(getElevenLabsCharacterLimit('eleven_v4'), 10000);
   assert.equal(getElevenLabsCharacterLimit('eleven_multilingual_v2'), 10000);
   assert.equal(getElevenLabsCharacterLimit('custom-model'), null);
+});
+
+test('v4 uses the existing speech endpoint with supported voice settings', async () => {
+  const originalFetch = globalThis.fetch;
+  let request;
+  globalThis.fetch = async (url, options) => {
+    request = { url, options };
+    return new Response(Buffer.from([0xff, 0xfb, 0x94, 0xc0]));
+  };
+  try {
+    await synthesizeElevenLabs('Тест', {
+      ...profile, audioSettings: { ...profile.audioSettings, modelId: 'eleven_v4', speed: 1.3, speakerBoost: true },
+    });
+    const body = JSON.parse(request.options.body);
+    assert.match(request.url, /\/v1\/text-to-speech\/test-voice/);
+    assert.equal(body.model_id, 'eleven_v4');
+    assert.deepEqual(body.voice_settings, { stability: 0.5, similarity_boost: 0.75 });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('rejects an oversized v3 block before calling ElevenLabs', async () => {

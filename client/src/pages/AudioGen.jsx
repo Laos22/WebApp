@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   adaptVoiceover, confirmVoiceover, generateVoiceoverBlock, getVoiceover,
-  getVoiceoverAudioUrl, saveVoiceover,
+  getVoiceoverAudioUrl, saveVoiceover, uploadVoiceoverBlock,
 } from "../services/api";
 import { fetchProfiles } from "../services/profileService";
 import { getElevenLabsCharacterLimit } from "../utils/aiProfileConstants";
@@ -19,17 +19,21 @@ export default function AudioGen() {
   const [instructions, setInstructions] = useState("");
   const [profiles, setProfiles] = useState([]);
   const [profileId, setProfileId] = useState("");
+  const [textProfiles, setTextProfiles] = useState([]);
+  const [textProfileId, setTextProfileId] = useState("");
   const [mode, setMode] = useState("overview");
   const [busy, setBusy] = useState("");
   const [batchProgress, setBatchProgress] = useState(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const stopBatch = useRef(false);
+  const stopAdapt = useRef(false);
 
   const applyResponse = (response) => {
     setData(response);
     setBlocks(response.voiceover.blocks);
-    setInstructions(response.voiceover.instructions || "");
+    setInstructions(response.adaptation?.status === 'in_progress'
+      ? response.adaptation.instructions : response.voiceover.instructions || "");
     return response;
   };
 
@@ -41,8 +45,13 @@ export default function AudioGen() {
       const audioProfiles = allProfiles.filter(profile => profile.type === "audio" && profile.provider === "elevenlabs");
       setProfiles(audioProfiles);
       setProfileId((audioProfiles.find(profile => profile.isDefault) || audioProfiles[0])?.id || "");
+      const availableTextProfiles = allProfiles.filter(profile => profile.type === 'text');
+      setTextProfiles(availableTextProfiles);
+      const resumedId = voiceover.adaptation?.status === 'in_progress' ? voiceover.adaptation.profileId : '';
+      setTextProfileId(availableTextProfiles.find(profile => profile.id === resumedId)?.id ||
+        (availableTextProfiles.find(profile => profile.isDefault) || availableTextProfiles[0])?.id || '');
     }).catch(err => active && setError(err.message)).finally(() => active && setBusy(""));
-    return () => { active = false; stopBatch.current = true; };
+    return () => { active = false; stopBatch.current = true; stopAdapt.current = true; };
   }, [projectId]);
 
   const stored = data?.voiceover;
@@ -69,12 +78,25 @@ export default function AudioGen() {
   };
 
   const handleAdapt = () => run("adapt", async () => {
-    const response = await adaptVoiceover(projectId, {
-      instructions, expectedEditVersion: stored?.editVersion || 0,
-      sourceScriptRevision: data.scriptRevision,
-    });
-    applyResponse(response);
-    setMessage(`Текст адаптирован: ${response.voiceover.blocks.length} блоков.`);
+    stopAdapt.current = false;
+    let current = data;
+    const resume = current.adaptation?.status === 'in_progress' &&
+      current.adaptation.instructions === instructions.trim() &&
+      current.adaptation.profileId === textProfileId;
+    let restart = !resume;
+    while (!stopAdapt.current) {
+      current = await adaptVoiceover(projectId, {
+        instructions, expectedEditVersion: current.voiceover.editVersion,
+        sourceScriptRevision: current.scriptRevision, profileId: textProfileId, restart,
+      });
+      applyResponse(current);
+      restart = false;
+      if (current.adaptation?.status !== 'in_progress') {
+        setMessage(`Текст адаптирован: ${current.voiceover.blocks.length} блоков.`);
+        return;
+      }
+    }
+    setMessage('Адаптация приостановлена. Готовые группы сохранены.');
   });
 
   const handleSave = () => run("save", async () => {
@@ -109,6 +131,19 @@ export default function AudioGen() {
     setMessage(`Блок ${response.voiceover.blocks.find(item => item.id === blockId)?.order} озвучен.`);
   });
 
+  const handleUploadOne = (blockId, file) => run(`upload:${blockId}`, async () => {
+    if (!file) return;
+    if (!/\.mp3$/i.test(file.name) || file.size > 50 * 1024 * 1024) {
+      throw new Error('Выберите MP3-файл размером не более 50 МБ.');
+    }
+    const block = data.voiceover.blocks.find(item => item.id === blockId);
+    const response = await uploadVoiceoverBlock(projectId, blockId, file, {
+      expectedEditVersion: data.voiceover.editVersion, textRevision: block.textRevision,
+    });
+    applyResponse(response);
+    setMessage(`MP3 блока ${block.order} загружен.`);
+  });
+
   const handleGenerateAll = async () => {
     if (busy || dirty || !profileId) return;
     stopBatch.current = false;
@@ -133,6 +168,9 @@ export default function AudioGen() {
   if (!data) return <div className="text-white p-12">{error || "Загрузка озвучки..."}</div>;
   const scriptReady = data.scriptStatus === "confirmed";
   const voiceoverReady = stored.status !== "empty" && stored.status !== "stale";
+  const adaptation = data.adaptation;
+  const canResumeAdaptation = adaptation?.status === 'in_progress' &&
+    adaptation.instructions === instructions.trim() && adaptation.profileId === textProfileId;
 
   return (
     <div className="min-h-[calc(100vh-4rem)] bg-slate-950 text-white p-6 md:p-12">
@@ -160,10 +198,28 @@ export default function AudioGen() {
           </div>
           <textarea rows={3} maxLength={4000} value={instructions} disabled={Boolean(busy)} onChange={event => setInstructions(event.target.value)}
             placeholder="Дополнительные пожелания: темп, паузы, интонации, произношение..." className="w-full bg-slate-950 border border-slate-800 rounded-xl p-4" />
+          <div>
+            <label className="block text-sm text-slate-300 mb-2">Текстовый профиль для адаптации</label>
+            <select value={textProfileId} onChange={event => setTextProfileId(event.target.value)} disabled={Boolean(busy)}
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3">
+              <option value="">Автоматически — профиль по умолчанию</option>
+              {textProfiles.map(profile => <option key={profile.id} value={profile.id}>
+                {profile.name} · {profile.provider}{profile.isDefault ? ' — по умолчанию' : ''}
+              </option>)}
+            </select>
+          </div>
+          {adaptation?.status === 'in_progress' && <div className="rounded-xl border border-indigo-500/30 bg-indigo-950/30 p-4 space-y-3">
+            <p className="text-sm text-indigo-200">Адаптировано {adaptation.completed} из {adaptation.total} блоков. Готовые группы сохранены; прежняя озвучка остаётся без изменений до завершения.</p>
+            <div className="h-2 rounded-full bg-slate-800 overflow-hidden"><div className="h-full bg-indigo-500" style={{ width: `${Math.round(100 * adaptation.completed / Math.max(1, adaptation.total))}%` }} /></div>
+            <div className="max-h-48 overflow-auto space-y-2">
+              {adaptation.blocks.map(block => <details key={block.order} className="text-sm text-slate-300"><summary className="cursor-pointer">Блок {block.order} готов</summary><p className="whitespace-pre-wrap mt-1">{block.adaptedText}</p></details>)}
+            </div>
+          </div>}
           <div className="flex flex-wrap gap-3">
             <button className={`${button} bg-indigo-700 hover:bg-indigo-600`} disabled={!scriptReady || Boolean(busy) || blockDirty} onClick={handleAdapt}>
-              {busy === "adapt" ? "Адаптирую…" : stored.status === "empty" ? "Адаптировать текст" : "Повторить адаптацию"}
+              {busy === "adapt" ? "Адаптирую…" : canResumeAdaptation ? "Продолжить адаптацию" : stored.status === "empty" ? "Адаптировать текст" : "Повторить адаптацию"}
             </button>
+            {busy === 'adapt' && <button className={`${button} bg-red-800 hover:bg-red-700`} onClick={() => { stopAdapt.current = true; }}>Остановить после текущей группы</button>}
             {voiceoverReady && <button className={`${button} bg-emerald-700 hover:bg-emerald-600`} disabled={!dirty || Boolean(busy)} onClick={handleSave}>Сохранить изменения</button>}
             {voiceoverReady && stored.status !== "confirmed" && <button className={`${button} bg-teal-700 hover:bg-teal-600`} disabled={dirty || Boolean(busy)} onClick={handleConfirm}>Утвердить текст</button>}
           </div>
@@ -228,6 +284,11 @@ export default function AudioGen() {
                     <button className={`${button} bg-indigo-700 hover:bg-indigo-600`} disabled={Boolean(busy) || dirty || !profileId || exceedsLimit} onClick={() => handleGenerateOne(block.id)}>
                       {generating ? "Генерирую…" : block.audioStatus === "ready" ? "Перегенерировать блок" : "Сгенерировать блок"}
                     </button>
+                    <label className={`${button} bg-slate-700 hover:bg-slate-600 ${busy || dirty ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+                      {busy === `upload:${block.id}` ? 'Загружаю…' : block.audioStatus === 'ready' ? 'Заменить MP3' : 'Загрузить MP3'}
+                      <input type="file" accept="audio/mpeg,.mp3" className="sr-only" disabled={Boolean(busy) || dirty}
+                        onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) handleUploadOne(block.id, file); }} />
+                    </label>
                     {block.audioStatus === "ready" && <>
                       <audio controls preload="none" src={getVoiceoverAudioUrl(projectId, block.id, block.audioGeneratedAt)} className="h-10 max-w-full" />
                       <a className="text-indigo-300 hover:text-indigo-200" href={getVoiceoverAudioUrl(projectId, block.id, block.audioGeneratedAt)} download={`audio_block_${block.order}.mp3`}>Скачать MP3</a>

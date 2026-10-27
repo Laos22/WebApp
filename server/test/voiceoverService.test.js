@@ -16,6 +16,13 @@ test('scenario headings define a stable one-to-one voiceover structure', () => {
   assert.equal(adapted[1].order, 2);
 });
 
+test('Markdown bold scenario headings remain separate voiceover blocks', () => {
+  const blocks = splitScenarioBlocks('**БЛОК 1. ВСТУП**\nДИКТОР: Перший.\n\n**БЛОК 2. ФІНАЛ**\nДИКТОР: Другий.');
+  assert.deepEqual(blocks.map(block => block.sourceId), ['script_block_1', 'script_block_2']);
+  assert.equal(blocks[0].sourceText, 'ДИКТОР: Перший.');
+  assert.equal(blocks[1].sourceText, 'ДИКТОР: Другий.');
+});
+
 test('AI cannot change the number or identity of voiceover blocks', () => {
   const blocks = splitScenarioBlocks('Блок 1\nОдин.\n\nБлок 2\nДва.');
   assert.throws(() => parseAdaptedBlocks(JSON.stringify({ blocks: [

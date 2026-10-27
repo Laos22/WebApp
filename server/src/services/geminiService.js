@@ -139,10 +139,15 @@ export function buildVoiceoverAdaptationPrompt(project, sourceBlocks, instructio
   const blocks = sourceBlocks.map(block => ({
     id: block.sourceId, title: block.sourceTitle, text: block.sourceText,
   }));
-  return source.split('{{PROJECT_TITLE}}').join(project.title || '')
+  const scopedScript = sourceBlocks.length
+    ? sourceBlocks.map(block => `${block.sourceTitle}\n${block.sourceText}`).join('\n\n')
+    : project.script?.content || '';
+  const rendered = source.split('{{PROJECT_TITLE}}').join(project.title || '')
     .split('{{SCRIPT_BLOCKS}}').join(JSON.stringify(blocks))
-    .split('{{SCRIPT}}').join(project.script?.content || '')
+    .split('{{SCRIPT}}').join(scopedScript)
     .split('{{INSTRUCTIONS}}').join(instructions || 'Нет дополнительных инструкций.');
+  if (!blocks.length) return rendered;
+  return `${rendered}\n\nВ этом запросе ${blocks.length} блок(ов). Верни JSON с ровно таким количеством результатов и только с этими id: ${blocks.map(block => block.id).join(', ')}. Не используй id из примера, если его нет среди входных блоков.`;
 }
 
 export async function generateVoiceoverAdaptation(project, sourceBlocks, instructions, template, profile) {
@@ -155,8 +160,11 @@ export async function generateVoiceoverAdaptation(project, sourceBlocks, instruc
     });
     return modelText(response);
   } catch (cause) {
-    const error = new Error('Не удалось адаптировать текст для озвучки');
+    const knownProviderError = ['OPENROUTER_TIMEOUT', 'OPENROUTER_INCOMPLETE_RESPONSE', 'OPENROUTER_RESPONSE_ERROR'];
+    const error = new Error(knownProviderError.includes(cause.code)
+      ? cause.message : 'Не удалось адаптировать текст для озвучки');
     error.code = cause.code || 'AUDIO_ADAPTATION_FAILED';
+    error.status = cause.status;
     throw error;
   }
 }
@@ -297,7 +305,17 @@ export async function generateStoryboard(project, references, currentFrames, ins
           } },
         } },
       }), { beforeRetry: options.beforeBatch });
-      return modelText(response);
+      try {
+        return modelText(response);
+      } catch (error) {
+        if (error.message !== 'Missing model text') throw error;
+        const empty = new Error('Gemini returned no storyboard text');
+        empty.code = response?.promptFeedback?.blockReason
+          ? 'STORYBOARD_CONTENT_BLOCKED' : 'STORYBOARD_EMPTY_RESPONSE';
+        empty.finishReason = response?.candidates?.[0]?.finishReason || null;
+        empty.blockReason = response?.promptFeedback?.blockReason || null;
+        throw empty;
+      }
     }, { batchSize: longStoryboard ? 6 : 12, maxAttempts: 2,
       splitOnInvalidResponse: longStoryboard, ...options });
   } catch (cause) {
@@ -305,8 +323,12 @@ export async function generateStoryboard(project, references, currentFrames, ins
       status: cause?.status || cause?.statusCode || cause?.response?.status || null,
       code: cause?.code || null,
       message: String(cause?.message || '').slice(0, 500),
+      ...(['STORYBOARD_EMPTY_RESPONSE', 'STORYBOARD_CONTENT_BLOCKED'].includes(cause?.code) ? {
+        finishReason: cause.finishReason, blockReason: cause.blockReason,
+      } : {}),
     });
     if (['STORYBOARD_INPUT_TOO_LONG', 'STORYBOARD_TOO_MANY_FRAMES', 'INVALID_STORYBOARD_RESPONSE',
+      'STORYBOARD_EMPTY_RESPONSE', 'STORYBOARD_CONTENT_BLOCKED',
       'STORYBOARD_JOB_CONFLICT', 'STORYBOARD_LEASE_LOST', 'STORYBOARD_STOP_REQUESTED',
       'INVALID_STORYBOARD_CHECKPOINT'].includes(cause.code)) throw cause;
     if (isGeminiRateLimitError(cause)) {
@@ -340,9 +362,22 @@ export function buildStoryboardDetailPrompt(project, frame, references, instruct
   return `${prepared}\n\nОБЯЗАТЕЛЬНОЕ ВИЗУАЛЬНОЕ ОПИСАНИЕ КАДРА: ${frame.visualDescription}\nВЫБРАННЫЕ РЕФЕРЕНСЫ ЭТОГО КАДРА: ${JSON.stringify(selectedReferences)}\nОБЯЗАТЕЛЬНЫЙ ПРИОРИТЕТ: финальный prompt должен точно показывать всё, что указано в visualDescription кадра. Выбранные референсы персонажей, предметов и локаций включай в сцену явно, а не только как стиль; описание кадра задаёт их действия и расположение. Не добавляй отрицаний, запретов или деталей из прежнего prompt, если они противоречат visualDescription или выбранным референсам. ${currentPrompt ? 'Прежний prompt служит только второстепенным контекстом.' : 'Прежний prompt намеренно не передан: составь новый с нуля по описанию кадра и выбранным референсам.'}`;
 }
 
+export function storyboardDetailFailureCode(cause, response) {
+  if (response?.promptFeedback?.blockReason) return 'STORYBOARD_DETAIL_CONTENT_BLOCKED';
+  if (isGeminiRateLimitError(cause)) return 'STORYBOARD_DETAIL_RATE_LIMIT';
+  const status = providerStatus(cause);
+  if (status === 401) return 'STORYBOARD_DETAIL_AUTH_FAILED';
+  if (status === 402 || /(?:prepay credits depleted|insufficient.credits|billing account)/i.test(String(cause?.message || ''))) {
+    return 'STORYBOARD_DETAIL_BILLING';
+  }
+  if (cause?.message === 'Missing model text') return 'STORYBOARD_DETAIL_EMPTY_RESPONSE';
+  return 'STORYBOARD_DETAIL_FAILED';
+}
+
 export async function detailStoryboardFramePrompt(project, frame, references, instruction, template, profile, preserveCurrentPrompt = false) {
+  let response;
   try {
-    const response = await generateTextResponse(profile, "detail-storyboard-frame-prompt", {
+    response = await generateTextResponse(profile, "detail-storyboard-frame-prompt", {
       contents: [{ role: 'user', parts: [{
         text: buildStoryboardDetailPrompt(project, frame, references, instruction, template, preserveCurrentPrompt),
       }] }],
@@ -351,10 +386,17 @@ export async function detailStoryboardFramePrompt(project, frame, references, in
     if (text.length > 12000) throw new Error('Prompt too long');
     return text;
   } catch (cause) {
+    const status = providerStatus(cause);
+    const message = String(cause?.message || '');
+    console.error('[STORYBOARD_DETAIL_PROVIDER_ERROR]', {
+      status: status || null,
+      code: cause?.code || null,
+      message: message.slice(0, 350),
+      finishReason: response?.candidates?.[0]?.finishReason || null,
+      blockReason: response?.promptFeedback?.blockReason || null,
+    });
     const error = new Error('Не удалось детализировать prompt кадра');
-    error.code = isGeminiRateLimitError(cause)
-      ? 'STORYBOARD_DETAIL_RATE_LIMIT'
-      : 'STORYBOARD_DETAIL_FAILED';
+    error.code = storyboardDetailFailureCode(cause, response);
     if (error.code === 'STORYBOARD_DETAIL_RATE_LIMIT') {
       error.retryAfterMs = geminiRetryAfterMs(cause);
     }

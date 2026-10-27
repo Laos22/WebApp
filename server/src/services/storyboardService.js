@@ -105,7 +105,17 @@ export async function generatePlannedStoryboard(plan, allowedReferenceIds, reque
     let validated;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       await options.beforeBatch?.();
-      const raw = await requestBatch(batch, attempt);
+      let raw;
+      try {
+        raw = await requestBatch(batch, attempt);
+      } catch (error) {
+        if (error?.code !== 'STORYBOARD_EMPTY_RESPONSE') throw error;
+        if (attempt === maxAttempts - 1) {
+          if (!options.splitOnInvalidResponse || batch.length === 1) throw error;
+          break;
+        }
+        continue;
+      }
       try {
         const values = parseModelJson(raw)?.frames;
         if (!Array.isArray(values) || values.length !== batch.length) throw new Error();

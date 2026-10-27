@@ -134,6 +134,7 @@ export function createDavinciXml({
   let audioAnchorIndex;
   let stillImageIndex = 0;
   const frameOffsets = new Map();
+  const dialogueClips = [];
   for (const item of plan.blocks) {
     const { block, duration, durations, offset } = item;
     if (!item.exact) onWarning(`Блок ${block.order}: длительность приблизительная, рассчитана по тексту.`);
@@ -146,6 +147,8 @@ export function createDavinciXml({
     const audioName = block.audioFilename || `audio_block_${block.order}.mp3`;
     if (!/^(?:audio_block_[1-9]\d*|short_[a-f0-9]{24}_[a-f0-9]{32})\.mp3$/.test(audioName)) fail('INVALID_DAVINCI_SETTINGS');
     resources.push(`    <asset id="${audioId}" name="${audioName}" start="0s" hasAudio="1" duration="${time(duration)}" audioSources="1" audioChannels="2" audioRate="48k"><media-rep src="${escapeXml(mediaSourceUrl(mediaRootPath, `audio/${audioName}`))}" kind="original-media"/></asset>`);
+    dialogueClips.push({ offset: offset + trimStart,
+      clip: `<asset-clip name="${audioName}" ref="${audioId}" srcEnable="audio" lane="-1" offset="${time(offset + trimStart)}" start="${time(trimStart)}" duration="${time(audibleDuration)}" audioRole="dialogue"/>` });
     let blockOffset = 0;
     item.frames.forEach((frame, index) => {
       const filename = imageFiles.get(frame.id);
@@ -191,7 +194,6 @@ export function createDavinciXml({
         else if (horizontalOffset) clips.push(`          <adjust-transform position="${horizontalOffset} 0" scale="1 1" anchor="0 0"/>`);
       }
       if (audioAnchorIndex === undefined) audioAnchorIndex = clips.length;
-      if (index === 0) clips.push(`          <asset-clip name="${audioName}" ref="${audioId}" lane="-1" start="${time(trimStart)}" offset="${time(trimStart)}" duration="${time(audibleDuration)}" audioRole="dialogue"/>`);
       for (const [note, value] of [['Voiceover Text', frame.scriptText], ['Start Time', time(offset + blockOffset)], ['Animation Instruction', animation], ['DaVinci Resolve Marker', frame.marker]]) {
         if (value) clips.push(`          <marker start="0s" duration="1/${frameRate}s" value="${escapeXml(value)}" note="${note}"/>`);
       }
@@ -203,20 +205,24 @@ export function createDavinciXml({
     const fadeDuration = Math.floor(Math.min(transitionDurationSec * TIMEBASE, previousDuration / 4) / quantum) * quantum;
     transition(plan.duration - fadeDuration, fadeDuration, 'Fade Out');
   }
-  const connectedAudio = [];
+  const musicClips = [];
   if (backgroundMusic?.filename && backgroundMusic?.durationSec > 0) {
     const musicId = `r${resourceNumber++}`;
     const sourceDuration = Math.round(backgroundMusic.durationSec * TIMEBASE);
     resources.push(`    <asset id="${musicId}" name="${escapeXml(backgroundMusic.filename)}" start="0s" hasAudio="1" duration="${time(sourceDuration)}" audioSources="1" audioChannels="2" audioRate="48k"><media-rep src="${escapeXml(mediaSourceUrl(mediaRootPath, `audio/${backgroundMusic.filename}`))}" kind="original-media"/></asset>`);
     for (let offset = 0; offset < plan.duration; offset += sourceDuration) {
       const musicDuration = Math.min(plan.duration - offset, sourceDuration);
-      connectedAudio.push(`          <asset-clip name="${escapeXml(backgroundMusic.title || 'Background Music')}" ref="${musicId}" start="0s" duration="${time(musicDuration)}" offset="${time(offset)}" enabled="1" lane="-2" audioRole="music"><adjust-volume amount="${backgroundMusicDecibels(backgroundMusicVolume)}"/></asset-clip>`);
+      musicClips.push({ offset,
+        clip: `<asset-clip name="${escapeXml(backgroundMusic.title || 'Background Music')}" ref="${musicId}" srcEnable="audio" lane="-2" offset="${time(offset)}" start="0s" duration="${time(musicDuration)}" audioRole="music"><adjust-volume amount="${backgroundMusicDecibels(backgroundMusicVolume)}"/></asset-clip>` });
       if (!backgroundMusic.loop) break;
     }
   }
+  const effectLanes = [];
   const laneEnds = [];
-  for (const sourceEffect of soundEffects) {
-    const effect = { ...sourceEffect, offsetTicks: frameOffsets.get(sourceEffect.frameId) ?? sourceEffect.offsetTicks };
+  const timedEffects = soundEffects.map(sourceEffect => ({ ...sourceEffect,
+    offsetTicks: frameOffsets.get(sourceEffect.frameId) ?? sourceEffect.offsetTicks,
+  })).sort((a, b) => (a.offsetTicks ?? Infinity) - (b.offsetTicks ?? Infinity));
+  for (const effect of timedEffects) {
     if (!effect?.filename || !(effect.durationSec > 0) || !(effect.offsetTicks >= 0)) continue;
     const effectId = `r${resourceNumber++}`;
     const duration = Math.min(plan.duration - effect.offsetTicks, Math.round(effect.durationSec * TIMEBASE));
@@ -225,9 +231,16 @@ export function createDavinciXml({
     let lane = laneEnds.findIndex(end => end <= effect.offsetTicks);
     if (lane < 0) lane = laneEnds.length;
     laneEnds[lane] = effect.offsetTicks + duration;
-    connectedAudio.push(`          <asset-clip name="${escapeXml(effect.title || 'Sound Effect')}" ref="${effectId}" start="0s" duration="${time(duration)}" offset="${time(effect.offsetTicks)}" enabled="1" lane="${-3 - lane}" audioRole="effects"/>`);
+    (effectLanes[lane] ||= []).push({ offset: effect.offsetTicks,
+      clip: `<asset-clip name="${escapeXml(effect.title || 'Sound Effect')}" ref="${effectId}" srcEnable="audio" lane="${-3 - lane}" offset="${time(effect.offsetTicks)}" start="0s" duration="${time(duration)}" audioRole="effects"/>` });
   }
-  clips.splice(audioAnchorIndex, 0, ...connectedAudio);
+  // All sound clips connect to the same first picture. Their offset is an
+  // absolute sequence time; a nested spine is imported by Resolve as a
+  // secondary storyline and collapses its clips toward the beginning.
+  clips.splice(audioAnchorIndex, 0,
+    ...dialogueClips.map(entry => `          ${entry.clip}`),
+    ...musicClips.map(entry => `          ${entry.clip}`),
+    ...effectLanes.flatMap(entries => entries.map(entry => `          ${entry.clip}`)));
   return ['<?xml version="1.0" encoding="UTF-8"?>', '<fcpxml version="1.9">',
     '  <resources>', ...resources, '  </resources>', '  <library>', '    <event name="AI Generated Project">',
     `      <project name="${escapeXml(projectName || 'AI Project')}">`,

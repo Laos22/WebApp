@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import axios from "axios";
 
-import { getProject, getVideoPlan } from "../services/api";
+import { copyProject, getProject, getVideoPlan } from "../services/api";
 
 const API_URL = String(import.meta.env.VITE_SERVER_URL || "").replace(/\/$/, "");
 
@@ -13,6 +13,7 @@ export default function ProjectWorkspace() {
   const [project, setProject] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showDetails, setShowDetails] = useState(false);
+  const [copying, setCopying] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -46,6 +47,19 @@ export default function ProjectWorkspace() {
     }
   };
 
+  const handleCopy = async () => {
+    if (copying) return;
+    setCopying(true);
+    try {
+      const result = await copyProject(projectId);
+      navigate(`/projects/${result.projectId}`);
+    } catch (err) {
+      alert(err.message || 'Не удалось скопировать проект.');
+    } finally {
+      setCopying(false);
+    }
+  };
+
   if (loading) return <div className="text-white p-12">Загрузка...</div>;
   if (!project) return <div className="text-white p-12">Проект не найден.</div>;
 
@@ -63,12 +77,18 @@ export default function ProjectWorkspace() {
             <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight bg-gradient-to-r from-white to-purple-300 bg-clip-text text-transparent">
               {project.shortTitle}
             </h1>
-            <button
-              onClick={handleDelete}
-              className="px-4 py-2 bg-red-900/20 hover:bg-red-900/40 text-red-400 border border-red-500/30 rounded-lg text-sm transition-all"
-            >
-              Удалить проект
-            </button>
+            <div className="flex flex-wrap justify-end gap-2">
+              <button onClick={handleCopy} disabled={copying}
+                className="px-4 py-2 bg-purple-900/20 hover:bg-purple-900/40 text-purple-300 border border-purple-500/30 rounded-lg text-sm transition-all disabled:opacity-50">
+                {copying ? 'Копирование…' : 'Копировать проект'}
+              </button>
+              <button
+                onClick={handleDelete}
+                className="px-4 py-2 bg-red-900/20 hover:bg-red-900/40 text-red-400 border border-red-500/30 rounded-lg text-sm transition-all"
+              >
+                Удалить проект
+              </button>
+            </div>
           </div>
 
           <button

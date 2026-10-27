@@ -42,13 +42,15 @@ for (const fps of [24, 25, 30]) test(`audio trims preserve all video, transition
     imageFiles: new Map(frames.map((f, i) => [f.id, `frame_${Math.floor(i / 2) + 1}_${i % 2 + 1}.jpg`])) };
   const original = createDavinciXml(input);
   const trimmed = createDavinciXml({ ...input, audioTrim: { enabled: true, mode: 'seconds', startSec: 0.5, endSec: 0.75 } });
-  const withoutAudioClips = xml => xml.replace(/<asset-clip[^>]+lane="-1"[^>]+\/>/g, '');
+  const withoutAudioClips = xml => xml.replace(/\s*<asset-clip[^>]+audioRole="dialogue"\/>/g, '');
   assert.equal(withoutAudioClips(trimmed), withoutAudioClips(original));
-  const audioClips = [...trimmed.matchAll(/<asset-clip[^>]+lane="-1"[^>]+\/>/g)];
+  const audioClips = [...trimmed.matchAll(/<asset-clip[^>]+audioRole="dialogue"\/>/g)];
   assert.equal(audioClips.length, 2);
-  for (const [clip] of audioClips) {
+  for (const [index, [clip]] of audioClips.entries()) {
+    assert.ok(clip.includes('lane="-1"'));
+    assert.ok(clip.includes(`offset="${Math.round(index * 10.123 * TIMEBASE) + TIMEBASE / 2}/${TIMEBASE}s"`));
     assert.ok(clip.includes(`start="${TIMEBASE / 2}/${TIMEBASE}s"`));
-    assert.ok(clip.includes(`offset="${TIMEBASE / 2}/${TIMEBASE}s"`));
     assert.ok(clip.includes(`duration="${Math.round(10.123 * TIMEBASE) - TIMEBASE * 1.25}/${TIMEBASE}s"`));
   }
+  assert.doesNotMatch(trimmed, /<spine lane=/);
 });

@@ -11,8 +11,8 @@ export function projectUsesDrive(project) {
   return project?.storage?.provider === "google_drive";
 }
 
-export async function initializeProjectStorage({ title, projectId, userId }) {
-  if (isGoogleDriveStorage) {
+export async function initializeProjectStorage({ title, projectId, userId, provider }) {
+  if ((provider || (isGoogleDriveStorage ? "google_drive" : "local")) === "google_drive") {
     const { createDriveProjectWorkspace } = await driveApi();
     const driveWorkspace = await createDriveProjectWorkspace({ userId, title, projectId });
     return {

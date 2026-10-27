@@ -12,7 +12,9 @@ function cleanText(value, max) {
 export function splitScenarioBlocks(script) {
   const content = cleanText(script, 500000).replace(/\r\n?/g, '\n');
   if (!content) return [];
-  const heading = /^(?:\s*#{1,6}\s*)?(?:Блок|Block)\s+([1-9][0-9]*)[^\n]*$/gimu;
+  // Scenario drafts often wrap headings in Markdown bold, e.g. **БЛОК 1. ...**.
+  // Restrict whitespace to the current line so a heading cannot absorb a preceding blank line.
+  const heading = /^[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*|__)?(?:Блок|Block)[ \t]+([1-9][0-9]*)[^\n]*$/gimu;
   const matches = [...content.matchAll(heading)];
   if (!matches.length) {
     return [{ sourceId: 'script_block_1', order: 1, sourceTitle: 'Блок 1', sourceText: content }];

@@ -5,7 +5,7 @@ process.env.ENCRYPTION_KEY ||= 'test-encryption-key-that-is-longer-than-32-chara
 
 const {
   buildStoryboardBatchPrompt, buildStoryboardDetailPrompt, buildStoryboardPrompt,
-  geminiRetryAfterMs, isGeminiRateLimitError, retryGeminiRateLimit,
+  geminiRetryAfterMs, isGeminiRateLimitError, retryGeminiRateLimit, storyboardDetailFailureCode,
 } = await import('../src/services/geminiService.js');
 
 test('a storyboard batch excludes the rest of a long script and distant frame prompts', () => {
@@ -113,4 +113,15 @@ test('recognizes Gemini rate limits and uses provider retry hints', () => {
   assert.equal(isGeminiRateLimitError({ status: 500, message: 'Internal error' }), false);
   assert.equal(geminiRetryAfterMs({ message: 'Please retry in 23.5s' }), 23_500);
   assert.equal(geminiRetryAfterMs({ response: { headers: { get: () => '12' } } }), 12_000);
+});
+
+test('content-blocked Gemini responses are distinguished from empty text and limits', () => {
+  const empty = new Error('Missing model text');
+  assert.equal(storyboardDetailFailureCode(empty, {
+    candidates: [{ content: {} }], promptFeedback: { blockReason: 'PROHIBITED_CONTENT' },
+  }), 'STORYBOARD_DETAIL_CONTENT_BLOCKED');
+  assert.equal(storyboardDetailFailureCode(empty, { candidates: [{ content: {} }] }),
+    'STORYBOARD_DETAIL_EMPTY_RESPONSE');
+  assert.equal(storyboardDetailFailureCode({ status: 429 }, null), 'STORYBOARD_DETAIL_RATE_LIMIT');
+  assert.equal(storyboardDetailFailureCode({ status: 401 }, null), 'STORYBOARD_DETAIL_AUTH_FAILED');
 });

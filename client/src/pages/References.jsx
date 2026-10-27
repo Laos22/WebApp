@@ -4,6 +4,7 @@ import {
   analyzeReferencePlan, confirmReferencePlan, deleteVisualReference,
   detailReferencePrompt, getReferencePlan, getVisualReferenceImageUrl,
   saveReferencePlan, uploadVisualReference,
+  skipReferencePlan,
 } from "../services/api";
 import ProfileSelector from "../components/ProfileSelector";
 import ReferenceImageControls from '../components/ReferenceImageControls';
@@ -112,6 +113,13 @@ export default function References() {
     expectedEditVersion: plan.editVersion, sourceScriptRevision: data.scriptRevision,
   }), "Набор референсов утверждён.");
 
+  const skip = () => {
+    if ((items.length || dirty) && !window.confirm('Продолжить без референсов? Карточки сохранятся, но не будут использоваться в раскадровке. Несохранённые правки будут отброшены.')) return;
+    run('skip', () => skipReferencePlan(projectId, {
+      expectedEditVersion: plan.editVersion, sourceScriptRevision: data.scriptRevision,
+    }), 'Можно перейти к раскадровке без референсов.');
+  };
+
   const updateItem = (index, field, value) => setItems(current => current.map((item, i) => i === index ? { ...item, [field]: value } : item));
   const removeItem = (index) => {
     const source = plan.items[index];
@@ -188,6 +196,7 @@ export default function References() {
               onClick={analyze}>{pending === "analyze" ? "ИИ анализирует…" : items.length ? "Повторить анализ" : "Анализировать сценарий"}</button>
             {items.length > 0 && <button type="button" className={`${button} bg-slate-700 hover:bg-slate-600`} disabled={Boolean(pending) || !dirty} onClick={save}>Сохранить изменения</button>}
             {items.length > 0 && <button type="button" className={`${button} bg-emerald-700 hover:bg-emerald-600`} disabled={Boolean(pending) || dirty || plan.status !== "draft" || !items.some(item => item.selected)} onClick={confirm}>Утвердить набор</button>}
+            {!confirmed && <button type="button" className={`${button} bg-slate-700 hover:bg-slate-600`} disabled={Boolean(pending) || !scriptReady || !voiceoverReady} onClick={skip}>Продолжить без референсов</button>}
             {confirmed && !dirty && <Link to={`/projects/${projectId}/image`} className={`${button} bg-purple-700 hover:bg-purple-600`}>Перейти к работе с изображениями</Link>}
           </div>
         </section>

@@ -36,9 +36,13 @@ export default function AudioSettings({ settings, onChange }) {
         <p className="text-xs text-slate-500 mt-2">
           Лимит действует на один блок. Для больших блоков используйте Multilingual v2 или Flash v2.5.
         </p>
+        {settings.modelId === 'eleven_v4' && <p className="text-xs text-indigo-300 mt-2">
+          Eleven v4 использует стабильность и сходство голоса. Скорость и Speaker Boost для этой модели не применяются.
+        </p>}
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {settings.modelId !== 'eleven_v4' &&
         <div>
           <label className={labelClass}>
             Скорость: <span className="text-purple-400">{settings.speed}x</span>
@@ -53,6 +57,7 @@ export default function AudioSettings({ settings, onChange }) {
             className="w-full accent-purple-500"
           />
         </div>
+        }
         <div>
           <label className={labelClass}>
             Стабильность:{" "}
@@ -85,7 +90,7 @@ export default function AudioSettings({ settings, onChange }) {
         />
       </div>
 
-      <label className="flex items-center gap-3 cursor-pointer select-none">
+      {settings.modelId !== 'eleven_v4' && <label className="flex items-center gap-3 cursor-pointer select-none">
         <input
           type="checkbox"
           checked={settings.speakerBoost}
@@ -93,7 +98,7 @@ export default function AudioSettings({ settings, onChange }) {
           className="w-4 h-4 accent-purple-500 rounded"
         />
         <span className="text-sm text-slate-300">Speaker Boost</span>
-      </label>
+      </label>}
     </div>
   );
 }

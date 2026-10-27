@@ -61,6 +61,7 @@ async function projectRequest(projectId, suffix = "", method = "GET", body) {
 }
 
 export const getProject = (id) => projectRequest(id);
+export const copyProject = (id) => projectRequest(id, '/copy', 'POST', {});
 export const getYoutubeDescription = id => projectRequest(id, '/youtube-description');
 export const generateYoutubeDescription = (id, payload) => projectRequest(id, '/youtube-description/generate', 'POST', payload);
 export const saveYoutubeDescription = (id, content) => projectRequest(id, '/youtube-description', 'PUT', { content });
@@ -85,6 +86,18 @@ export const confirmVoiceover = (projectId, payload) =>
   projectRequest(projectId, "/voiceover/confirm", "POST", payload);
 export const generateVoiceoverBlock = (projectId, blockId, payload) =>
   projectRequest(projectId, `/voiceover/blocks/${encodeURIComponent(blockId)}/generate`, "POST", payload);
+export async function uploadVoiceoverBlock(projectId, blockId, file, { expectedEditVersion, textRevision }) {
+  const form = new FormData();
+  form.append('audio', file, file.name);
+  form.append('expectedEditVersion', String(expectedEditVersion));
+  form.append('textRevision', String(textRevision));
+  const response = await fetch(`${SERVER_URL}/api/projects/${projectId}/voiceover/blocks/${encodeURIComponent(blockId)}/audio`, {
+    method: 'POST', credentials: 'include', body: form,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success) throw new Error(data.error || 'Не удалось загрузить MP3 блока.');
+  return data;
+}
 export const getVoiceoverAudioUrl = (projectId, blockId, generatedAt) =>
   `${SERVER_URL}/api/projects/${projectId}/voiceover/blocks/${encodeURIComponent(blockId)}/audio?v=${encodeURIComponent(generatedAt || "0")}`;
 export const getSoundEffects = projectId => projectRequest(projectId, '/sound-effects');
@@ -118,6 +131,8 @@ export const saveReferencePlan = (projectId, payload) =>
   projectRequest(projectId, "/reference-plan", "PUT", payload);
 export const confirmReferencePlan = (projectId, payload) =>
   projectRequest(projectId, "/reference-plan/confirm", "POST", payload);
+export const skipReferencePlan = (projectId, payload) =>
+  projectRequest(projectId, "/reference-plan/skip", "POST", payload);
 export const detailReferencePrompt = (projectId, referenceId, payload) =>
   projectRequest(projectId, `/reference-plan/${encodeURIComponent(referenceId)}/detail-prompt`, "POST", payload);
 
@@ -191,6 +206,8 @@ export const generateStoryboardFrameImage = (projectId, frameId, payload) =>
   projectRequest(projectId, `/storyboard/frames/${encodeURIComponent(frameId)}/generate-image`, "POST", payload);
 export const resetStoryboardImages = (projectId, payload) =>
   projectRequest(projectId, "/storyboard/images/reset", "POST", payload);
+export const deleteStoryboardFrameImage = (projectId, frameId, payload) =>
+  projectRequest(projectId, `/storyboard/frames/${encodeURIComponent(frameId)}/delete-image`, "POST", payload);
 export const reconcileStoryboardImages = (projectId, payload) =>
   projectRequest(projectId, "/storyboard/images/reconcile", "POST", payload);
 export const getStoryboardFrameImageUrl = (projectId, frameId, updatedAt, download = false) =>

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
-  adoptStoryboardAddedReferences, adoptStoryboardVoiceover, confirmStoryboard, detailStoryboardFramePrompt, generateStoryboard,
+  adoptStoryboardAddedReferences, adoptStoryboardVoiceover, confirmStoryboard, deleteStoryboardFrameImage, detailStoryboardFramePrompt, generateStoryboard,
   exportStoryboardFlowPackage, generateStoryboardFrameImage, getStoryboard, getStoryboardFrameImageUrl,
   getStoryboardFramePreviewUrl,
   getVisualReferenceImageUrl,
@@ -20,6 +20,10 @@ const button = "px-4 py-2.5 rounded-xl bg-purple-700 hover:bg-purple-600 disable
 const statuses = { empty: "Не создана", draft: "Черновик", confirmed: "Утверждена", stale: "Устарела" };
 const DETAIL_REQUEST_INTERVAL_MS = 4_000;
 const DETAIL_RATE_LIMIT_RETRIES = 4;
+const SKIPPABLE_DETAIL_ERRORS = new Set([
+  "STORYBOARD_DETAIL_CONTENT_BLOCKED",
+  "STORYBOARD_DETAIL_EMPTY_RESPONSE",
+]);
 const MAX_FLOW_ENTRIES = 1_000;
 const MAX_FLOW_IMAGE_BYTES = 15 * 1024 * 1024;
 const MAX_FLOW_BRIDGE_PACKAGE_BYTES = 16 * 1024 * 1024;
@@ -127,6 +131,10 @@ function GenerationProgress({ generation, connectionError, busy, onResume, onSto
     ? 'Достигнут лимит выбранной модели. Готовые кадры сохранены; нажмите «Продолжить генерацию» после восстановления лимита или выберите другой профиль.'
     : generation.errorCode === 'INVALID_STORYBOARD_RESPONSE'
       ? 'Модель вернула некорректный пакет кадров. Готовые кадры сохранены; можно продолжить без повторной генерации сохранённой части.'
+      : generation.errorCode === 'STORYBOARD_EMPTY_RESPONSE'
+        ? 'Модель не вернула текст для очередной группы кадров. Готовые кадры сохранены; попробуйте продолжить или выберите другой текстовый профиль.'
+        : generation.errorCode === 'STORYBOARD_CONTENT_BLOCKED'
+          ? 'Google заблокировал содержание запроса для очередной группы кадров. Готовые кадры сохранены. Проверьте описание сцены и инструкции перед продолжением.'
       : 'Не удалось завершить запрос. Готовые части сохранены. Можно продолжить, при необходимости выбрав другой профиль в управлении раскадровкой.';
   return <section className="p-4 rounded-xl border border-purple-500/40 bg-slate-900 space-y-3" aria-label="Прогресс создания раскадровки">
     <div className="flex flex-wrap justify-between gap-2">
@@ -180,6 +188,10 @@ function readableError(error) {
   if (error?.code === "INVALID_STORYBOARD_RESPONSE") return "ИИ не заполнил все запланированные кадры даже после автоматической повторной попытки. Раскадровка не сохранена.";
   if (error?.code === "STORYBOARD_DETAIL_FAILED") return "ИИ не смог детализировать prompt кадра. Повторите запрос.";
   if (error?.code === "STORYBOARD_DETAIL_RATE_LIMIT") return "Gemini временно ограничил запросы. Нажмите «Продолжить детализацию» позже.";
+  if (error?.code === "STORYBOARD_DETAIL_BILLING") return "У выбранного профиля закончились доступные кредиты. Выберите другой текстовый профиль в окне «Раскадровка».";
+  if (error?.code === "STORYBOARD_DETAIL_EMPTY_RESPONSE") return "Модель не вернула текст для этого кадра. Выберите другой текстовый профиль или повторите позже.";
+  if (error?.code === "STORYBOARD_DETAIL_CONTENT_BLOCKED") return "Google заблокировал содержание запроса для этого кадра. Проверьте описание и выбранные референсы; смена тарифа или ожидание лимита не помогут.";
+  if (error?.code === "STORYBOARD_DETAIL_AUTH_FAILED") return "Провайдер отклонил ключ выбранного текстового профиля. Проверьте его настройки или выберите другой профиль.";
   if (error?.code === "INVALID_AI_PROFILE") return "Выбранный текстовый профиль недоступен. Выберите другой профиль или автоматический режим.";
   if (error?.code === "INVALID_IMAGE_PROFILE") return "Выберите профиль изображения Google Studio.";
   if (error?.code === "IMAGE_PROVIDER_AUTH_FAILED") return "Google Studio отклонил API-ключ или доступ к выбранной модели.";
@@ -214,6 +226,7 @@ export default function ImageGen() {
     return saved === "image/jpeg" ? saved : "image/png";
   });
   const [imageMethod, setImageMethod] = useState("api");
+  const [referenceFilterId, setReferenceFilterId] = useState("");
   const [currentFrameIndex, setCurrentFrameIndex] = useState(0);
   const [framePickerOpen, setFramePickerOpen] = useState(false);
   const [openPanel, setOpenPanel] = useState("");
@@ -341,8 +354,10 @@ export default function ImageGen() {
   const detailStats = useMemo(() => {
     const storedFrames = storyboard?.frames || [];
     const ready = storedFrames.filter(frame => frame.promptDetailStatus === "ready").length;
-    const failed = storedFrames.filter(frame => frame.promptDetailStatus === "error").length;
-    return { ready, failed, pending: storedFrames.length - ready, total: storedFrames.length };
+    const errors = storedFrames.map((frame, index) => ({ frame, index }))
+      .filter(({ frame }) => frame.promptDetailStatus === "error" ||
+        (frame.promptDetailStatus === "stale" && frame.promptDetailErrorCode));
+    return { ready, failed: errors.length, errors, pending: storedFrames.length - ready, total: storedFrames.length };
   }, [storyboard]);
   const imageStats = useMemo(() => {
     const storedFrames = storyboard?.frames || [];
@@ -351,6 +366,9 @@ export default function ImageGen() {
     const generating = storedFrames.filter(frame => frame.image?.status === "generating").length;
     return { ready, failed, generating, pending: storedFrames.length - ready, total: storedFrames.length };
   }, [storyboard]);
+  const referenceFilteredFrames = useMemo(() => frames.map((frame, index) => ({ frame, index }))
+    .filter(({ frame }) => !referenceFilterId || frame.referenceIds.includes(referenceFilterId)),
+  [frames, referenceFilterId]);
   const stalePromptCount = storyboard?.frames.filter(frame => frame.promptDetailStatus === "stale").length || 0;
 
   useEffect(() => {
@@ -510,6 +528,7 @@ export default function ImageGen() {
         return;
       }
       setDetailProgress({ done: 0, total: targets.length });
+      let skipped = 0;
       for (let index = 0; index < targets.length; index += 1) {
         if (stopDetail.current) break;
         let rateLimitAttempt = 0;
@@ -518,6 +537,16 @@ export default function ImageGen() {
             current = await detailOne(targets[index], current);
             break;
           } catch (err) {
+            if (SKIPPABLE_DETAIL_ERRORS.has(err?.code)) {
+              // The server records this frame's error. Reload to get the current editVersion
+              // before sending the next frame and keep already completed prompts intact.
+              const refreshed = await getStoryboard(projectId);
+              const failedFrame = refreshed.storyboard.frames.find(frame => frame.id === targets[index]);
+              if (failedFrame?.promptDetailErrorCode !== err.code) throw err;
+              current = refreshed;
+              skipped += 1;
+              break;
+            }
             if (err?.code !== "STORYBOARD_DETAIL_RATE_LIMIT" ||
                 rateLimitAttempt >= DETAIL_RATE_LIMIT_RETRIES) throw err;
             rateLimitAttempt += 1;
@@ -538,14 +567,16 @@ export default function ImageGen() {
         if (stopDetail.current) break;
         if (mounted.current) {
           applyData(current);
-          setDetailProgress({ done: index + 1, total: targets.length });
-          setMessage(`Детализировано ${index + 1} из ${targets.length}.`);
+          setDetailProgress({ done: index + 1, total: targets.length, skipped });
+          setMessage(`Обработано ${index + 1} из ${targets.length}${skipped ? ` · ошибок ${skipped}` : ""}.`);
         }
         if (index < targets.length - 1) await wait(DETAIL_REQUEST_INTERVAL_MS);
       }
       if (mounted.current) setMessage(stopDetail.current
         ? "Массовая детализация остановлена. Готовые промты сохранены."
-        : "Все промты кадров детализированы.");
+        : skipped > 0
+          ? `Детализация завершена. Пропущено из-за ошибок: ${skipped}. Список кадров — в окне «Раскадровка». Готовые промты сохранены.`
+          : "Все промты кадров детализированы.");
     } catch (err) {
       if (mounted.current) {
         setError(readableError(err));
@@ -637,6 +668,13 @@ export default function ImageGen() {
       throw generationError;
     }
   }, "Изображение кадра готово.");
+
+  const deleteFrameImage = frameId => {
+    if (!window.confirm("Удалить изображение этого кадра? Видео останется сохранённым, но будет помечено устаревшим до пересоздания изображения.")) return;
+    run(`delete-image:${frameId}`, () => deleteStoryboardFrameImage(projectId, frameId, {
+      sourceStoryboardRevision: storyboard.revision,
+    }), "Изображение кадра удалено. Кадр готов к повторной генерации.");
+  };
 
   const generateAllImages = async (restart = false) => {
     if (pending || dirty || storyboard?.status !== "confirmed" || !imageProfileId) return;
@@ -1054,12 +1092,20 @@ export default function ImageGen() {
           </nav>
           {framePickerOpen && <section id="image-frame-picker" aria-label="Список кадров" className="rounded-xl border border-slate-700 bg-slate-900/80 p-3 space-y-3" onKeyDown={event => { if (event.key === "Escape") setFramePickerOpen(false); }}>
             <p className="text-sm text-slate-400">Зелёный — изображение готово, красный — ошибка, голубой — генерируется.</p>
+            <label className="block max-w-md text-sm text-slate-300">Фильтр по референсу
+              <select value={referenceFilterId} onChange={event => setReferenceFilterId(event.target.value)} className="mt-1 block w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">
+                <option value="">Все кадры</option>
+                {data.references.map(reference => <option key={reference.id} value={reference.id}>{reference.name}</option>)}
+              </select>
+            </label>
+            <p className="text-xs text-slate-400">Найдено кадров: {referenceFilteredFrames.length}</p>
             <div className="flex flex-wrap gap-2 max-h-64 overflow-y-auto p-1">
-              {frames.map((frame, index) => {
+              {referenceFilteredFrames.map(({ frame, index }) => {
                 const state = storyboard.frames.find(item => item.id === frame.id)?.image?.status || "pending";
                 const color = state === "ready" ? "border-emerald-500 bg-emerald-950/60 text-emerald-200" : state === "error" ? "border-red-600 bg-red-950/60 text-red-200" : state === "generating" ? "border-cyan-500 bg-cyan-950/60 text-cyan-200" : "border-slate-700 bg-slate-950 text-slate-200";
                 return <button key={frame.id || index} type="button" aria-current={index === currentFrameIndex ? "true" : undefined} className={`rounded-lg border-2 px-3 py-2 font-semibold ${color} ${index === currentFrameIndex ? "ring-2 ring-purple-400 ring-offset-2 ring-offset-slate-950" : ""}`} onClick={() => goToFrame(index)}>{frameLabel(frame, frames, data.voiceoverBlocks)}</button>;
               })}
+              {!referenceFilteredFrames.length && <p className="text-sm text-slate-400">Кадров с этим референсом нет.</p>}
             </div>
           </section>}
         </div>}
@@ -1178,6 +1224,17 @@ export default function ImageGen() {
         {frames.length > 0 && <button type="button" className={`${button} bg-emerald-700 hover:bg-emerald-600`} disabled={Boolean(pending) || dirty || stalePromptCount > 0 || storyboard.status !== "draft"} onClick={confirm}>Утвердить раскадровку</button>}
       </div>
       {(detailProgress || frames.length > 0) && <p className="text-sm text-slate-400">Детализация: <span className="text-emerald-400">готово {detailStats.ready}/{detailStats.total}</span>{detailStats.failed > 0 && <span className="text-red-400"> · ошибок {detailStats.failed}</span>}{detailProgress && <span className="text-fuchsia-300"> · в запуске {detailProgress.done}/{detailProgress.total}</span>}</p>}
+      {detailStats.errors.length > 0 && <div className="space-y-2 rounded-xl border border-red-800/60 bg-red-950/20 p-3">
+        <p className="text-sm text-red-200">Остались кадры без детализированного промпта. Выберите кадр для проверки или повторите детализацию позже.</p>
+        <div className="flex max-h-40 flex-wrap gap-2 overflow-y-auto">
+          {detailStats.errors.map(({ frame, index }) => <button key={frame.id} type="button"
+            className="rounded-lg bg-red-900/70 px-3 py-2 text-sm text-red-100 hover:bg-red-800"
+            onClick={() => { goToFrame(index); setOpenPanel(""); }}
+            title={frame.promptDetailErrorCode === "STORYBOARD_DETAIL_CONTENT_BLOCKED" ? "Запрос отклонён фильтром Google" : "Модель не вернула готовый промпт"}>
+            {frameLabel(frame, frames, data.voiceoverBlocks)}
+          </button>)}
+        </div>
+      </div>}
       {frames.length > 0 && <div className="space-y-3 border-t border-slate-800 pt-4">
         <div className="flex items-center justify-between"><h3 className="font-semibold">Все кадры</h3><button type="button" className="text-sm text-purple-300" disabled={Boolean(pending)} onClick={addFrame}>+ Добавить кадр</button></div>
         <div className="grid grid-cols-6 sm:grid-cols-10 md:grid-cols-14 gap-2 max-h-56 overflow-y-auto pr-1">
@@ -1192,6 +1249,23 @@ export default function ImageGen() {
     </Drawer>}
 
     {openPanel === "images" && <Drawer title="Настройки генерации изображений" onClose={() => setOpenPanel("")}>
+      <section className="space-y-2 rounded-xl border border-slate-700 p-3">
+        <label className="block text-sm text-slate-300">Показать кадры с референсом
+          <select value={referenceFilterId} onChange={event => setReferenceFilterId(event.target.value)} className="mt-1 block w-full rounded-lg border border-slate-700 bg-slate-950 p-3">
+            <option value="">Все кадры</option>
+            {data.references.map(reference => <option key={reference.id} value={reference.id}>{reference.name}</option>)}
+          </select>
+        </label>
+        <p className="text-xs text-slate-400">Найдено {referenceFilteredFrames.length} из {frames.length} кадров. Выберите кадр, чтобы проверить или удалить только его изображение.</p>
+        <div className="flex max-h-36 flex-wrap gap-2 overflow-y-auto">
+          {referenceFilteredFrames.map(({ frame, index }) => {
+            const image = storyboard.frames.find(item => item.id === frame.id)?.image;
+            return <button key={frame.id} type="button" className={`rounded-lg px-3 py-2 text-sm ${image?.hasImage ? "bg-emerald-800 hover:bg-emerald-700" : "bg-slate-700 hover:bg-slate-600"}`}
+              onClick={() => { goToFrame(index); setOpenPanel(""); }}>{frameLabel(frame, frames, data.voiceoverBlocks)}</button>;
+          })}
+          {!referenceFilteredFrames.length && <p className="text-sm text-slate-400">Кадров с этим референсом нет.</p>}
+        </div>
+      </section>
       <div className="grid grid-cols-2 gap-2">
         <button type="button" className={`${button} ${imageMethod === "api" ? "bg-purple-700" : "bg-slate-700 hover:bg-slate-600"}`} disabled={Boolean(pending)} onClick={() => setImageMethod("api")}>Google Studio API</button>
         <button type="button" className={`${button} ${imageMethod === "flow" ? "bg-blue-700" : "bg-slate-700 hover:bg-slate-600"}`} disabled={Boolean(pending)} onClick={() => setImageMethod("flow")}>Google Flow</button>
@@ -1263,8 +1337,14 @@ export default function ImageGen() {
           {imageMethod === "api" && <button type="button" className={`${button} bg-cyan-700 hover:bg-cyan-600`} disabled={Boolean(pending) || activePromptStale || !imageProfileId} onClick={() => generateFrameImage(activeFrame.id)}>{pending === `image:${activeFrame.id}` ? "Генерация…" : activeImage.status === "ready" ? "Перегенерировать" : "Сгенерировать"}</button>}
           {imageMethod === "flow" && <><button type="button" className={`${button} bg-slate-700 hover:bg-slate-600`} disabled={Boolean(pending) || activePromptStale} onClick={() => copyFramePrompt({ ...activeFrame, order: currentFrameIndex + 1 })}>Скопировать prompt</button><button type="button" className={`${button} bg-slate-700 hover:bg-slate-600`} disabled={Boolean(pending) || activePromptStale} onClick={() => exportFlow(activeFrame.id)}>{pending === `flow-export:${activeFrame.id}` ? "Подготовка…" : "Скачать пакет кадра"}</button><a href={FLOW_TOOL_URL} target="_blank" rel="noreferrer" className={`${button} bg-slate-700 hover:bg-slate-600`}>Открыть Flow</a><label className={`${button} bg-emerald-700 hover:bg-emerald-600 cursor-pointer ${pending ? "opacity-50 pointer-events-none" : ""}`}>{pending === `flow-frame:${activeFrame.id}` ? "Загрузка…" : "Загрузить изображение"}<input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={event => importFlowFrame(activeFrame.id, event)} /></label></>}
           {activeImage.hasImage && <a className={`${button} bg-slate-700 hover:bg-slate-600`} href={getStoryboardFrameImageUrl(projectId, activeFrame.id, activeImage.updatedAt, true)}>Скачать</a>}
+          {activeImage.hasImage && <button type="button" className={`${button} bg-red-800 hover:bg-red-700`} disabled={Boolean(pending)} onClick={() => deleteFrameImage(activeFrame.id)}>{pending === `delete-image:${activeFrame.id}` ? "Удаляем…" : "Удалить только изображение"}</button>}
         </div>
       </section>}
+      {storyboard.status === "stale" && !dirty && activeFrame.id && activeImage.hasImage &&
+        <section className="rounded-xl border border-amber-800/60 bg-amber-950/20 p-4 space-y-2">
+          <p className="text-sm text-amber-200">Референсы изменились. Этот кадр можно очистить сейчас; повторная генерация станет доступна после обновления раскадровки.</p>
+          <button type="button" className={`${button} bg-red-800 hover:bg-red-700`} disabled={Boolean(pending)} onClick={() => deleteFrameImage(activeFrame.id)}>Удалить только изображение</button>
+        </section>}
       <div className="flex flex-wrap justify-between gap-2 border-t border-slate-800 pt-4">
         <button type="button" className={`${button} bg-red-800 hover:bg-red-700`} disabled={Boolean(pending)} onClick={() => { if (window.confirm(`Удалить кадр ${currentFrameIndex + 1}?`)) { setFrames(current => current.filter((_, i) => i !== currentFrameIndex)); setCurrentFrameIndex(index => Math.max(0, index - (index === frames.length - 1 ? 1 : 0))); setFrameMenuOpen(false); } }}>Удалить кадр</button>
         <button type="button" className={`${button} bg-slate-700 hover:bg-slate-600`} onClick={() => setFrameMenuOpen(false)}>Закрыть</button>

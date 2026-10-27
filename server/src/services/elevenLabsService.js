@@ -1,6 +1,7 @@
 import { getDecryptedApiKey } from './aiProfileResolver.js';
 
 export const ELEVENLABS_MODEL_CHARACTER_LIMITS = Object.freeze({
+  eleven_v4: 10000,
   eleven_v3: 5000,
   eleven_multilingual_v2: 10000,
   eleven_flash_v2_5: 40000,
@@ -76,8 +77,10 @@ export async function synthesizeElevenLabs(text, profile) {
       voice_settings: {
         stability: settings.stability ?? 0.5,
         similarity_boost: settings.similarityBoost ?? 0.75,
-        use_speaker_boost: settings.speakerBoost ?? true,
-        speed: settings.speed ?? 1,
+        ...(modelId === 'eleven_v4' ? {} : {
+          use_speaker_boost: settings.speakerBoost ?? true,
+          speed: settings.speed ?? 1,
+        }),
       },
     }),
   });

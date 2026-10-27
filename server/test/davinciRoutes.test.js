@@ -81,9 +81,9 @@ for (const legacy of [false, true]) test(`status and export with ${legacy ? 'leg
   if (!legacy) {
     assert.equal(status.value.backgroundMusicReady, true);
     assert.equal(status.value.soundEffectCount, 1);
-    assert.match(exportedXml, /lane="-2" audioRole="music"/);
+    assert.match(exportedXml, /<asset-clip[^>]+lane="-2"[^>]+audioRole="music"/);
     assert.match(exportedXml, /audioRole="music"><adjust-volume amount="-10\.46dB"\/>/);
-    assert.match(exportedXml, /lane="-3" audioRole="effects"/);
+    assert.match(exportedXml, /<asset-clip[^>]+lane="-3"[^>]+audioRole="effects"/);
     assert.ok(exportedXml.indexOf('audioRole="music"') < exportedXml.indexOf('</asset-clip>'));
   }
   for (const [, url] of exportedXml.matchAll(/src="([^"]+)"/g)) {
@@ -107,7 +107,7 @@ for (const legacy of [false, true]) test(`status and export with ${legacy ? 'leg
   });
   assert.equal(trimmed.code, 200);
   const trimmedXml = await fs.readFile(path.join(project.projectPath, trimmed.value.filename), 'utf8');
-  assert.match(trimmedXml, /lane="-1" start="8820000\/35280000s" offset="8820000\/35280000s" duration="58212000\/35280000s"/);
+  assert.match(trimmedXml, /<asset-clip[^>]+lane="-1" offset="8820000\/35280000s" start="8820000\/35280000s" duration="58212000\/35280000s" audioRole="dialogue"\/>/);
   assert.match(trimmedXml, /src="file:\/\/\/[^"]+\/images\/still_[a-p]{64}\.jpg"/);
   assert.match(trimmedXml, /<asset-clip name="frame_1_1.jpg"/);
   const panned = await request('/:id/davinci/export', 'post', { animationTypes: ['Pan Right'] });

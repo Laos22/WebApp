@@ -30,6 +30,7 @@ export const IMAGE_QUALITIES = ["standard", "hd"];
 export const IMAGE_ASPECT_RATIOS = ["16:9", "1:1", "9:16"];
 
 export const ELEVENLABS_MODELS = [
+  { value: "eleven_v4", label: "Eleven v4 — выразительная озвучка", characterLimit: 10000 },
   { value: "eleven_v3", label: "Eleven v3 — выразительная", characterLimit: 5000 },
   { value: "eleven_multilingual_v2", label: "Multilingual v2 — длинная озвучка", characterLimit: 10000 },
   { value: "eleven_flash_v2_5", label: "Flash v2.5 — быстрая", characterLimit: 40000 },

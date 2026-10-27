@@ -134,6 +134,23 @@ const voiceoverSchema = new mongoose.Schema({
   confirmedAt: { type: Date, default: null },
 }, { _id: false, strict: 'throw' });
 
+const voiceoverAdaptationResultSchema = new mongoose.Schema({
+  id: { type: String, required: true, maxlength: 80 },
+  adaptedText: { type: String, required: true, maxlength: 50000 },
+}, { _id: false, strict: 'throw' });
+
+const voiceoverAdaptationSchema = new mongoose.Schema({
+  status: { type: String, enum: ['idle', 'in_progress'], default: 'idle' },
+  revision: integer(0, 0),
+  sourceScriptRevision: { type: Number, min: 1, default: null },
+  baseEditVersion: integer(0, 0),
+  totalBlocks: integer(1, 1),
+  instructions: { type: String, default: '', maxlength: 4000 },
+  profileId: { type: String, default: '', maxlength: 80 },
+  results: { type: [voiceoverAdaptationResultSchema], default: [], validate: value => value.length <= 200 },
+  updatedAt: { type: Date, default: null },
+}, { _id: false, strict: 'throw' });
+
 const soundEffectSchema = new mongoose.Schema({
   _id: { type: String, required: true, maxlength: 36 },
   name: { type: String, required: true, maxlength: 120 },
@@ -313,6 +330,7 @@ const projectSchema = new mongoose.Schema({
   }, { _id: false }), default: undefined },
   script: { type: scriptSchema, default: undefined },
   voiceover: { type: voiceoverSchema, default: undefined },
+  voiceoverAdaptation: { type: voiceoverAdaptationSchema, default: undefined },
   soundEffects: { type: [soundEffectSchema], default: [] },
   soundPlan: { type: soundPlanSchema, default: undefined },
   backgroundMusic: { type: backgroundMusicSchema, default: undefined },

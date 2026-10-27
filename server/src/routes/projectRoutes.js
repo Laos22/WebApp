@@ -60,6 +60,9 @@ import {
   splitScenarioBlocks, parseAdaptedBlocks, normalizeVoiceover,
   validateManualVoiceoverBlocks, voiceoverIsCurrent,
 } from "../services/voiceoverService.js";
+import {
+  nextVoiceoverAdaptationBatch, validVoiceoverAdaptationResults, voiceoverAdaptationResponse,
+} from '../services/voiceoverAdaptationService.js';
 import { synthesizeElevenLabs } from "../services/elevenLabsService.js";
 import { saveVoiceoverAudio, readVoiceoverAudio, deleteVoiceoverAudio } from "../services/voiceoverStorage.js";
 import { generateGoogleStoryboardImage } from "../services/googleImageService.js";
@@ -83,6 +86,7 @@ import { createDavinciXml, imageExtension, timelinePlan, TIMEBASE } from "../ser
 import { ensurePortableLocalFile, ensureDavinciLocalWorkspace, saveDavinciStill, prepareDavinciImages, davinciDriveStillFilename } from "../services/davinciMediaStorage.js";
 import { measureMp3Duration, inspectAudioBlock, hasAudioDuration } from "../services/audioDuration.js";
 import { safeProjectFolderName } from "../services/projectStorage.js";
+import { cloneProject } from "../services/projectCloneService.js";
 import path from "path";
 import fs from "fs";
 import { randomUUID } from "node:crypto";
@@ -116,6 +120,17 @@ const flowFrameImageUpload = multer({
   limits: { fileSize: 15 * 1024 * 1024, files: 1, fields: 2, parts: 3 },
 });
 const flowMusicUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024, files: 1 } });
+const voiceoverUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024, files: 1, fields: 2, parts: 3 } });
+
+function parseVoiceoverUpload(req, res, next) {
+  voiceoverUpload.single('audio')(req, res, error => {
+    if (!error) return next();
+    const tooLarge = error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE';
+    return res.status(tooLarge ? 413 : 400).json({
+      error: tooLarge ? 'MP3 превышает лимит 50 МБ.' : 'Некорректный файл озвучки.',
+    });
+  });
+}
 
 function parseVisualReferenceUpload(req, res, next) {
   visualReferenceUpload.single("image")(req, res, error => {
@@ -221,6 +236,19 @@ router.get("/:id", ensureAuthenticated, async (req, res) => {
     res.json({ success: true, project });
   } catch (error) {
     res.status(500).json({ error: "Ошибка при получении проекта" });
+  }
+});
+
+router.post('/:id/copy', ensureAuthenticated, async (req, res) => {
+  try {
+    if (!/^[a-f\d]{24}$/i.test(req.params.id)) return res.status(404).json({ error: 'Проект не найден' });
+    const result = await cloneProject(req.params.id, req.user._id);
+    if (!result) return res.status(404).json({ error: 'Проект не найден' });
+    return res.status(201).json({ success: true, ...result });
+  } catch (error) {
+    console.error('[PROJECT_COPY_FAILED]', error.code || error.message);
+    return res.status(error.status || 500).json({ error: error.status === 409 ? error.message :
+      'Не удалось скопировать проект и его файлы. Оригинал сохранён.' });
   }
 });
 
@@ -482,6 +510,7 @@ function voiceoverResponse(project) {
       ...stored,
       status: stored.status === 'empty' || voiceoverIsCurrent(project, stored) ? stored.status : 'stale',
     },
+    adaptation: voiceoverAdaptationResponse(project),
   };
 }
 
@@ -499,8 +528,10 @@ router.post('/:id/voiceover/adapt', ensureAuthenticated, async (req, res) => {
   try {
     const body = req.body;
     if (!body || typeof body !== 'object' || Array.isArray(body) ||
-        Object.keys(body).some(key => !['instructions', 'expectedEditVersion', 'sourceScriptRevision', 'profileId'].includes(key)) ||
+        Object.keys(body).some(key => !['instructions', 'expectedEditVersion', 'sourceScriptRevision', 'profileId', 'restart'].includes(key)) ||
         typeof body.instructions !== 'string' || body.instructions.length > 4000 ||
+        (body.profileId !== undefined && typeof body.profileId !== 'string') ||
+        (body.restart !== undefined && typeof body.restart !== 'boolean') ||
         !Number.isSafeInteger(body.expectedEditVersion) || body.expectedEditVersion < 0 ||
         !Number.isSafeInteger(body.sourceScriptRevision) || body.sourceScriptRevision < 1) {
       return res.status(400).json({ error: 'Некорректные параметры адаптации' });
@@ -516,34 +547,63 @@ router.post('/:id/voiceover/adapt', ensureAuthenticated, async (req, res) => {
     const sourceBlocks = splitScenarioBlocks(project.script.content);
     if (!sourceBlocks.length) return res.status(409).json({ error: 'В сценарии не найдены блоки' });
     const settings = await Settings.findOne({ userId: req.user._id });
+    const profile = resolveRequestedProfile(settings, 'text', body.profileId);
+    const profileId = String(profile?._id || profile?.id || '');
+    const instructions = body.instructions.trim();
+    const stage = project.voiceoverAdaptation;
+    const canResume = !body.restart && stage?.status === 'in_progress' &&
+      stage.sourceScriptRevision === body.sourceScriptRevision &&
+      stage.baseEditVersion === body.expectedEditVersion &&
+      stage.totalBlocks === sourceBlocks.length &&
+      stage.instructions === instructions && stage.profileId === profileId &&
+      validVoiceoverAdaptationResults(stage.results, sourceBlocks);
+    const results = canResume ? stage.results.map(item => ({ id: item.id, adaptedText: item.adaptedText })) : [];
+    const batch = nextVoiceoverAdaptationBatch(sourceBlocks, results.length);
+    if (!batch.length) return res.status(409).json({ error: 'Адаптация уже завершена. Обновите страницу.' });
     const raw = await generateVoiceoverAdaptation(
-      project, sourceBlocks, body.instructions.trim(),
+      project, batch, instructions,
       settings?.prompts?.audio || DEFAULT_AUDIO_ADAPTATION_PROMPT,
-      resolveRequestedProfile(settings, 'text', body.profileId),
+      profile,
     );
+    const batchBlocks = parseAdaptedBlocks(raw, batch);
+    const completed = results.concat(batchBlocks.map((item, index) => ({
+      id: batch[index].sourceId, adaptedText: item.adaptedText,
+    })));
     const previous = (project.voiceover?.blocks || []).map(block => block.toObject?.() ?? block);
-    const blocks = parseAdaptedBlocks(raw, sourceBlocks, previous);
+    const finished = completed.length === sourceBlocks.length;
+    const blocks = finished ? parseAdaptedBlocks(JSON.stringify({ blocks: completed }), sourceBlocks, previous) : null;
     const versionFilter = body.expectedEditVersion === 0
       ? { $or: [{ 'voiceover.editVersion': 0 }, { 'voiceover.editVersion': { $exists: false } }] }
       : { 'voiceover.editVersion': body.expectedEditVersion };
+    const stageRevision = stage?.revision || 0;
+    const stageFilter = stageRevision === 0
+      ? { $or: [{ 'voiceoverAdaptation.revision': 0 }, { 'voiceoverAdaptation.revision': { $exists: false } }] }
+      : { 'voiceoverAdaptation.revision': stageRevision };
     const saved = await Project.findOneAndUpdate({
-      ...owner, 'script.status': 'confirmed', 'script.revision': body.sourceScriptRevision, ...versionFilter,
+      ...owner, 'script.status': 'confirmed', 'script.revision': body.sourceScriptRevision,
+      $and: [versionFilter, stageFilter],
     }, { $set: {
-      voiceover: {
+      ...(finished ? { voiceover: {
         status: 'draft', revision: current.revision || 0,
-        editVersion: body.expectedEditVersion + 1,
+        editVersion: body.expectedEditVersion + 1, sourceScriptRevision: body.sourceScriptRevision,
+        instructions, blocks, updatedAt: new Date(), confirmedAt: null,
+      } } : {}),
+      voiceoverAdaptation: {
+        status: finished ? 'idle' : 'in_progress', revision: stageRevision + 1,
         sourceScriptRevision: body.sourceScriptRevision,
-        instructions: body.instructions.trim(), blocks,
-        updatedAt: new Date(), confirmedAt: null,
+        baseEditVersion: finished ? body.expectedEditVersion + 1 : body.expectedEditVersion,
+        totalBlocks: sourceBlocks.length, instructions, profileId,
+        results: finished ? [] : completed, updatedAt: new Date(),
       }, updatedAt: new Date(),
     } }, { new: true, runValidators: true });
     if (!saved) return res.status(409).json({ error: 'Данные изменились во время адаптации. Повторите запрос.' });
     return res.json(voiceoverResponse(saved));
   } catch (error) {
     const known = ['EMPTY_SCRIPT_BLOCK', 'INVALID_AUDIO_ADAPTATION_RESPONSE', 'AUDIO_BLOCK_COUNT_MISMATCH'];
-    return res.status(known.includes(error.code) ? 502 : 500).json({
+    const providerStatus = Number.isInteger(error.status) && error.status >= 400 && error.status <= 599 ? error.status : 500;
+    return res.status(known.includes(error.code) ? 502 : providerStatus).json({
       error: error.code === 'AUDIO_BLOCK_COUNT_MISMATCH'
-        ? 'ИИ изменил количество блоков. Адаптация не сохранена; повторите запрос.'
+        ? 'ИИ не вернул ровно один результат для текущего блока. Если предыдущие блоки были готовы, они сохранены.'
         : error.message || 'Не удалось адаптировать текст', code: error.code,
     });
   }
@@ -671,6 +731,72 @@ router.post('/:id/voiceover/blocks/:blockId/generate', ensureAuthenticated, asyn
       ...(Number.isInteger(error.characterCount) ? { characterCount: error.characterCount } : {}),
       ...(Number.isInteger(error.characterLimit) ? { characterLimit: error.characterLimit } : {}),
     });
+  }
+});
+
+router.post('/:id/voiceover/blocks/:blockId/audio', ensureAuthenticated, parseVoiceoverUpload, async (req, res) => {
+  const expectedEditVersion = Number(req.body?.expectedEditVersion);
+  const textRevision = Number(req.body?.textRevision);
+  if (!Number.isSafeInteger(expectedEditVersion) || expectedEditVersion < 1 ||
+      !Number.isSafeInteger(textRevision) || textRevision < 1) {
+    return res.status(400).json({ error: 'Некорректная версия текста озвучки.' });
+  }
+  if (!req.file?.buffer?.length || !/\.mp3$/i.test(req.file.originalname || '') ||
+      !['audio/mpeg', 'audio/mp3', 'application/octet-stream'].includes(req.file.mimetype)) {
+    return res.status(400).json({ error: 'Выберите MP3-файл озвучки.' });
+  }
+  let durationSec;
+  try { durationSec = await measureMp3Duration(req.file.buffer); } catch {
+    return res.status(400).json({ error: 'Файл не является корректным MP3 или его длительность не определена.' });
+  }
+  const owner = { _id: req.params.id, userId: req.user._id };
+  let stored;
+  let project;
+  try {
+    project = await Project.findOne(owner).select('+voiceover.blocks.audioStorageKey');
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const current = normalizeVoiceover(project);
+    if (current.editVersion !== expectedEditVersion || !voiceoverIsCurrent(project, current) ||
+        !['draft', 'confirmed'].includes(current.status)) {
+      return res.status(409).json({ error: 'Текст озвучки изменился. Обновите страницу.' });
+    }
+    const block = (project.voiceover?.blocks || []).find(item => item.id === req.params.blockId);
+    if (!block || block.textRevision !== textRevision) {
+      return res.status(409).json({ error: 'Блок изменился. Обновите страницу.' });
+    }
+    stored = await saveVoiceoverAudio({
+      projectId: project._id.toString(), blockId: block.id, blockOrder: block.order,
+      projectPath: project.projectPath, project, userId: req.user._id,
+      buffer: req.file.buffer, unique: true,
+    });
+    const saved = await Project.findOneAndUpdate({
+      ...owner, 'voiceover.editVersion': expectedEditVersion,
+      'voiceover.blocks': { $elemMatch: { id: block.id, textRevision } },
+    }, { $set: {
+      'voiceover.blocks.$[block].audioStatus': 'ready',
+      'voiceover.blocks.$[block].audioStorageKey': stored.storageKey,
+      'voiceover.blocks.$[block].audioMimeType': 'audio/mpeg',
+      'voiceover.blocks.$[block].audioByteSize': stored.byteSize,
+      'voiceover.blocks.$[block].audioDurationSec': durationSec,
+      'voiceover.blocks.$[block].audioProfileId': '',
+      'voiceover.blocks.$[block].audioGeneratedAt': new Date(),
+      'voiceover.blocks.$[block].audioErrorCode': '',
+      'voiceover.updatedAt': new Date(), updatedAt: new Date(),
+    }, $inc: { 'voiceover.editVersion': 1 } }, {
+      new: true, runValidators: true, arrayFilters: [{ 'block.id': block.id, 'block.textRevision': textRevision }],
+    });
+    if (!saved) return res.status(409).json({ error: 'Блок изменился во время загрузки. Повторите запрос.' });
+    stored = null;
+    if (block.audioStorageKey && block.audioStorageKey !== saved.voiceover.blocks.find(item => item.id === block.id)?.audioStorageKey) {
+      deleteVoiceoverAudio(block.audioStorageKey, project.projectPath, req.user._id)
+        .catch(() => console.error('VOICEOVER_OLD_FILE_DELETE_FAILED'));
+    }
+    return res.json(voiceoverResponse(saved));
+  } catch {
+    return res.status(500).json({ error: 'Не удалось сохранить MP3 блока.' });
+  } finally {
+    if (stored) await deleteVoiceoverAudio(stored.storageKey, project?.projectPath, req.user._id)
+      .catch(() => console.error('VOICEOVER_UPLOAD_ROLLBACK_FAILED'));
   }
 });
 
@@ -1396,6 +1522,40 @@ router.post('/:id/reference-plan/confirm', ensureAuthenticated, async (req, res)
   }
 });
 
+router.post('/:id/reference-plan/skip', ensureAuthenticated, async (req, res) => {
+  try {
+    const { expectedEditVersion, sourceScriptRevision } = req.body || {};
+    if (!Number.isSafeInteger(expectedEditVersion) || expectedEditVersion < 0 ||
+        !Number.isSafeInteger(sourceScriptRevision) || sourceScriptRevision < 1) {
+      return res.status(400).json({ error: 'Некорректные версии плана' });
+    }
+    const owner = { _id: req.params.id, userId: req.user._id };
+    const project = await Project.findOne(owner);
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const plan = normalizeReferencePlan(project);
+    if (project.script?.status !== 'confirmed' || project.script.revision !== sourceScriptRevision ||
+        project.voiceover?.status !== 'confirmed' || project.voiceover.sourceScriptRevision !== sourceScriptRevision ||
+        plan.editVersion !== expectedEditVersion) {
+      return res.status(409).json({ error: 'Сценарий, озвучка или план референсов изменились. Обновите страницу.' });
+    }
+    const now = new Date();
+    const versionFilter = expectedEditVersion === 0
+      ? { $or: [{ 'referencePlan.editVersion': 0 }, { 'referencePlan.editVersion': { $exists: false } }] }
+      : { 'referencePlan.editVersion': expectedEditVersion };
+    const saved = await Project.findOneAndUpdate({ ...owner, 'script.status': 'confirmed',
+      'script.revision': sourceScriptRevision, 'voiceover.status': 'confirmed',
+      'voiceover.sourceScriptRevision': sourceScriptRevision, ...versionFilter }, { $set: {
+        referencePlan: { status: 'confirmed', revision: plan.revision + 1,
+          editVersion: expectedEditVersion + 1, sourceScriptRevision, instructions: plan.instructions,
+          items: plan.items.map(item => ({ ...item, selected: false })), updatedAt: now, confirmedAt: now }, updatedAt: now,
+      } }, { new: true, runValidators: true });
+    if (!saved) return res.status(409).json({ error: 'План референсов изменился. Обновите страницу.' });
+    return res.json(await loadReferencePlanResponse(saved, req.user._id));
+  } catch {
+    return res.status(500).json({ error: 'Не удалось продолжить без референсов' });
+  }
+});
+
 router.post('/:id/reference-plan/:referenceId/detail-prompt', ensureAuthenticated, async (req, res) => {
   try {
     const body = req.body;
@@ -1550,7 +1710,6 @@ router.post('/:id/storyboard/generate', ensureAuthenticated, async (req, res) =>
       return res.status(409).json({ error: 'Сценарий, референсы или раскадровка изменились. Обновите страницу.' });
     }
     const references = selectedStoryboardReferences(project);
-    if (!references.length) return res.status(409).json({ error: 'Сначала утвердите хотя бы один референс.' });
     const allowedReferenceIds = new Set(references.map(item => item.id));
     const voiceoverBlocks = (project.voiceover.blocks || []).map(block => ({
       id: block.id, order: block.order, adaptedText: block.adaptedText,
@@ -1748,7 +1907,8 @@ router.post('/:id/storyboard/frames/:frameId/detail-prompt', ensureAuthenticated
     return res.json(await storyboardResponse(saved, req.user._id));
   } catch (error) {
     if (error.code === 'INVALID_AI_PROFILE') return res.status(400).json({ code: error.code, error: error.message });
-    if (['STORYBOARD_DETAIL_FAILED', 'STORYBOARD_DETAIL_RATE_LIMIT'].includes(error.code)) {
+    if (['STORYBOARD_DETAIL_FAILED', 'STORYBOARD_DETAIL_RATE_LIMIT', 'STORYBOARD_DETAIL_BILLING',
+      'STORYBOARD_DETAIL_EMPTY_RESPONSE', 'STORYBOARD_DETAIL_CONTENT_BLOCKED', 'STORYBOARD_DETAIL_AUTH_FAILED'].includes(error.code)) {
       if (failureContext) {
         await Project.findOneAndUpdate({
           ...failureContext.owner, 'storyboard.editVersion': failureContext.editVersion,
@@ -1760,9 +1920,19 @@ router.post('/:id/storyboard/frames/:frameId/detail-prompt', ensureAuthenticated
         } }, { arrayFilters: [{ 'frame.id': failureContext.frameId }] }).catch(() => {});
       }
       const limited = error.code === 'STORYBOARD_DETAIL_RATE_LIMIT';
-      return res.status(limited ? 429 : 502).json({
+      return res.status(limited ? 429 : error.code === 'STORYBOARD_DETAIL_BILLING' ? 402
+        : error.code === 'STORYBOARD_DETAIL_AUTH_FAILED' ? 401
+          : error.code === 'STORYBOARD_DETAIL_CONTENT_BLOCKED' ? 422 : 502).json({
         error: limited
           ? 'Достигнут временный лимит Gemini. Детализация продолжится после паузы.'
+          : error.code === 'STORYBOARD_DETAIL_BILLING'
+            ? 'Провайдер отклонил запрос из-за отсутствия доступных кредитов. Выберите другой текстовый профиль или проверьте баланс.'
+            : error.code === 'STORYBOARD_DETAIL_EMPTY_RESPONSE'
+              ? 'Модель не вернула текст для этого кадра. Попробуйте другой текстовый профиль.'
+              : error.code === 'STORYBOARD_DETAIL_CONTENT_BLOCKED'
+                ? 'Google заблокировал содержание запроса для этого кадра. Проверьте описание и выбранные референсы.'
+                : error.code === 'STORYBOARD_DETAIL_AUTH_FAILED'
+                  ? 'Провайдер отклонил ключ выбранного текстового профиля.'
           : 'ИИ не смог детализировать prompt кадра',
         code: error.code,
         ...(limited ? { retryAfterMs: error.retryAfterMs || 60_000 } : {}),
@@ -2089,6 +2259,42 @@ router.post('/:id/storyboard/images/reset', ensureAuthenticated, async (req, res
     return res.json(await storyboardResponse(project, req.user._id));
   } catch {
     return res.status(500).json({ error: 'Не удалось начать генерацию изображений заново' });
+  }
+});
+
+router.post('/:id/storyboard/frames/:frameId/delete-image', ensureAuthenticated, async (req, res) => {
+  try {
+    const { sourceStoryboardRevision } = req.body || {};
+    if (Object.keys(req.body || {}).some(key => key !== 'sourceStoryboardRevision') ||
+        !Number.isSafeInteger(sourceStoryboardRevision) || sourceStoryboardRevision < 1) {
+      return res.status(400).json({ error: 'Некорректная версия раскадровки' });
+    }
+    const owner = { _id: req.params.id, userId: req.user._id };
+    const project = await Project.findOne(owner);
+    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    const storyboard = normalizeStoryboard(project);
+    if (storyboard.revision !== sourceStoryboardRevision) {
+      return res.status(409).json({ error: 'Раскадровка изменилась. Обновите страницу.' });
+    }
+    const frame = storyboard.frames.find(item => item.id === req.params.frameId);
+    if (!frame) return res.status(404).json({ error: 'Кадр не найден' });
+    const image = await StoryboardImage.findOne({
+      projectId: project._id, userId: req.user._id, frameId: frame.id,
+    }).select('+storageKey');
+    if (!image || image.status !== 'ready' || !image.storageKey || !storyboardImageMatchesFrame(image, frame)) {
+      return res.status(409).json({ error: 'У кадра нет актуального изображения. Обновите страницу.' });
+    }
+    const deleted = await StoryboardImage.deleteOne({
+      _id: image._id, projectId: project._id, userId: req.user._id,
+      status: 'ready', storageKey: image.storageKey, updatedAt: image.updatedAt,
+    });
+    if (!deleted.deletedCount) return res.status(409).json({ error: 'Изображение изменилось. Обновите страницу.' });
+    await deleteStoryboardImageFile(image.storageKey, project.projectPath, req.user._id)
+      .catch(() => console.error('STORYBOARD_IMAGE_FILE_DELETE_FAILED'));
+    const response = await storyboardResponse(project, req.user._id);
+    return res.json(response);
+  } catch {
+    return res.status(500).json({ error: 'Не удалось удалить изображение кадра' });
   }
 });
 
